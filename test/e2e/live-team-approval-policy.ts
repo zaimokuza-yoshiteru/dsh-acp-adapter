@@ -1,10 +1,11 @@
+import { treeMember } from './subagent-tree.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import { setApprovalPolicy } from '@deepseek-ai/dsh-user-approval'
 import type { SandboxMode } from '@deepseek-ai/dsh-sandbox'
-import type {} from '@deepseek-ai/dsh-experimental-agent-team'
+import type {} from '@deepseek-ai/dsh-agent-team'
 import type {} from '@deepseek-ai/dsh-shell'
 import type {} from '@deepseek-ai/dsh-tools'
 
@@ -28,8 +29,10 @@ export function installLiveTeamApprovalPolicy(
   let originalApproval: 'ask' | 'never' | null | undefined
   let approvalAtAdmission: 'ask' | 'never' | null | undefined
   const violations: string[] = []
-  const disposeCreated = ctx.on('agent/created', ({ agent }) => {
-    const membership = ctx.agentTeams.tryMembership(agent)
+  const disposeCreated = ctx.on('subagent/start', (info) => {
+    const agent = ctx.agents.get(info.id)
+    if (agent === undefined || info.parentSessionId !== lead.id) return
+    const membership = treeMember(ctx, agent)
     if (membership?.role !== 'teammate' || membership.root !== lead || membership.name !== memberName) return
     if (member !== undefined) throw new Error('LIVE_TEAM_APPROVAL_DUPLICATE_MEMBER')
     // Record native delegation before any explicit test-only escalation setup.
@@ -46,7 +49,7 @@ export function installLiveTeamApprovalPolicy(
     }
     if (
       execution.name === 'send_message' &&
-      args?.target === 'lead' &&
+      args?.agent === 'lead' &&
       typeof args.message === 'string' &&
       args.message.includes(token)
     )

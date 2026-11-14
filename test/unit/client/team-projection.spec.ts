@@ -1,36 +1,49 @@
 import { expect, it } from 'vitest'
-import type { TeamProjection } from '@deepseek-ai/dsh-experimental-agent-team/client'
-import { projectionRevision, teamRoster } from '../../../src/client/ui/team-projection.ts'
+import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import { projectionRevision } from '../../../src/client/ui/team-projection.ts'
 
-const projection = (patch: Partial<TeamProjection> = {}): TeamProjection => ({
-  members: [
-    { id: 'lead' as never, name: 'Lead', role: 'lead', phase: 'active' },
-    { id: 'member' as never, name: 'Member', role: 'teammate', phase: 'active' },
-  ],
-  tasks: [],
-  ...patch,
-})
+const sid = (value: string) => value as SessionId
+const snapshots = (patch = {}) =>
+  ({
+    lead: { state: 'ready', values: { subagentCatalog: [{ id: 'member', mode: 'continuable', name: 'worker' }] } },
+    member: { state: 'ready', values: { subagentCatalog: [{ id: 'nested', mode: 'continuable', name: 'reviewer' }] } },
+    nested: { state: 'ready', values: { modelSelection: { next: { provider: 'acp-codex', model: 'small' } } } },
+    ...patch,
+  }) as unknown as SessionListState['projectionsBySession']
 
-it('distinguishes loading, unavailable, empty, ready, and failed Team projections', () => {
-  expect(teamRoster(undefined, true).kind).toBe('loading')
-  expect(teamRoster(undefined, false).kind).toBe('unavailable')
-  expect(teamRoster(projection({ members: [] }), false).kind).toBe('empty')
-  expect(teamRoster(projection(), false)).toMatchObject({ kind: 'ready', members: [{ name: 'Member' }] })
-  expect(teamRoster(projection({ failure: 'damaged record' }), false)).toEqual({
-    kind: 'failed',
-    message: 'damaged record',
-    members: [],
-    memberIds: ['member'],
-  })
-})
-
-it('changes its revision when durable member identity or phase changes', () => {
-  const before = projection()
+it('refreshes descendant settings on native catalog, availability and model changes', () => {
+  const before = projectionRevision(sid('lead'), snapshots())
+  expect(projectionRevision(sid('lead'), snapshots({ nested: { state: 'error', values: {} } }))).not.toBe(before)
+  expect(
+    projectionRevision(sid('lead'), snapshots({ member: { state: 'ready', values: { subagentCatalog: [] } } })),
+  ).not.toBe(before)
   expect(
     projectionRevision(
-      projection({
-        members: before.members.map((member) => (member.id === 'member' ? { ...member, phase: 'failed' } : member)),
+      sid('lead'),
+      snapshots({
+        nested: { state: 'ready', values: { modelSelection: { next: { provider: 'acp-codex', model: 'large' } } } },
       }),
     ),
-  ).not.toBe(projectionRevision(before))
+  ).not.toBe(before)
+})
+
+it('ignores unrelated catalogs and Team task selection, and terminates malformed cycles', () => {
+  const before = projectionRevision(sid('lead'), snapshots())
+  expect(projectionRevision(sid('lead'), snapshots({ unrelated: { state: 'error', values: {} } }))).toBe(before)
+  const tree = snapshots()
+  const lead = tree[sid('lead')]!
+  expect(
+    projectionRevision(
+      sid('lead'),
+      snapshots({ lead: { ...lead, values: { ...lead.values, agentTeam: { enabled: false, tasks: [] } } } }),
+    ),
+  ).toBe(before)
+  expect(() =>
+    projectionRevision(
+      sid('lead'),
+      snapshots({ nested: { state: 'ready', values: { subagentCatalog: [{ id: 'lead', mode: 'continuable' }] } } }),
+    ),
+  ).not.toThrow()
+  expect(projectionRevision(sid('missing'), {})).toBe('[["missing",null,null,null,null]]')
 })

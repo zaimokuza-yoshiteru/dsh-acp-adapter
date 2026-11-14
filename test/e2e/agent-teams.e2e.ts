@@ -1,3 +1,5 @@
+import { openNativeMemberAside, openNativeMembers } from './native-team-ui.ts'
+import { treeMember, treeMembers } from './subagent-tree.ts'
 import { acpPermissionAudit } from './acp-permission-audit.ts'
 import {
   installTeamFixtureApprovals,
@@ -106,17 +108,15 @@ describe.each([
         )
         await send(initialPrompt)
         await page.getByText('E2E_TEAM_READY', { exact: true }).waitFor({ timeout: 30_000 })
-        const spawn = page.locator('[data-tool="spawn_teammate"]').first()
+        const spawn = page.locator('[data-tool="subagent"]').first()
         await spawn.waitFor({ state: 'attached' })
         await expandOwningTurnProcess(page, spawn)
         await spawn.waitFor()
         expect(await page.locator('body').innerText()).not.toMatch(/mcp__dshteam_[a-f0-9]+__/)
-        const lead = required(
-          host.ctx.agents.list().find((agent) => host.ctx.agentTeams.tryMembership(agent)?.role === 'lead'),
-        )
+        const lead = required(host.ctx.agents.list().find((agent) => treeMember(host.ctx, agent)?.role === 'lead'))
         expect(lead).toBeDefined()
-        await vi.waitFor(() => expect(host.ctx.agentTeams.listMembers(lead)).toHaveLength(2))
-        const member = required(host.ctx.agentTeams.listMembers(lead).find((member) => member.role === 'teammate'))
+        await vi.waitFor(async () => expect(await treeMembers(host.ctx, lead)).toHaveLength(2))
+        const member = required((await treeMembers(host.ctx, lead)).find((member) => member.role === 'teammate'))
         await vi.waitFor(
           () =>
             expect(
@@ -130,10 +130,7 @@ describe.each([
         // Inspect inherited policy while the child composer is still available.
         // Once a permission card replaces the composer, its input-left menu is
         // intentionally absent; the policy remains available again afterwards.
-        await page.getByRole('button', { name: /^Manage members ·/ }).click()
-        const management = page.getByRole('dialog', { name: 'Manage members', exact: true })
-        await management.getByRole('button', { name: 'Open calculator’s session', exact: true }).click()
-        await management.getByRole('button', { name: 'Close member management', exact: true }).click()
+        await openNativeMemberAside(page, 'calculator')
         const sidebar = page.locator('[data-sidebar-chat]')
         await sidebar.waitFor()
         const memberSettings = sidebar.getByRole('button', { name: /^Session ·/ })
@@ -193,13 +190,12 @@ describe.each([
           await page
             .getByRole('button', { name: 'calculator · Pending request', exact: true })
             .waitFor({ timeout: 20_000 })
-        const action = page.locator('[data-team-action]')
-        await action.getByRole('button', { name: /Agent team/ }).click()
-        const panel = page.getByRole('dialog', { name: 'Agent team', exact: true })
+        const panel = await openNativeMembers(page)
         await panel.getByText('Compute fixture', { exact: true }).first().waitFor()
         await panel.getByText('calculator', { exact: true }).first().waitFor()
         if (profile === 'devin' && decision === 'allow') await verifyTaskBoard(panel, host, lead)
-        await action.getByRole('button', { name: /Agent team/ }).click()
+        await page.keyboard.press('Escape')
+        await panel.waitFor({ state: 'hidden' })
         if (profile !== 'codex') {
           await page.getByRole('button', { name: 'calculator · Pending request', exact: true }).click()
           await page.locator('[data-acp-team-approvals]').waitFor()
@@ -240,23 +236,14 @@ describe.each([
           decision === 'allow'
             ? undefined
             : setupDecisions(
-                decision === 'cancel'
-                  ? [
-                      { owner: 'lead', callId: 'team-1', tool: 'list_agents', args: {} },
-                      { owner: 'lead', callId: 'team-2', tool: 'interrupt_agent', args: { target: 'calculator' } },
-                      { owner: 'lead', callId: 'team-1', tool: 'list_agents', args: {}, optional: true },
-                    ]
-                  : [{ owner: 'lead', callId: 'team-1', tool: 'list_agents', args: {} }],
+                [{ owner: 'lead', callId: 'team-1', tool: 'list_agents', args: {}, optional: decision === 'cancel' }],
                 lead,
               )
         if (decision === 'deny') {
           await approval.getByRole('button', { name: profile === 'codex' ? 'Skip' : 'Reject', exact: true }).click()
           await page.getByText('E2E_TEAM_MEMBER_DENIED', { exact: true }).waitFor()
         } else if (decision === 'cancel') {
-          const { createUserMessage } = await import('@deepseek-ai/dsh-llm')
-          lead.steer(
-            createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'E2E_TEAM_INTERRUPT' }] }),
-          )
+          expect(host.ctx.subagents.interruptByUser(child.id)).toEqual({ accepted: true })
           await vi.waitFor(
             () => expect(events.some((event) => event.sessionId === child.id && event.type === 'turn/end')).toBe(true),
             { timeout: 20_000 },
@@ -265,21 +252,17 @@ describe.each([
         if (decision === 'cancel') expect(readFileSync(log, 'utf8')).toContain('session/cancel')
         if (decision !== 'allow') {
           await vi.waitFor(
-            () =>
+            async () =>
               expect(
-                required(host.ctx.agentTeams.listMembers(lead).find((item) => item.id === child.id)).status,
+                required((await treeMembers(host.ctx, lead)).find((item) => item.id === child.id)).status,
               ).not.toBe('running'),
             { timeout: 20_000 },
           )
           expect(readFileSync(log, 'utf8')).not.toContain('E2E_TEAM_MEMBER_DONE')
           if (profile === 'devin') {
-            await vi.waitFor(
-              () =>
-                expect(readFileSync(log, 'utf8')).toContain(
-                  decision === 'cancel' ? 'E2E_TEAM_INTERRUPTED' : 'E2E_TEAM_NOTICE_RECEIVED',
-                ),
-              { timeout: 20_000 },
-            )
+            await vi.waitFor(() => expect(readFileSync(log, 'utf8')).toContain('E2E_TEAM_NOTICE_RECEIVED'), {
+              timeout: 20_000,
+            })
             await lead.whenIdle()
           }
           finishSetup(finishDecision)
@@ -316,7 +299,7 @@ describe.each([
               owner: 'calculator',
               callId: 'team-3',
               tool: 'send_message',
-              args: { target: 'lead', message: 'E2E_TEAM_REPLY result=2' },
+              args: { agent: 'lead', message: 'E2E_TEAM_REPLY result=2' },
             },
             ...teamReplySteps(),
           ],
@@ -395,14 +378,14 @@ describe.each([
               owner: 'lead',
               callId: 'team-2',
               tool: 'send_message',
-              args: { target: 'calculator', message: 'E2E_TEAM_CONTINUE' },
+              args: { agent: 'calculator', message: 'E2E_TEAM_CONTINUE' },
             },
             { owner: 'calculator', callId: 'team-1', tool: 'list_agents', args: {} },
             {
               owner: 'calculator',
               callId: 'team-2',
               tool: 'send_message',
-              args: { target: 'lead', message: 'E2E_TEAM_REPLY continued' },
+              args: { agent: 'lead', message: 'E2E_TEAM_REPLY continued' },
             },
             ...teamReplySteps(),
           ],
@@ -415,22 +398,20 @@ describe.each([
         await child.whenIdle()
         await lead.whenIdle()
         finishSetup(wake)
-        const interrupt = setupDecisions(
-          [
-            { owner: 'lead', callId: 'team-1', tool: 'list_agents', args: {} },
-            { owner: 'lead', callId: 'team-2', tool: 'interrupt_agent', args: { target: 'calculator' } },
-          ],
-          lead,
+        expect(host.ctx.tools.schemas(lead).some((tool) => tool.name === 'interrupt_agent')).toBe(false)
+        expect(host.ctx.subagents.interruptByUser(child.id)).toEqual({ accepted: true })
+        await child.whenIdle()
+        expect(new Set(executions.filter((item) => !item.isError).map((item) => item.name))).toEqual(
+          new Set([
+            'list_agents',
+            'subagent',
+            'send_message',
+            'team_task_create',
+            'team_task_get',
+            'team_task_update',
+            'team_task_list',
+          ]),
         )
-        lead.steer(
-          createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'E2E_TEAM_INTERRUPT' }] }),
-        )
-        await vi.waitFor(() => expect(readFileSync(log, 'utf8')).toContain('E2E_TEAM_INTERRUPTED'), {
-          timeout: 30_000,
-        })
-        expect(new Set(executions.filter((item) => !item.isError).map((item) => item.name)).size).toBe(9)
-        await lead.whenIdle()
-        finishSetup(interrupt)
         const finalAsked = memberAudit('asked', child.id)
         expect(finalAsked).toHaveLength(profile === 'codex' ? 0 : 1)
         if (profile !== 'codex') expect(finalAsked[0]?.data.toolCall.rawInputSummary).toContain('E2E_TEAM_PERMISSION')
@@ -467,10 +448,16 @@ describe.each([
   )
 })
 
-/** 0.1.7's native task panel is read-only; host-owned updates appear on refresh. */
+/** The native task board observes Host mutations and owns expansion and readiness display. */
 async function verifyTaskBoard(panel: Locator, host: AdapterWorld, lead: Agent) {
   const task = required(host.ctx.agentTeams.listTasks(lead).find((task) => task.subject === 'Compute fixture'))
+  const compute = panel.locator(`[data-team-task="${task.id}"]`)
+  const blocked = panel.locator('[data-team-task]').filter({ hasText: 'Blocked fixture' })
   expect(await panel.getByRole('button', { name: 'Complete', exact: true }).count()).toBe(0)
+  await blocked.getByRole('img', { name: 'Blocked by dependencies', exact: true }).waitFor()
+  const toggle = compute.locator('button[aria-expanded]')
+  if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click()
+  await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('true')
   await host.ctx.agentTeams.updateTask(lead, {
     taskId: task.id,
     expectedRevision: task.revision,
@@ -480,23 +467,21 @@ async function verifyTaskBoard(panel: Locator, host: AdapterWorld, lead: Agent) 
   await expect(
     host.ctx.agentTeams.updateTask(lead, { taskId: task.id, expectedRevision: task.revision, action: 'complete' }),
   ).rejects.toThrow()
-  await panel.getByText('Concurrent update', { exact: true }).waitFor()
+  await compute.locator('[data-team-task-details]').getByText('Concurrent update', { exact: true }).waitFor()
   const current = () => required(host.ctx.agentTeams.listTasks(lead).find((item) => item.id === task.id))
   await host.ctx.agentTeams.updateTask(lead, {
     taskId: task.id,
     expectedRevision: current().revision,
     action: 'complete',
   })
-  await panel
-    .locator('article')
-    .filter({ hasText: 'Compute fixture' })
-    .getByText('Completed', { exact: true })
-    .waitFor()
-  await panel.locator('article').filter({ hasText: 'Blocked fixture' }).getByText('Ready', { exact: true }).waitFor()
+  await compute.getByRole('img', { name: 'Completed', exact: true }).waitFor()
+  await blocked.getByRole('img', { name: 'Pending', exact: true }).waitFor()
+  expect(await blocked.getByRole('img', { name: 'Blocked by dependencies', exact: true }).count()).toBe(0)
   await host.ctx.agentTeams.updateTask(lead, {
     taskId: task.id,
     expectedRevision: current().revision,
     action: 'reopen',
   })
-  await panel.locator('article').filter({ hasText: 'Compute fixture' }).getByText('Pending', { exact: true }).waitFor()
+  await compute.getByRole('img', { name: 'Pending', exact: true }).waitFor()
+  await blocked.getByRole('img', { name: 'Blocked by dependencies', exact: true }).waitFor()
 }

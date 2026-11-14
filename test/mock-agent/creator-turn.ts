@@ -81,8 +81,17 @@ export async function creatorTurn(session: MockSession, msg: PromptMessage, peer
       if (result.isError) throw new Error(`${call.name}: ${text}`)
       if (call.name === 'plugin_manager' && JSON.parse(text).application !== 'applied')
         throw new Error(`Plugin change did not apply live: ${text}`)
-      if (call.name === 'skill' && !text.includes('Persistent Harness plugins'))
+      if (
+        call.name === 'skill' &&
+        (!text.includes('<skill_content name="dsh-doc">') || !text.includes('references/plugin-development.md'))
+      )
         throw new Error('Official creator skill did not load through DSH')
+      if (
+        call.name === 'read' &&
+        call.arguments?.file_path?.toString().endsWith('/references/plugin-development.md') &&
+        !text.includes('Persistent Harness plugins')
+      )
+        throw new Error('Official plugin development reference did not load through DSH read')
       if (call.name === CREATOR_TOOL && !text.includes('E2E_CREATOR_CAPABILITY_OK'))
         throw new Error('Installed fixture did not execute')
       peer.sendUpdate(session.id, {

@@ -14,7 +14,6 @@ const FLASH = 'DeepSeek-V4.1-Flash'
 const MODEL_ID = 'deepseek-flash'
 const ACP_PROVIDER = 'acp-codex'
 const MESSAGES_ENDPOINT = 'https://messages.test/anthropic/v1'
-const API_ENDPOINT = 'https://search-api.test/api/v1/tools'
 
 /** Follow the same real Plugins navigation as the native settings owner. */
 async function openPlugins(page: Page): Promise<Locator> {
@@ -63,7 +62,6 @@ it('keeps native Search/Fetch settings and Flash labels independent of the loade
     extraPatches: [
       '- id: llm-deepseek-account\n  disabled: true\n',
       '- id: web-search-deepseek\n  config:\n    apiKeyEnv: DSH_E2E_WEB_SETTINGS_UNUSED_KEY\n',
-      '- id: web-deepseek-api\n  config:\n    apiKeyEnv: DSH_E2E_WEB_SETTINGS_UNUSED_KEY\n',
       '- id: agent-default-model\n  config:\n    provider: deepseek-official\n    model: deepseek-flash\n',
     ],
   })
@@ -102,47 +100,65 @@ it('keeps native Search/Fetch settings and Flash labels independent of the loade
     expect(await inventory.locator('[data-plugin-item="web-search"]').count()).toBe(1)
     expect(await inventory.locator('[data-plugin-package="@zaimokuza/dsh-acp-adapter"]').count()).toBe(1)
     let detail = await openWebSearch(page)
-    const toggle = () => required(page).getByRole('switch', { name: 'Use the new Web Search API', exact: true })
+    const search = () => required(page).locator('#plugin-config-web-search-provider')
+    const fetch = () => required(page).locator('#plugin-config-web-fetch-provider')
     const endpoint = () => required(page).locator('#plugin-config-web-search-endpoint')
+    const count = () => required(page).getByLabel('Results per search', { exact: true })
     const save = () =>
       required(page)
         .locator('[data-plugin-item-detail="web-search"]')
         .getByRole('button', { name: 'Save', exact: true })
-    expect(await toggle().getAttribute('aria-checked')).toBe('false')
-    expect(providerSelection()).toEqual({ searchProvider: 'deepseek-official', fetchProvider: 'http' })
-    expect(await detail.getByLabel('Messages API base URL', { exact: true }).count()).toBe(1)
-    expect(await detail.getByLabel('Max searches per request', { exact: true }).inputValue()).toBe('5')
-    expect(await endpoint().inputValue()).toBe('')
+    const choose = async (menu: Locator, label: string) => {
+      await menu.click()
+      await required(page).getByRole('menuitem', { name: label, exact: true }).click()
+    }
+    // RC.2 owns independent capability menus. Its shipped defaults are Search
+    // API + direct fetch; the API endpoint is YAML-only, not an editable field.
+    expect(await search().textContent()).toBe('DeepSeek Search API')
+    expect(await fetch().textContent()).toBe('Direct fetch')
+    expect(providerSelection()).toEqual({ searchProvider: 'deepseek-search-api', fetchProvider: 'http' })
+    expect(await endpoint().count()).toBe(0)
+    expect(await count().inputValue()).toBe('10')
     expect(await save().isDisabled()).toBe(true)
+    expect(settingsDocument()).not.toContain('searchProvider:')
     expect(await detail.getByRole('link', { name: 'Search & Fetch guide', exact: true }).getAttribute('href')).toBe(
       'https://api-docs.deepseek.com/guides/search',
     )
 
-    await endpoint().fill(MESSAGES_ENDPOINT)
-    await save().click()
-    await expect.poll(() => save().isDisabled()).toBe(true)
-    await toggle().click()
-    const count = () => required(page).getByLabel('Results per search', { exact: true })
-    expect(await count().inputValue()).toBe('10')
     await count().fill('51')
     await detail
       .getByText('Enter an integer from 1 to 50, or leave blank to use the default.', { exact: true })
       .waitFor()
     expect(await save().isDisabled()).toBe(true)
-    expect(await toggle().isDisabled()).toBe(true)
+    expect(await search().isDisabled()).toBe(true)
+    expect(await fetch().isDisabled()).toBe(true)
     await count().fill('10')
-    await endpoint().fill(API_ENDPOINT)
+    await choose(search(), 'DeepSeek (legacy)')
+    expect(providerSelection()).toEqual({ searchProvider: 'deepseek-search-api', fetchProvider: 'http' })
+    expect(await detail.getByLabel('Base URL', { exact: true }).count()).toBe(1)
+    expect(await detail.getByLabel('Maximum searches per request', { exact: true }).inputValue()).toBe('5')
+    expect(await endpoint().inputValue()).toBe('')
+    await endpoint().fill(MESSAGES_ENDPOINT)
+    await save().click()
+    await expect.poll(providerSelection).toEqual({ searchProvider: 'deepseek-official', fetchProvider: 'http' })
+    await expect.poll(() => save().isDisabled()).toBe(true)
+    expect(settingsDocument()).toContain(`baseURL: ${MESSAGES_ENDPOINT}`)
+
+    await choose(search(), 'DeepSeek Search API')
+    await count().fill('20')
+    await choose(fetch(), 'DeepSeek Fetch API')
     expect(providerSelection()).toEqual({ searchProvider: 'deepseek-official', fetchProvider: 'http' })
-    // Native SettingsForm discards drafts when its page unmounts; there is no
-    // separate discard button or approval flow.
+    // Navigating away discards staged provider/field changes without writing.
     await detail.getByRole('button', { name: 'Back to plugins', exact: true }).click()
     detail = await openWebSearch(page)
-    expect(await toggle().getAttribute('aria-checked')).toBe('false')
+    expect(await search().textContent()).toBe('DeepSeek (legacy)')
+    expect(await fetch().textContent()).toBe('Direct fetch')
     expect(await endpoint().inputValue()).toBe(MESSAGES_ENDPOINT)
-    await toggle().click()
-    expect(await endpoint().inputValue()).toBe('https://api.deepseek.com/v1/tools')
+    await choose(search(), 'DeepSeek Search API')
     expect(await count().inputValue()).toBe('10')
-    await endpoint().fill(API_ENDPOINT)
+    await count().fill('20')
+    await choose(fetch(), 'DeepSeek Fetch API')
+    await choose(detail.locator('#plugin-config-web-fetch-billing'), 'DeepSeek API key')
     await save().click()
     await expect
       .poll(providerSelection)
@@ -150,16 +166,25 @@ it('keeps native Search/Fetch settings and Flash labels independent of the loade
     await expect.poll(() => save().isDisabled()).toBe(true)
     expect(settingsDocument()).toContain('searchProvider: deepseek-search-api')
     expect(settingsDocument()).toContain('fetchProvider: deepseek-fetch-api')
-    expect(settingsDocument()).toContain(`baseURL: ${API_ENDPOINT}`)
+    expect(settingsDocument()).toContain('fetchBilling: api-key')
+    expect(settingsDocument()).toContain('count: 20')
     await page.reload()
     detail = await openWebSearch(page)
-    expect(await toggle().getAttribute('aria-checked')).toBe('true')
-    expect(await endpoint().inputValue()).toBe(API_ENDPOINT)
-    expect(await count().inputValue()).toBe('10')
+    expect(await search().textContent()).toBe('DeepSeek Search API')
+    expect(await fetch().textContent()).toBe('DeepSeek Fetch API')
+    expect(await detail.locator('#plugin-config-web-fetch-billing').textContent()).toBe('DeepSeek API key')
+    expect(await endpoint().count()).toBe(0)
+    expect(await count().inputValue()).toBe('20')
     await page.screenshot({ path: join(evidence, 'native-search-fetch-settings.png'), animations: 'disabled' })
-    await toggle().click()
+
+    await choose(fetch(), 'Direct fetch')
+    await save().click()
+    await expect.poll(providerSelection).toEqual({ searchProvider: 'deepseek-search-api', fetchProvider: 'http' })
+    await expect.poll(() => save().isDisabled()).toBe(true)
+    expect(await count().inputValue()).toBe('20')
+    await choose(search(), 'DeepSeek (legacy)')
     expect(await endpoint().inputValue()).toBe(MESSAGES_ENDPOINT)
-    expect(await detail.getByLabel('Max searches per request', { exact: true }).inputValue()).toBe('5')
+    expect(await detail.getByLabel('Maximum searches per request', { exact: true }).inputValue()).toBe('5')
     await save().click()
     await expect.poll(providerSelection).toEqual({ searchProvider: 'deepseek-official', fetchProvider: 'http' })
     await expect.poll(() => save().isDisabled()).toBe(true)
@@ -168,7 +193,7 @@ it('keeps native Search/Fetch settings and Flash labels independent of the loade
     await acp.locator('[data-dsh-acp-panel]').waitFor()
     expect(await acp.locator('[data-dsh-acp-panel]').count()).toBe(1)
     expect(await acp.getByRole('button', { name: 'Add Agent', exact: true }).count()).toBe(1)
-    expect(await acp.getByRole('switch', { name: 'Use the new Web Search API', exact: true }).count()).toBe(0)
+    expect(await acp.locator('#plugin-config-web-search-provider, #plugin-config-web-fetch-provider').count()).toBe(0)
     expect(await acp.locator('#plugin-config-web-search-endpoint').count()).toBe(0)
     await backToPluginList(acp)
     await returnToConversation(page)

@@ -147,7 +147,8 @@ it.each(['unchanged', 'ended', 'replaced'] as const)(
       config: { command: process.execPath, args: argv.slice(1), env: {} },
       subprocess: seam,
       cwd: process.cwd(),
-      prepareLaunch: async () => ({ argv, env: {}, spawnPlan: { argv, env: {} }, mcpLease: lease }),
+      prepareLaunch: async () => ({ argv, env: {}, spawnPlan: { argv, env: {} } }),
+      createMcpLease: async () => lease,
       onPermissionRequest: async () => ({ outcome: { outcome: 'cancelled' } }),
       onElicitationRequest: async (_params, signal) => {
         shown.resolve(signal)

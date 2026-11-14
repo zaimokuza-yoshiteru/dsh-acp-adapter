@@ -39,9 +39,12 @@ import { createTeamToolContext } from '../teams/tool-context.ts'
 import { DEFERRED_WAIT_TEXT, DeferredWaitReceipts } from './deferred-wait-receipts.ts'
 import { redactSecretText } from '../../contract/redaction.ts'
 import { createAcpLogger } from '../../domain/observability/logging.ts'
+import { toolDiscoveryInstructions } from '../../agents/compatibility.ts'
 
 const TEAM_TOOLS = [
-  'spawn_teammate',
+  'subagent',
+  'subagent_fork',
+  'subagent_oar',
   'send_message',
   'list_agents',
   'wait_agent',
@@ -51,13 +54,13 @@ const TEAM_TOOLS = [
   'team_task_get',
   'team_task_update',
 ] as const
-function bridgeInstructions(names: ReadonlyMap<string, ToolSchema>, hasTeams: boolean): string {
+function bridgeInstructions(names: ReadonlyMap<string, ToolSchema>): string {
   const skillRoute = names.has('skill')
     ? 'The DSH MCP tool "skill" is listed; access DSH skill-catalog entries through that tool using its exact tools/list schema and names.'
     : names.has(RUN_CODE_NAME)
       ? `No direct DSH skill tool is listed. If DSH skill access is exposed through the generated SDK, call it inside "${RUN_CODE_NAME}" using the host-provided SDK instructions and listed schema; do not invent a direct skill tool.`
       : 'No DSH skill-loading entry point is listed. Do not claim DSH skill-catalog entries are available through an Agent-native skill tool; explain that this DSH connection has no listed skill entry point.'
-  return `These are native DSH tools available to this session. DSH sandbox and approval policies apply to these tools; your own Agent tools retain their separate policies. Use the exact tool names and schemas from tools/list. Tools and skills discovered in DSH context, including skill-catalog entries, must use this session's DSH MCP tools; do not route them through the Agent's native skill invocation or private skill directory, and do not copy DSH skill files into that directory. This does not replace or modify the Agent's own skills. Do not assume or expose tools or permissions absent from this DSH connection. ${skillRoute}${hasTeams ? ' Team members share the workspace and only fresh context is supported.' : ''}`
+  return `These are native DSH tools available to this session. DSH sandbox and approval policies apply to these tools; your own Agent tools retain their separate policies. Use the exact tool names and schemas from tools/list. Tools and skills discovered in DSH context, including skill-catalog entries, must use this session's DSH MCP tools; do not route them through the Agent's native skill invocation or private skill directory, and do not copy DSH skill files into that directory. This does not replace or modify the Agent's own skills. Do not assume or expose tools or permissions absent from this DSH connection. ${skillRoute}`
 }
 const diagnosticTools = new Set<string>(TEAM_TOOLS)
 const diagnosticErrorKinds = new Set<LiveDiagnosticErrorKind>([
@@ -581,7 +584,7 @@ export async function createDshToolBridge(
   // The connection owns caller identity. Keep native tool names intact so
   // upstream prompts, descriptions and plugin instructions share one contract.
   const names = definitions
-  const scopedInstructions = bridgeInstructions(names, hasTeams)
+  const scopedInstructions = bridgeInstructions(names)
   const presented = new Map<string, string>()
   const plainRecord = (value: unknown): Record<string, unknown> | undefined => {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
@@ -961,7 +964,6 @@ export async function createDshToolBridge(
           inputSchema: {
             ...visible.get(name)!.parameters,
             type: 'object' as const,
-            ...(registrations.has(name) ? teamContext?.spawnSchema(registrations.get(name)!) : undefined),
           },
         })),
     }))
@@ -1027,8 +1029,6 @@ export async function createDshToolBridge(
         const running = callsByTool.get(definition.name) ?? new Set()
         callsByTool.set(definition.name, running.add(cancellation))
         const args = request.params.arguments ?? {}
-        const registered = registrations.get(definition.name)
-        if (registered !== undefined) teamContext?.validateArguments(registered, args)
         const membership = definition.name === 'send_message' ? teamContext?.membership() : undefined
         const membershipRole = membership?.role
         const membershipId = membership?.id
@@ -1099,15 +1099,7 @@ export async function createDshToolBridge(
           let diagnosticTargetRole: LiveDiagnosticTargetRole | undefined
           if (diagnosticEnabled && definition.name === 'send_message') {
             try {
-              diagnosticTargetRole =
-                args.target === 'lead'
-                  ? 'lead'
-                  : typeof args.target === 'string' &&
-                      teamContext
-                        ?.listMembers()
-                        .some((member) => member.name === args.target && member.role === 'teammate')
-                    ? 'teammate'
-                    : 'unknown'
+              diagnosticTargetRole = teamContext?.isLeadReference(args.agent) === true ? 'lead' : 'unknown'
             } catch {
               diagnosticTargetRole = 'unknown'
             }
@@ -1333,7 +1325,7 @@ export async function createDshToolBridge(
           const currentMembership = teamContext?.membership()
           if (
             definition.name === 'send_message' &&
-            args.target === 'lead' &&
+            teamContext?.isLeadReference(args.agent) === true &&
             typeof args.message === 'string' &&
             args.message.trim().length > 0 &&
             result.isError !== true &&
@@ -1488,7 +1480,7 @@ export async function createDshToolBridge(
   const lease: AcpMcpLease = {
     signal: lifetime.signal,
     needsRefresh: () => directory.needsRefresh(),
-    instructions: `Current DSH tools connection: MCP server ${serverName}. When discovering this connection's tools in a shared catalog, first select the exact server namespace ${serverName} and list only tool names, then inspect the definitions of the tools you need. A truncated or partial catalog is not evidence that a tool is unavailable; narrow the lookup before deciding. ${scopedInstructions} Each session has its own connection and caller identity. Do not copy a connection address or server identity to another session.${hasTeams ? ' Team target names resolve within the caller’s Team.' : ''} Pending DSH messages are delivered after you end the current response; give a brief progress update when asked to yield.`,
+    instructions: `Current DSH tools connection: MCP server ${serverName}. ${toolDiscoveryInstructions(wireProfile)} ${scopedInstructions} Each session has its own connection and caller identity. Do not copy a connection address or server identity to another session.${hasTeams ? ' Agent names resolve within the caller’s subagent tree.' : ''} Pending DSH messages are delivered after you end the current response; give a brief progress update when asked to yield.`,
     servers,
     ...(diagnosticLeaseId === undefined ? {} : { diagnosticLeaseId }),
     beginPrompt(signal, reportCallback, promptOrdinal, concludedCallback, bodySignal, successfulToolResultCallback) {
@@ -1695,7 +1687,10 @@ export async function createDshToolBridge(
       const presentTeam = (result: acp.ToolCallUpdate): acp.ToolCallUpdate =>
         teamContext !== undefined &&
         definition !== undefined &&
-        (definition.name === 'spawn_teammate' || definition.name === 'send_message') &&
+        (definition.name === 'subagent' ||
+          definition.name === 'subagent_fork' ||
+          definition.name === 'subagent_oar' ||
+          definition.name === 'send_message') &&
         directory.isLive() &&
         directory.isDefinitionLive(definition.name, definition) &&
         directory.prompt !== undefined &&
@@ -1896,7 +1891,7 @@ export async function createDshToolBridge(
   )
   listeners.push(
     ctx.on('internal/service', (name) => {
-      if (!['agentTeams', 'agents', 'tools'].includes(name)) return
+      if (!['subagents', 'agents', 'tools'].includes(name)) return
       refreshDirectory()
     }),
   )

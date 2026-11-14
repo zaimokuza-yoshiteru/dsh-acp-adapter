@@ -14,7 +14,8 @@ import * as toolWeb from '@deepseek-ai/dsh-tool-web'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { createDshToolBridge } from '../../../src/host/tools/bridge.ts'
 
-const apiBase = 'https://deepseek-web.invalid/v1/tools'
+// fetch is intercepted below; no external request is allowed through.
+const apiBase = 'https://api.deepseek.com/v1/tools'
 const cleanup: Array<() => unknown | Promise<unknown>> = []
 
 afterEach(async () => {
@@ -96,7 +97,7 @@ async function harness(baseSelection = false) {
   } as never)
   const resolveAccountToken = vi.fn(async (_endpoint: string) => 'test-native-account-token')
   ctx.provide('deepseekAccount', { resolveToken: resolveAccountToken } as never)
-  const provider = await livePlugin(ctx, webApi, 'web-deepseek-api', { baseURL: apiBase })
+  const provider = await livePlugin(ctx, webApi, 'web-deepseek-api', {})
   await ctx.plugin(toolWeb, {})
 
   async function connect(id: string, question: string, route = 'acp-test') {
@@ -211,7 +212,12 @@ describe('published web providers through the ACP native-tool bridge', () => {
     )
     expect(h.requests[0]).toMatchObject({
       endpoint: `${apiBase}/search`,
-      body: { query: 'release changes', count: 8, need_content: false, ori_question: 'What changed in DeepSeek?' },
+      body: {
+        query: 'release changes',
+        count: webApi.DEEPSEEK_DEFAULT_COUNT,
+        need_content: false,
+        ori_question: 'What changed in DeepSeek?',
+      },
     })
     caller.appendQuestion('A follow-up in the same Session')
     expect((await caller.search('follow-up')).isError).not.toBe(true)
@@ -263,41 +269,64 @@ describe('published web providers through the ACP native-tool bridge', () => {
       )
       expect(h.requests.map(({ endpoint }) => endpoint)).toEqual([`${apiBase}/search`, `${apiBase}/fetch`])
       expect(h.requests[1]?.body).toEqual({ url: 'https://requested.invalid/article' })
-      if (route === 'deepseek-account') {
-        expect(h.resolveAccountToken.mock.calls.map(([endpoint]) => endpoint)).toEqual([
-          apiBase,
-          apiBase,
-          `${apiBase}/search`,
-          `${apiBase}/fetch`,
-        ])
-        expect(h.resolveCredential).not.toHaveBeenCalled()
-        for (const { headers } of h.requests) {
-          expect(headers.get('x-dsh-auth-token')).toBe('test-native-account-token')
-          expect(headers.has('authorization')).toBe(false)
-        }
-      } else {
-        expect(h.resolveAccountToken).not.toHaveBeenCalled()
-        expect(h.resolveCredential.mock.calls.map(([reference]) => reference)).toEqual([
-          'DEEPSEEK_API_KEY',
-          'DEEPSEEK_API_KEY',
-        ])
-        expect(h.requests.map(({ headers }) => headers.get('authorization'))).toEqual([
-          'Bearer test-host-api-key',
-          'Bearer test-rotated-host-key',
-        ])
-        expect(h.requests.every(({ headers }) => !headers.has('x-dsh-auth-token'))).toBe(true)
-      }
+      // No native model route is mounted in this bridge fixture. RC.2 uses the
+      // API key first even when the stored request names deepseek-account.
+      expect(h.resolveAccountToken).not.toHaveBeenCalled()
+      expect(h.resolveCredential.mock.calls.map(([reference]) => reference)).toEqual([
+        'DEEPSEEK_API_KEY',
+        'DEEPSEEK_API_KEY',
+      ])
+      expect(h.requests.map(({ headers }) => headers.get('authorization'))).toEqual([
+        'Bearer test-host-api-key',
+        'Bearer test-rotated-host-key',
+      ])
+      expect(h.requests.every(({ headers }) => !headers.has('x-dsh-auth-token'))).toBe(true)
     },
   )
 
-  it('does not borrow a native account token or dispatch when an ACP Session has no API credential', async () => {
+  it('keeps explicit API-key billing fail-closed when an ACP Session has no API credential', async () => {
     const h = await harness()
     h.setApiKey(undefined)
+    await h.provider.update({ searchBilling: 'api-key', fetchBilling: 'api-key' })
     const caller = await h.connect('missing-api-credential', 'Missing credential question')
     expect(caller.listedTools).toEqual([])
     expect(h.resolveCredential).not.toHaveBeenCalled()
     expect(h.resolveAccountToken).not.toHaveBeenCalled()
     expect(h.requests).toEqual([])
+  })
+
+  it('honors native auto billing account fallback for an ACP Session without an API key', async () => {
+    const h = await harness()
+    h.setApiKey(undefined)
+    const caller = await h.connect('native-auto-fallback', 'Native account fallback')
+    expect(caller.listedTools).toEqual(['web_fetch', 'web_search'])
+    expect((await caller.search('account-fallback')).isError).not.toBe(true)
+    expect((await caller.fetch('https://requested.invalid/article')).isError).not.toBe(true)
+    expect(h.requests).toHaveLength(2)
+    for (const { headers } of h.requests) {
+      expect(headers.get('x-dsh-auth-token')).toBe('test-native-account-token')
+      expect(headers.has('authorization')).toBe(false)
+    }
+    expect(h.resolveAccountToken).toHaveBeenCalled()
+  })
+
+  it('uses per-capability custom API endpoints without falling back to the signed-in account', async () => {
+    const h = await harness()
+    await h.provider.update({
+      searchBaseURL: apiBase,
+      fetchBaseURL: apiBase,
+      searchApiKeyEnv: 'CUSTOM_WEB_KEY',
+      fetchApiKeyEnv: 'CUSTOM_WEB_KEY',
+    })
+    const caller = await h.connect('own-endpoints', 'Own endpoint question')
+    expect((await caller.search('custom-key')).isError).not.toBe(true)
+    expect(h.resolveCredential).toHaveBeenCalledWith('CUSTOM_WEB_KEY')
+    expect(h.resolveAccountToken).not.toHaveBeenCalled()
+    h.setApiKey(undefined)
+    const unconfigured = await h.connect('own-endpoints-missing-key', 'No key')
+    expect(unconfigured.listedTools).toEqual([])
+    expect(h.resolveAccountToken).not.toHaveBeenCalled()
+    expect(h.requests).toHaveLength(1)
   })
 
   it('keeps base-provider selection until a native save, then switches both capabilities without remounting', async () => {

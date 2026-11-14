@@ -44,9 +44,14 @@ it('keeps child details owner-only and re-delivers the same native wait after a 
   } as unknown as Agent
   ctx.provide('agents', {
     get: (id: string) => (id === 'root' ? root : id === 'child' ? child : undefined),
-    roots: () => [root],
     list: () => [root, child],
-    isOwnedBy: (id: string, owner: Agent) => id === 'child' && owner === root,
+  } as never)
+  ctx.provide('subagents', {
+    rootOf: () => root,
+    namesOf: () => ({ self: 'child' }),
+    listDescendants: async () => [
+      { kind: 'child', id: child.id, parentId: root.id, mode: 'continuable', label: 'Private child' },
+    ],
   } as never)
   ctx.provide('sessionProjections', {
     register: () => () => {},
@@ -105,6 +110,9 @@ it('keeps child details owner-only and re-delivers the same native wait after a 
         },
       ],
     })
+    // A failed transport assertion still disposes this outstanding native wait.
+    // Observe its rejection immediately; the success path below awaits the value.
+    void pending.catch(() => {})
     const first = (await ownerEvents.next()).value as { eventId: string; request: unknown }
     expect(first).toMatchObject({ type: 'waterfall', agentId: 'root', event: 'user-questions/request' })
     expect(JSON.stringify(first.request)).toContain('Private child')

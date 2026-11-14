@@ -1,38 +1,24 @@
-import type { TeamMemberProjection, TeamProjection } from '@deepseek-ai/dsh-experimental-agent-team/client'
+import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 
-export type TeamRoster =
-  | { readonly kind: 'loading'; readonly members: readonly [] }
-  | { readonly kind: 'unavailable'; readonly members: readonly [] }
-  | {
-      readonly kind: 'failed'
-      readonly message: string
-      readonly members: readonly []
-      readonly memberIds: readonly SessionId[]
-    }
-  | { readonly kind: 'empty'; readonly members: readonly [] }
-  | { readonly kind: 'ready'; readonly members: readonly TeamMemberProjection[] }
-
-/** Interpret the shared projection without treating a failed residual roster as current. */
-export function teamRoster(projection: TeamProjection | undefined, loading: boolean): TeamRoster {
-  if (projection === undefined) return loading ? { kind: 'loading', members: [] } : { kind: 'unavailable', members: [] }
-  if (projection.failure !== undefined)
-    return {
-      kind: 'failed',
-      message: projection.failure,
-      members: [],
-      // Scope a failure notice to known teammates without treating their stale
-      // identities as a complete authorization roster.
-      memberIds: projection.members.filter((member) => member.role === 'teammate').map((member) => member.id),
-    }
-  const members = projection.members.filter((member) => member.role === 'teammate')
-  return members.length === 0 ? { kind: 'empty', members: [] } : { kind: 'ready', members }
-}
-
-export function projectionRevision(projection: TeamProjection | undefined): string {
-  if (projection === undefined) return ''
-  return JSON.stringify([
-    projection.failure,
-    projection.members.map((member) => [member.id, member.name, member.role, member.phase, member.error]),
-  ])
+/** Refresh ACP settings when the native descendant catalogs or model selections change.
+ * This key never grants membership: the Host's live ACP roster remains authoritative.
+ */
+export function projectionRevision(
+  root: SessionId,
+  projections: SessionListState['projectionsBySession'],
+  runtime?: (id: SessionId) => unknown,
+): string {
+  const visited = new Set<SessionId>()
+  const revisions: unknown[] = []
+  const visit = (id: SessionId): void => {
+    if (visited.has(id)) return
+    visited.add(id)
+    const projection = projections[id]
+    const catalog = projection?.values.subagentCatalog
+    revisions.push([id, projection?.state, catalog, projection?.values.modelSelection, runtime?.(id)])
+    for (const child of catalog ?? []) if (child.mode === 'continuable') visit(child.id)
+  }
+  visit(root)
+  return JSON.stringify(revisions)
 }

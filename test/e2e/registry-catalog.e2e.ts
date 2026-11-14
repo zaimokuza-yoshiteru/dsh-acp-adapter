@@ -69,12 +69,27 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     const evidence = join(root, '.local/rc1-catalog-menu')
     mkdirSync(evidence, { recursive: true })
     mkdirSync(join(root, '.local/registry-ui'), { recursive: true })
+    // A clipped CSS anchor hides the native portal even if its footer still holds focus.
+    await menu.getByRole('menuitem').last().focus()
+    const trigger = required(await addButton.boundingBox(), 'open catalog trigger')
+    await page.setViewportSize({ width: 1680, height: Math.floor(trigger.y) - 1 })
+    await menu.waitFor({ state: 'detached' })
+    expect(await addButton.getAttribute('aria-expanded')).toBe('false')
+    expect(await addButton.evaluate((node) => node === document.activeElement)).toBe(true)
+    await page.keyboard.press('Tab')
+    expect(
+      await detail
+        .getByRole('button', { name: 'Re-check', exact: true })
+        .evaluate((node) => node === document.activeElement),
+    ).toBe(true)
+    expect(await detail.getByRole('textbox').count()).toBe(0)
     for (const viewport of [
       { width: 1680, height: 1000 },
       { width: 900, height: 600 },
       { width: 390, height: 500 },
     ]) {
       await page.setViewportSize(viewport)
+      await addButton.click()
       await expectCatalogMenuFits(menu)
       const rowsViewport = menu.locator(':scope > [role="presentation"]').first()
       expect(
@@ -96,10 +111,10 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
         path: join(evidence, `menu-${viewport.width}x${viewport.height}.png`),
         animations: 'disabled',
       })
+      await page.keyboard.press('Escape')
+      await menu.waitFor({ state: 'hidden' })
+      expect(await addButton.evaluate((node) => node === document.activeElement)).toBe(true)
     }
-    await page.keyboard.press('Escape')
-    await menu.waitFor({ state: 'hidden' })
-    expect(await addButton.evaluate((node) => node === document.activeElement)).toBe(true)
     await addButton.click()
     await menu.waitFor({ state: 'visible' })
     await addButton.evaluate((element) => element.scrollIntoView({ block: 'end' }))

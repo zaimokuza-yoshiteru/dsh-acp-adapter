@@ -41,10 +41,16 @@ import {
   selectExternalSubagentRecord,
 } from './ui/AcpExternalSubagentComposer.ts'
 import type { SessionAccessSource } from './ui/session-action-access.ts'
-import { AcpTeamManagement } from './ui/AcpTeamManagement.ts'
+import {
+  AcpTeamManagementAction,
+  AcpTeamManagementOverlay,
+  type AcpTeamManagementInjected,
+} from './ui/AcpTeamManagement.ts'
+import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
+import type {} from '@deepseek-ai/dsh-client-ui-subagent/client'
 import { AcpTeamApprovals } from './ui/AcpTeamApprovals.ts'
 import type { AcpTeamApprovalActions } from './ui/AcpTeamApprovals.ts'
-import { followNativeTeamUi } from './ui/native-team-ui-lifecycle.ts'
+import { followNativeSubagentUi } from './ui/native-team-ui-lifecycle.ts'
 import { resolveCrossBackendLocation } from './data/cross-backend-controller.ts'
 import { AcpPanelController } from './data/controller.ts'
 import { ManagedAcpRouteCatalog } from './data/managed-routes.ts'
@@ -304,58 +310,67 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     ),
   )
   const coordinator = new CrossBackendCoordinator(ctx, managedRoutes.owns)
-  // DSH publishes team identity through the shared Session projection. The ACP
-  // Remote remains responsible for ACP-specific metadata and authorized writes.
+  // The native catalog owns discovery/navigation; ACP contributes only its settings action.
   ctx.inject(['remote.subagents', 'uiSession'], (teamCtx) => {
-    const actions = {
-      status: teamCtx.uiSession.sessionStatus,
-      isCurrent: (sessionId: SessionId) => isMainSession(sessions, sessionId),
-      ownsRoute: managedRoutes.owns,
-      async loadMembers(sessionId: SessionId) {
-        const result = await acpRemote.teamMembers(sessionId)
-        if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code })
-        return result.value
-      },
-      async openMember(parentSessionId: SessionId, childSessionId: SessionId) {
-        if (!isMainSession(sessions, parentSessionId)) return
-        openSubagentAside(ctx.sidebarRight, { parentSessionId, childSessionId, mode: 'continuable' })
-      },
+    const loadMembers = async (sessionId: SessionId) => {
+      const result = await acpRemote.teamMembers(sessionId)
+      if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code })
+      return result.value
     }
     teamCtx.effect(
       () =>
-        followNativeTeamUi(teamCtx.slots, () => {
+        followNativeSubagentUi(teamCtx.slots, () => {
           const unmount = teamCtx.effect(function* () {
-            yield teamCtx.slots.inject('conversation.session.header.utilities', () =>
+            const request = createSnapshotStore<SessionId | null>(null)
+            yield () => {
+              request.set(null)
+            }
+            yield teamCtx.slots.inject('shell.overlay', () =>
               teamCtx.slots.register(
                 {
-                  name: 'conversation.session.header.utilities',
-                  id: 'acp-team-management',
-                  order: 94,
+                  name: 'shell.overlay',
+                  id: 'acp-team-settings',
                   locale: 'acpActivity',
-                  inject: () => ({
-                    remote: ctx.remote.dshAcp,
+                  inject: (): AcpTeamManagementInjected => ({
+                    hooks: { managementRequest: request },
+                    closeManagement: () => request.set(null),
+                    remote: acpRemote,
                     streamFactory: ctx.remote,
-                    loadMembers: actions.loadMembers,
-                    ownsRoute: managedRoutes.owns,
-                    isCurrent: actions.isCurrent,
-                    status: actions.status,
-                    openMember: actions.openMember,
+                    loadMembers,
+                    isCurrent: (sessionId) => isMainSession(sessions, sessionId),
+                    status: teamCtx.uiSession.sessionStatus,
                     sessionAccessSource,
-                    async interruptMember(lead: SessionId, member: SessionId) {
-                      const result = await teamCtx.remote.subagents.interruptByParent(member, lead, 'continuable')
+                    async interruptMember(member) {
+                      const result = await teamCtx.remote.subagents.interruptByUser(member)
                       if (!result.ok) throw new Error(result.error.message)
                     },
                   }),
                 },
-                AcpTeamManagement,
+                AcpTeamManagementOverlay,
               ),
             )
-          }, 'dsh-acp: active native Team controls')
+            yield teamCtx.slots.inject('conversation.session.header.actions.subagent.footer', () =>
+              teamCtx.slots.register(
+                {
+                  name: 'conversation.session.header.actions.subagent.footer',
+                  id: 'acp-settings',
+                  order: 95,
+                  locale: 'acpActivity',
+                  inject: () => ({
+                    loadMembers,
+                    status: teamCtx.uiSession.sessionStatus,
+                    openManagement: (sessionId: SessionId) => request.set(sessionId),
+                  }),
+                },
+                AcpTeamManagementAction,
+              ),
+            )
+          }, 'dsh-acp: native subagent settings')
           return () => {
             void unmount()
           }
         }),
-      'dsh-acp: native Team UI lifecycle',
+      'dsh-acp: native subagent UI lifecycle',
     )
   })
   ctx.inject(['uiSession'], (approvalCtx) => {

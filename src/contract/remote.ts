@@ -538,7 +538,7 @@ export interface AcpTeamMemberView {
   readonly profileId: string | null
   readonly sessionId: string
   readonly name: string
-  readonly status: 'running' | 'inactive' | 'provisioning' | 'failed'
+  readonly status: 'running' | 'inactive'
   readonly model: string | null
   readonly pendingModel?: string | null
   readonly modelWritable?: boolean

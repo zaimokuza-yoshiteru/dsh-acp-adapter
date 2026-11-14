@@ -6,13 +6,13 @@
 
 ## 安装
 
-当前插件版本 [`0.2.2-rc.1.2`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.1.2) 兼容 DSH `0.2.2-rc.1`。安装前请确认宿主版本一致。其他版本见 [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
+已发布版本 [`0.2.2-rc.2.1`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.2.1) 兼容 DSH `0.2.2-rc.2`。安装前请确认宿主版本一致。其他版本见 [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
 
 **推荐：** 在 DSH Creator 模式中发送：
 
-> 请安装并启用 ACP 插件：`@zaimokuza/dsh-acp-adapter@0.2.2-rc.1.2`。
+> 请安装并启用 ACP 插件：`@zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1`。
 
-按提示确认安装，新插件默认启用。也可打开 **插件 → 添加插件**，粘贴 `@zaimokuza/dsh-acp-adapter@0.2.2-rc.1.2`，安装后点 **立即启用**。
+按提示确认安装，新插件默认启用。也可打开 **插件 → 添加插件**，粘贴 `@zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1`，安装后点 **立即启用**。
 
 <details>
 <summary>其他安装方式：命令行、Git 与压缩包</summary>
@@ -23,10 +23,10 @@
 
 ```bash
 # Desktop
-dsh plugin --profile desktop add @zaimokuza/dsh-acp-adapter@0.2.2-rc.1.2
+dsh plugin --profile desktop add @zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1
 
 # Web
-npx @deepseek-ai/dsh@0.2.2-rc.1 plugin --profile web add @zaimokuza/dsh-acp-adapter@0.2.2-rc.1.2
+npx @deepseek-ai/dsh@0.2.2-rc.2 plugin --profile web add @zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1
 ```
 
 Git 与压缩包安装示例：
@@ -35,8 +35,8 @@ Git 与压缩包安装示例：
 
 | 来源              | 示例                                                                                                                                                   |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Git               | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.2-rc.1.2`                                                                         |
-| 预构建插件包 .tgz | [下载 0.2.2-rc.1.2](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.2-rc.1.2/zaimokuza-dsh-acp-adapter-0.2.2-rc.1.2.tgz) |
+| Git               | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.2-rc.2.1`                                                                         |
+| 预构建插件包 .tgz | [下载 0.2.2-rc.2.1](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.2-rc.2.1/zaimokuza-dsh-acp-adapter-0.2.2-rc.2.1.tgz) |
 
 此包包含编译产物，与 npm 发布包一致。GitHub 自动生成的 Source code ZIP/TAR.GZ 是源码归档，不是构建后的插件包；未缓存的依赖仍需联网安装。
 
@@ -50,13 +50,13 @@ Git 与压缩包安装示例：
 
 > Agent 没有模型目录时，选择 **Agent current configuration** 使用其当前配置。
 >
-> DSH RC.1 已有 ACP 会话暂不支持更换模型。需要换模型时，请新建独立会话；新会话不继承原会话的 Agent 上下文。原会话历史和草稿保留，同模型的推理强度仍可调整。
+> DSH RC.1 / RC.2 已有 ACP 会话暂不支持更换模型。需要换模型时，请新建独立会话；新会话不继承原会话的 Agent 上下文。原会话历史和草稿保留，同模型的推理强度仍可调整。
 
 常用 Agent 的启动与登录方式：
 
 | Agent                      | ACP 命令                                 | 认证               |
 | -------------------------- | ---------------------------------------- | ------------------ |
-| Devin                      | `devin acp`                              | `devin auth login` |
+| Devin (3000.12.43+)        | `devin acp`                              | `devin auth login` |
 | CodeBuddy CLI（WorkBuddy） | `codebuddy --acp`                        | `codebuddy`        |
 | Antigravity                | `agy_acp_server.par`（官方 raw `1.3.0`） | ACP 独立登录       |
 | Claude                     | `claude-agent-acp`                       | `claude`           |
@@ -101,4 +101,4 @@ Kimi 已不再支持；已保存的配置和历史保留，可在设置中删除
 
 在 **ACP 诊断**中可导出安全摘要 JSON；其中不含消息正文、命令、路径、原始会话 ID 或 ACP 凭据。DSH 原生会话日志 ZIP 可能含提示词、工具参数、文件路径和附件；分享前请检查并移除敏感信息。
 
-需要求助时，向 [Issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) 附上错误编号、DSH/插件版本和已脱敏的日志片段。技术边界见[原生复用说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.1.2/docs/native-reuse.md)。
+需要求助时，向 [Issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) 附上错误编号、DSH/插件版本和已脱敏的日志片段。技术边界见[原生复用说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.2.1/docs/native-reuse.md)。

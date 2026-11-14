@@ -14,7 +14,9 @@ export async function teamTurn(
     .filter((block) => block.type === 'text')
     .map((block) => block.text)
     .join('\n')
-  if (!prompt.includes('E2E_TEAM_')) return false
+  const stoppedNotice =
+    /Background subagent calculator was stopped before it finished\.\nIt left no closing message\./.test(prompt)
+  if (!prompt.includes('E2E_TEAM_') && !stoppedNotice) return false
   let finishHold = () => {}
   const held = new Promise<void>((resolve) => {
     finishHold = resolve
@@ -41,13 +43,14 @@ export async function teamTurn(
   // gated approval fixtures must not invent a roster lookup to handle it, and
   // a coalesced actionable fixture prompt must continue through normal tools.
   const actionableTeamPrompt =
-    /\bE2E_TEAM_(?:START(?:_HOLD)?|LAYOUT|DEMO|EIGHT|SECOND|WAKE|CONTINUE|REPLY|INTERRUPT|MEMBER)\b/.test(prompt)
+    /\bE2E_TEAM_(?:START(?:_HOLD)?|LAYOUT|DEMO|EIGHT|SECOND|WAKE|CONTINUE|REPLY|MEMBER)\b/.test(prompt)
   const settledNotice =
     permissionGate !== undefined &&
     !actionableTeamPrompt &&
-    /Background subagent [a-z0-9-]+ finished and will do no further work unless you send it more\.\nIts closing message:\nE2E_TEAM_(?:MEMBER_(?:DONE|DENIED|CANCELLED|CONTINUED)|LATE_DENIED)\b/i.test(
-      prompt,
-    )
+    (stoppedNotice ||
+      /Background subagent [a-z0-9-]+ finished and will do no further work unless you send it more\.\nIts closing message:\nE2E_TEAM_(?:MEMBER_(?:DONE|DENIED|CANCELLED|CONTINUED)|LATE_DENIED)\b/i.test(
+        prompt,
+      ))
   if (settledNotice) {
     say('E2E_TEAM_NOTICE_RECEIVED')
     respond(msg.id, { stopReason: 'end_turn' })
@@ -159,14 +162,13 @@ export async function teamTurn(
       log(`team ${shortName} ${JSON.stringify(result.content)}`)
       const first = result.content[0]
       if (!first || first.type !== 'text') throw new Error('Expected team tool JSON text')
+      if (shortName === 'list_agents') return first.text.split('\n').filter(Boolean)
+      if (['subagent', 'send_message', 'interrupt_agent'].includes(shortName)) return first.text
       return JSON.parse(first.text)
     }
     const roster = await call('list_agents')
     log(`team model=${session.configOptions?.find((option) => option.id === 'model')?.currentValue}`)
-    if (/\bE2E_TEAM_INTERRUPT\b/.test(prompt)) {
-      await call('interrupt_agent', { target: 'calculator' })
-      say('E2E_TEAM_INTERRUPTED')
-    } else if (prompt.includes('E2E_TEAM_LAYOUT')) {
+    if (prompt.includes('E2E_TEAM_LAYOUT')) {
       for (const [name, description] of [
         [
           'worker-deepseek-harness',
@@ -177,7 +179,7 @@ export async function teamTurn(
           'Owner worker for reference/deer-flow (Python LangGraph + Node frontend). Review streaming, tools and approval boundaries.',
         ],
       ])
-        await call('spawn_teammate', { name, description, prompt: 'E2E_TEAM_MEMBER calculate 1+1', context: 'fresh' })
+        await call('subagent', { name, description, prompt: 'E2E_TEAM_MEMBER calculate 1+1' })
       say('E2E_TEAM_LAYOUT_READY')
     } else if (prompt.includes('E2E_TEAM_DEMO')) {
       const task = await call('team_task_create', {
@@ -189,53 +191,45 @@ export async function teamTurn(
         description: '等待需求整理完成，再检查边界',
         blocked_by: [task.id],
       })
-      await call('spawn_teammate', {
+      await call('subagent', {
         name: 'analyst',
         description: '整理需求与验收要点',
         prompt: 'E2E_TEAM_MEMBER calculate 1+1',
-        context: 'fresh',
       })
-      await call('spawn_teammate', {
+      await call('subagent', {
         name: 'reviewer',
         description: '检查实现与审批边界',
         prompt: 'E2E_TEAM_MEMBER calculate 1+1',
-        context: 'fresh',
       })
       say(
         '团队演示已就绪。两个成员的审批可在下方直接处理；点击右上角人员图标，可查看成员模式，并按 ACP 类型批量调整成员模式；休眠成员下次运行生效。共享任务在原生 Agent Team 面板中。此实例使用本地测试 Agent。',
       )
     } else if (prompt.includes('E2E_TEAM_EIGHT')) {
       for (let index = 1; index <= 8; index++)
-        await call('spawn_teammate', {
+        await call('subagent', {
           name: `worker-${index}`,
           description: 'Batch approval member',
           prompt: `E2E_TEAM_MEMBER calculate 1+1${index === 1 ? ' E2E_TEAM_FOLLOWUP_PERMISSION' : ''}`,
-          context: 'fresh',
         })
       say('E2E_TEAM_EIGHT_READY')
     } else if (prompt.includes('E2E_TEAM_SECOND')) {
-      await call('spawn_teammate', {
+      await call('subagent', {
         name: 'calculator-b',
         description: 'Model B member',
         prompt: 'E2E_TEAM_MEMBER calculate 1+1',
-        context: 'fresh',
       })
       say('E2E_TEAM_SECOND_READY')
     } else if (prompt.includes('E2E_TEAM_WAKE')) {
-      await call('send_message', { target: 'calculator', message: 'E2E_TEAM_CONTINUE' })
+      await call('send_message', { agent: 'calculator', message: 'E2E_TEAM_CONTINUE' })
       say('E2E_TEAM_WOKEN')
     } else if (prompt.includes('E2E_TEAM_REPLY')) {
       say('E2E_TEAM_LEAD_RECEIVED')
     } else if (/\bE2E_TEAM_CONTINUE\b/.test(prompt)) {
       say(`E2E_TEAM_MEMBER_MODE ${session.configOptions?.find((option) => option.id === 'mode')?.currentValue}`)
-      await call('send_message', { target: 'lead', message: 'E2E_TEAM_REPLY continued' })
+      await call('send_message', { agent: 'lead', message: 'E2E_TEAM_REPLY continued' })
       say('E2E_TEAM_MEMBER_CONTINUED')
     } else if (/\bE2E_TEAM_MEMBER\b/.test(prompt)) {
-      await call(
-        'spawn_teammate',
-        { name: 'nested', description: 'Denied nested spawn', prompt: 'do nothing' },
-        'only the Team Lead',
-      )
+      await call('subagent', { name: 'nested', description: 'Denied nested spawn', prompt: 'do nothing' }, 'maxDepth')
       if (approvalGate !== undefined) {
         // Manual-approval E2E fixtures let the Lead switch policy after all
         // coordination setup has completed, before this ordinary MCP request.
@@ -312,13 +306,11 @@ export async function teamTurn(
           await new Promise((resolve) => setTimeout(resolve, 20))
         if (turn.cancelled) return true
       }
-      await call('send_message', { target: 'lead', message: 'E2E_TEAM_REPLY result=2' })
+      await call('send_message', { agent: 'lead', message: 'E2E_TEAM_REPLY result=2' })
       say('E2E_TEAM_MEMBER_DONE')
     } else if (prompt.includes('E2E_TEAM_START')) {
       if (prompt.includes('E2E_TEAM_START_HOLD')) await new Promise((resolve) => setTimeout(resolve, 1000))
-      if (roster.length !== 1) throw new Error('Expected fresh team')
-      const wait = await call('wait_agent', { timeout_ms: 10_000 })
-      if (!wait.noProgress) throw new Error('Native wait must not poll without an active peer')
+      if (roster.length !== 1) throw new Error('Expected fresh tree')
       const task = await call('team_task_create', { subject: 'Compute fixture', description: 'Return 2' })
       await call('team_task_get', { task_id: task.id })
       await call('team_task_update', { task_id: task.id, expected_revision: task.revision, action: 'claim' })
@@ -338,24 +330,11 @@ export async function teamTurn(
         { task_id: blocked.id, expected_revision: blocked.revision, action: 'claim' },
         'not ready to claim',
       )
-      await call('send_message', { target: 'missing-member', message: 'must not deliver' }, 'not found')
-      for (const override of [
-        { context: 'fork' },
-        { model: 'mock-model-b' },
-        { agent: 'other' },
-        { provider: 'acp-other' },
-      ]) {
-        await call(
-          'spawn_teammate',
-          { name: 'invalid', description: 'Must not create', prompt: 'do nothing', ...override },
-          override.context ? 'ACP_TEAM_FORK_UNSUPPORTED' : 'ACP_TEAM_ROUTE_OVERRIDE_UNSUPPORTED',
-        )
-      }
-      await call('spawn_teammate', {
+      await call('send_message', { agent: 'missing-member', message: 'must not deliver' }, 'unavailable')
+      await call('subagent', {
         name: 'calculator',
         description: 'Compute fixture',
         prompt: 'E2E_TEAM_MEMBER calculate 1+1',
-        context: 'fresh',
       })
       say('E2E_TEAM_READY')
       if (prompt.includes('E2E_TEAM_START_HOLD')) await held

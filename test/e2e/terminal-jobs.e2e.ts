@@ -80,8 +80,20 @@ describe.each(['claude', 'codex', 'devin'])('native terminal jobs: %s', (profile
       const fixture = latestFixture()
       await expect.poll(() => existsSync(fixture.readyFile)).toBe(true)
       expect(first.owner).toBe(id)
-      const running = page.getByRole('button', { name: '1 background job running', exact: true })
-      await running.waitFor()
+      const running = page.getByRole('button', { name: '1 background job', exact: true })
+      const waitForRunning = async () => {
+        await running.waitFor()
+        await expect.poll(() => host.ctx.jobs.get(first.id, owner).status).toBe('running')
+        await expect
+          .poll(() =>
+            running.evaluate((button) => {
+              const id = button.getAttribute('aria-describedby')
+              return id === null ? null : document.getElementById(id)?.textContent
+            }),
+          )
+          .toBe('Running')
+      }
+      await waitForRunning()
       await running.click()
       const list = page.getByRole('list', { name: 'Background jobs', exact: true })
       expect(await list.innerText()).toContain('acp-terminal')
@@ -102,7 +114,7 @@ describe.each(['claude', 'codex', 'devin'])('native terminal jobs: %s', (profile
       mkdirSync(evidenceDirectory, { recursive: true })
       await page.screenshot({ path: join(evidenceDirectory, 'running-output.png'), fullPage: true })
       await page.reload()
-      await running.waitFor()
+      await waitForRunning()
       expect(jobs().map((job) => job.id)).toEqual([first.id])
 
       // A different session must neither see nor be allowed to cancel this job.
@@ -133,6 +145,7 @@ describe.each(['claude', 'codex', 'devin'])('native terminal jobs: %s', (profile
         .getByRole('button', { name: /Disconnected, reconnect now|Reconnecting automatically, reconnect now/ })
         .waitFor({ state: 'hidden' })
       await page.getByRole('button', { name: '1 background job', exact: true }).waitFor()
+      await expect.poll(() => running.getAttribute('aria-describedby')).toBeNull()
       expect(jobs().map((job) => job.id)).toEqual([first.id])
       await page.reload()
       await page.getByRole('button', { name: '1 background job', exact: true }).click()

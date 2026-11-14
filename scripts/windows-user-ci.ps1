@@ -28,12 +28,10 @@ pnpm typecheck
 pnpm test --no-file-parallelism
 pnpm build
 }
-# Test the actual consumer, not only that our registration succeeds. No login/model calls.
-$devinVersion = if ($env:DEVIN_TEST_VERSION) { $env:DEVIN_TEST_VERSION } else { '3000.10.31' }
+# Test actual session-supplied MCP discovery without login or model calls.
+$devinVersion = if ($env:DEVIN_TEST_VERSION) { $env:DEVIN_TEST_VERSION } else { '3000.12.43' }
 $devinSha = switch ($devinVersion) {
-  '3000.10.31' { '2752bc02ca6ff5fa55031d5dac6a6886e5bcca9e37edeb05fde635a240ced89f' }
-  '3000.11.3' { 'dded69a40dc54012612eda47e0935f2fb394b97cd38cb4d7d84b1e1d71c5f7ea' }
-  '3000.3.27' { '254c8085137474d883cf6a6309ed98269fe4489cb83c67722d8b2279e443e11c' }
+  '3000.12.43' { 'a76947bbcda169b64fd00b9faaab2baf4f92c613db28dec1b8dce5c48ba80fcd' }
   default { throw 'Unsupported Devin test version' }
 }
 $devinZip = Join-Path $AuditRoot 'devin.zip'

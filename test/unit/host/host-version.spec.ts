@@ -12,6 +12,10 @@ vi.mock('node:fs', async (importOriginal) => {
   return { ...actual, readFileSync: vi.fn(actual.readFileSync) }
 })
 
+const installedHostVersion = JSON.parse(
+  readFileSync(new URL('../../../node_modules/@deepseek-ai/dsh/package.json', import.meta.url), 'utf8'),
+).version as string
+
 const manifest = { version: '0.2.2-rc.1.1', engines: { dsh: '0.2.2-rc.1' } }
 
 describe('Host version check', () => {
@@ -43,7 +47,7 @@ describe('Host version check', () => {
     expect(currentHostVersionMismatch()).toEqual({
       adapter: manifest.version,
       required: '0.0.0',
-      running: manifest.engines.dsh,
+      running: installedHostVersion,
     })
     expect(currentHostVersionMismatch()).toBeUndefined()
   })

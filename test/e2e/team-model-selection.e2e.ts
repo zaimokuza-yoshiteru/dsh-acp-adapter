@@ -1,3 +1,5 @@
+import { openMemberSettings, closeMemberSettings, memberSettingsDialog, openNativeMembers } from './native-team-ui.ts'
+import { treeMember, treeMembers } from './subagent-tree.ts'
 import type { AcpRemoteService } from '../../src/remote/service.js'
 import { required } from './required.ts'
 import { acpPermissionAudit } from './acp-permission-audit.ts'
@@ -124,9 +126,7 @@ it('rejects unsupported teammate model changes without disturbing approvals, wak
     capture('bootstrap-send')
     await send('E2E_TEAM_START')
     await page.getByText('E2E_TEAM_READY', { exact: true }).waitFor()
-    const lead = required(
-      host.ctx.agents.list().find((agent) => host.ctx.agentTeams.tryMembership(agent)?.role === 'lead'),
-    )
+    const lead = required(host.ctx.agents.list().find((agent) => treeMember(host.ctx, agent)?.role === 'lead'))
     await vi.waitFor(
       () =>
         expect(
@@ -139,7 +139,7 @@ it('rejects unsupported teammate model changes without disturbing approvals, wak
     bootstrap.finish()
     await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'ask' })
     writeFileSync(policyGate, 'ready')
-    const child = required(host.ctx.agentTeams.listMembers(lead).find((member) => member.role === 'teammate'))
+    const child = required((await treeMembers(host.ctx, lead)).find((member) => member.role === 'teammate'))
     expect(lead).toBeDefined()
     expect(child).toMatchObject({ name: 'calculator' })
 
@@ -162,7 +162,7 @@ it('rejects unsupported teammate model changes without disturbing approvals, wak
       .getByRole('button', { name: 'Allow once', exact: true })
       .click()
     await expect
-      .poll(() => host.ctx.agentTeams.listMembers(lead).find((member) => member.id === child.id)?.status, {
+      .poll(async () => (await treeMembers(host.ctx, lead)).find((member) => member.id === child.id)?.status, {
         timeout: 30000,
       })
       .toSatisfy((status) => status === 'idle' || status === 'inactive')
@@ -183,8 +183,8 @@ it('rejects unsupported teammate model changes without disturbing approvals, wak
       pendingModel: null,
       unavailableReason: 'model-switch',
     })
-    const panel = page.locator('[data-acp-team-management], [data-acp-team-panel]')
-    await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
+    const panel = memberSettingsDialog(page)
+    await openMemberSettings(page)
     const row = panel.locator('[data-acp-managed-member="calculator"]')
     const modelButton = row.getByRole('button', { name: 'Choose a model for calculator', exact: true })
     await expect.poll(() => modelButton.textContent()).toBe('Mock Model A')
@@ -199,12 +199,12 @@ it('rejects unsupported teammate model changes without disturbing approvals, wak
       )
       .waitFor()
     await page.keyboard.press('Escape')
-    await panel.getByRole('button', { name: 'Close member management', exact: true }).click()
+    await closeMemberSettings(page)
     capture('reload-model-picker')
     await page.reload()
-    await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
+    await openMemberSettings(page)
     await expect.poll(() => modelButton.textContent()).toBe('Mock Model A')
-    await panel.getByRole('button', { name: 'Close member management', exact: true }).click()
+    await closeMemberSettings(page)
     // A refused selection does not become a dormant intent. Both wakes retain A.
     const countModelA = () => (readFileSync(log, 'utf8').match(/team model=mock-model-a/g) ?? []).length
     const wakeDecisions = () =>
@@ -216,14 +216,14 @@ it('rejects unsupported teammate model changes without disturbing approvals, wak
             owner: 'lead',
             callId: 'team-2',
             tool: 'send_message',
-            args: { target: 'calculator', message: 'E2E_TEAM_CONTINUE' },
+            args: { agent: 'calculator', message: 'E2E_TEAM_CONTINUE' },
           },
           { owner: 'calculator', callId: 'team-1', tool: 'list_agents', args: {} },
           {
             owner: 'calculator',
             callId: 'team-2',
             tool: 'send_message',
-            args: { target: 'lead', message: 'E2E_TEAM_REPLY continued' },
+            args: { agent: 'lead', message: 'E2E_TEAM_REPLY continued' },
           },
           ...teamReplySteps(),
         ],
@@ -285,12 +285,11 @@ it('rejects unsupported teammate model changes without disturbing approvals, wak
         {
           owner: 'lead',
           callId: 'team-2',
-          tool: 'spawn_teammate',
+          tool: 'subagent',
           args: {
             name: 'calculator-b',
             description: 'Model B member',
             prompt: 'E2E_TEAM_MEMBER calculate 1+1',
-            context: 'fresh',
           },
         },
         ...teamMemberSetupSteps('calculator-b'),
@@ -310,8 +309,8 @@ it('rejects unsupported teammate model changes without disturbing approvals, wak
       )
     await expect.poll(secondReady, { timeout: 30000 }).toBeDefined()
     capture('second-member-management-ready')
-    await panel.getByRole('button', { name: 'Manage members · 2', exact: true }).waitFor()
-    const sibling = required(host.ctx.agentTeams.listMembers(lead).find((member) => member.name === 'calculator-b'))
+    await openMemberSettings(page)
+    const sibling = required((await treeMembers(host.ctx, lead)).find((member) => member.name === 'calculator-b'))
     await expect
       .poll(
         () =>
@@ -335,10 +334,8 @@ it('rejects unsupported teammate model changes without disturbing approvals, wak
 
     // Keep controls mounted across a member turn; the model restriction and
     // current model survive status refreshes and nested menu focus changes.
-    const management = page.locator('[data-acp-team-management], [data-acp-team-panel]')
-    const managementPanel = page.locator('[data-acp-team-panel]')
-    const manageMembersButton = management.getByRole('button', { name: 'Manage members · 2', exact: true })
-    await manageMembersButton.click()
+    const managementPanel = memberSettingsDialog(page)
+    await openMemberSettings(page)
     await modelButton.click()
     await page.getByRole('menu').getByRole('menuitem', { name: 'Mock Model A', exact: true }).click()
     expect(await row.locator('[data-member-model-notice]').textContent()).toBe('')
@@ -353,19 +350,17 @@ it('rejects unsupported teammate model changes without disturbing approvals, wak
           owner: 'calculator',
           callId: 'team-2',
           tool: 'send_message',
-          args: { target: 'lead', message: 'E2E_TEAM_REPLY continued' },
+          args: { agent: 'lead', message: 'E2E_TEAM_REPLY continued' },
         },
         ...teamReplySteps(),
       ],
     })
-    await host.ctx.agentTeams.sendMessage(lead, {
-      target: 'calculator',
-      content: [{ type: 'text', text: 'E2E_TEAM_CONTINUE' }],
+    await host.ctx.subagents.sendMessage(lead, child.id, [{ type: 'text', text: 'E2E_TEAM_CONTINUE' }], {
       signal: new AbortController().signal,
     })
     await expect.poll(countModelA, { timeout: 30000 }).toBeGreaterThan(secondACount)
     await expect
-      .poll(() => host.ctx.agentTeams.listMembers(lead).find((member) => member.id === child.id)?.status, {
+      .poll(async () => (await treeMembers(host.ctx, lead)).find((member) => member.id === child.id)?.status, {
         timeout: 30000,
       })
       .toSatisfy((status) => status === 'idle' || status === 'inactive')
@@ -390,7 +385,8 @@ it('rejects unsupported teammate model changes without disturbing approvals, wak
     await expect.poll(() => modelButton.evaluate((button) => button === document.activeElement)).toBe(true)
     await page.keyboard.press('Escape')
     await expect.poll(() => managementPanel.count()).toBe(0)
-    await expect.poll(() => manageMembersButton.evaluate((button) => button === document.activeElement)).toBe(true)
+    await openNativeMembers(page)
+    expect(await page.locator('[data-acp-team-management]').getByRole('button').isEnabled()).toBe(true)
     capture('completed')
   } catch (error) {
     capture()

@@ -1,3 +1,4 @@
+import { treeMember, treeMembers } from './subagent-tree.ts'
 import { required } from './required.ts'
 import type { AdapterWorld } from './scaffold.ts'
 import type { Page } from 'playwright'
@@ -8,6 +9,7 @@ import { randomUUID } from 'node:crypto'
 import { expect, vi } from 'vitest'
 import { writeComposerDraft } from '#host-support'
 import { installLiveTeamApprovalPolicy } from './live-team-approval-policy.ts'
+import { closeNativeMembers, openNativeMembers } from './native-team-ui.ts'
 
 /** A fresh real member must reach the native approval before its first file side effect. */
 export async function verifyLiveTeamApproval({
@@ -26,9 +28,7 @@ export async function verifyLiveTeamApproval({
   const lead = required(
     host.ctx.agents
       .list()
-      .find(
-        (agent) => agent.options.provider === provider && host.ctx.agentTeams.tryMembership(agent)?.role === 'lead',
-      ),
+      .find((agent) => agent.options.provider === provider && treeMember(host.ctx, agent)?.role === 'lead'),
   )
   const destination = join(required(lead.session.header.cwd), fileName)
   const command = `printf '${token}' > ${fileName}`
@@ -73,12 +73,8 @@ export async function verifyLiveTeamApproval({
   let completed = false
   let phase: 'waiting' | 'pending' | 'invalid-fixture-call' | 'ended-without-approval' = 'waiting'
   try {
-    // verifyLiveTeam leaves the native team panel open.
-    await page
-      .locator('[data-team-action]')
-      .getByRole('button', { name: /Agent team/ })
-      .click()
-    const prompt = `This is an authorized approval regression in this empty temporary workspace. Use the DSH Teams MCP spawn_teammate tool to create exactly one fresh member named permission-review. This test explicitly switches only its exact marker tool call to native Ask approval and a read-only DSH file policy at admission; other delegated calls keep their native policy. Tell it to call the DSH MCP bash tool exactly once with command ${JSON.stringify(command)}, description "Write the isolated approval marker", sandbox_permissions "danger-full-access", justification "Allow the single temporary workspace marker ${token}", and no workdir or background execution. This is a one-shot native sandbox escalation: wait for the human approval before execution. Do not use the Agent's private shell, another tool, an editing API, or a command without these escalation arguments. The command writes only the unique temporary workspace file ${fileName}. After successful execution send the lead ${token} using DSH send_message, then finish. Do not execute the command yourself or create any other members. End your response after creating the member so the human can handle its approval.`
+    await closeNativeMembers(page)
+    const prompt = `This is an authorized approval regression in this empty temporary workspace. Use the DSH Teams MCP subagent tool to create exactly one fresh member named permission-review. This test explicitly switches only its exact marker tool call to native Ask approval and a read-only DSH file policy at admission; other delegated calls keep their native policy. Tell it to call the DSH MCP bash tool exactly once with command ${JSON.stringify(command)}, description "Write the isolated approval marker", sandbox_permissions "danger-full-access", justification "Allow the single temporary workspace marker ${token}", and no workdir or background execution. This is a one-shot native sandbox escalation: wait for the human approval before execution. Do not use the Agent's private shell, another tool, an editing API, or a command without these escalation arguments. The command writes only the unique temporary workspace file ${fileName}. After successful execution send the lead ${token} using DSH send_message, then finish. Do not execute the command yourself or create any other members. End your response after creating the member so the human can handle its approval.`
     await writeComposerDraft(page, page.locator('[data-composer-input]').first(), prompt)
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
     const card = page.locator('[data-acp-team-approvals]')
@@ -104,9 +100,7 @@ export async function verifyLiveTeamApproval({
     expect(policy.violations).toEqual([])
     expect(phase, 'The member must reach a real native approval, not just complete its turn').toBe('pending')
     const member = required(policy.member)
-    expect(host.ctx.agentTeams.listMembers(lead).find((entry) => entry.name === 'permission-review')?.id).toBe(
-      member.id,
-    )
+    expect((await treeMembers(host.ctx, lead)).find((entry) => entry.name === 'permission-review')?.id).toBe(member.id)
     expect(member.session.header.cwd).toBe(lead.session.header.cwd)
     evidence.memberId = member.id
     const asked = events.filter((event) => event.type === 'approval/asked')
@@ -161,10 +155,10 @@ export async function verifyLiveTeamApproval({
       expect(commandResults).toEqual([{ sessionId: member.id, callId: policy.admittedCallId, isError: false }]),
     )
     await vi.waitFor(
-      () =>
-        expect(
-          host.ctx.agentTeams.listMembers(lead).every((entry) => ['idle', 'inactive'].includes(entry.status)),
-        ).toBe(true),
+      async () =>
+        expect((await treeMembers(host.ctx, lead)).every((entry) => ['idle', 'inactive'].includes(entry.status))).toBe(
+          true,
+        ),
       { timeout: 120_000, interval: 500 },
     )
     expect(policy.violations).toEqual([])
@@ -190,10 +184,8 @@ export async function verifyLiveTeamApproval({
       sandboxAtCommandResult,
       standingSandboxAfter: host.ctx.sandboxPolicy.resolve({ session: member.session }).mode,
     })
-    await page
-      .locator('[data-team-action]')
-      .getByRole('button', { name: /Agent team/ })
-      .click()
+    const panel = await openNativeMembers(page)
+    await panel.getByRole('treeitem').filter({ hasText: 'permission-review' }).first().waitFor()
     completed = true
   } finally {
     try {

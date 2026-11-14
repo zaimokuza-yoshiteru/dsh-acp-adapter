@@ -32,7 +32,7 @@ describe('published native subagent tools survive the ACP bridge', () => {
     }
     const assembly = await ctx.systemPrompt.assemble({ scope: agent as never })
     const nativeNames = assembly.tools.map((t) => t.name).sort()
-    const expected = ['interrupt_agent', 'list_agents', 'probe_read', 'send_message']
+    const expected = ['interrupt_agent', 'list_agents', 'probe_read', 'send_message', 'wait_agent']
     expect(nativeNames).toEqual(expected)
     const bridgeCtx = {
       tools: ctx.tools,
@@ -46,7 +46,7 @@ describe('published native subagent tools survive the ACP bridge', () => {
             }
           : name === 'agentTeams'
             ? scenario.startsWith('Teams present')
-              ? { tryMembership: () => undefined }
+              ? { isEnabled: () => true }
               : undefined
             : ctx.get(name as never),
     }

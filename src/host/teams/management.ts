@@ -1,11 +1,14 @@
 import type { Context } from '@deepseek-ai/cordis'
-import type {} from '@deepseek-ai/dsh-experimental-agent-team'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { SubagentDescendantListEntry } from '@deepseek-ai/dsh-subagent'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type { AcpRemoteServiceDeps } from '../../remote/service.ts'
 import { createMemberModels, type MemberModelDependencies } from './member-models.ts'
+import { captureSubagentTree, localSubagentIdentity, subagentPath } from '../subagent/tree.ts'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 
-/** Read member facts from native Team ownership and each member’s own session. */
+/** ACP controls supplement the native tree without owning a separate Team roster. */
 export function createTeamManagement(
   ctx: Context,
   owns: (provider: string) => boolean,
@@ -13,101 +16,111 @@ export function createTeamManagement(
   modelDependencies?: MemberModelDependencies,
 ): NonNullable<AcpRemoteServiceDeps['teamManagement']> {
   const models = modelDependencies === undefined ? undefined : createMemberModels(ctx, modelDependencies)
-  const resolve = (id: string) => {
-    const teams = ctx.get('agentTeams')
-    const agent = ctx.get('agents', false)?.get(id as never)
-    if (teams === undefined || agent === undefined || teams.tryMembership(agent)?.role !== 'lead')
-      throw new Error('ACP_TEAM_LEAD_UNAVAILABLE')
-    const provider = agent.model.current()?.provider
-    if (provider === undefined || !owns(provider)) throw new Error('ACP_TEAM_LEAD_REQUIRED')
-    return { teams, agent, provider }
-  }
   const resolveLead = async (id: string) => {
-    if (ctx.get('agentTeams') !== undefined && ctx.get('agents', false)?.get(id as never) === undefined) {
+    let agent = ctx.get('agents', false)?.get(id as SessionId)
+    if (agent === undefined) {
       const provider = await readBindingProvider(id)
       if (provider === undefined || !owns(provider)) throw new Error('ACP_TEAM_LEAD_REQUIRED')
-      // Historical reads need not activate the Lead. Reuse the host's deduplicated
-      // activation without submitting a prompt or starting the ACP runtime.
-      const result = await ctx.get('sessionController')?.resolveAgent(id as never)
+      const result = await ctx.get('sessionController', false)?.resolveAgent(id as SessionId)
       if (result !== undefined && 'error' in result) throw result.error
+      agent = ctx.get('agents', false)?.get(id as SessionId)
     }
-    return resolve(id)
+    const tree = agent === undefined ? undefined : captureSubagentTree(ctx, agent)
+    if (agent === undefined || tree?.root !== agent) throw new Error('ACP_TEAM_LEAD_UNAVAILABLE')
+    return tree
+  }
+  const localMember = (root: Agent, row: SubagentDescendantListEntry) => {
+    if (row.kind !== 'child' || row.mode !== 'continuable') return undefined
+    const child = ctx.get('agents', false)?.get(row.id)
+    if (
+      child !== undefined &&
+      (localSubagentIdentity(ctx, child) === undefined || captureSubagentTree(ctx, child)?.root !== root)
+    )
+      return undefined
+    return { row, child }
   }
   const resolveMember = async (leadId: string, memberId: string) => {
-    const { teams, agent, provider } = await resolveLead(leadId)
-    const member = teams.listMembers(agent).find((row) => row.id === memberId && row.role === 'teammate')
-    if (member === undefined || (await readBindingProvider(memberId)) !== provider)
-      throw new Error('ACP_TEAM_MEMBER_REQUIRED')
-    return { member, provider }
+    const tree = await resolveLead(leadId)
+    const row = (await tree.descendants()).find((entry) => entry.id === memberId)
+    const member = row === undefined ? undefined : localMember(tree.root, row)
+    if (member === undefined) throw new Error('ACP_TEAM_MEMBER_REQUIRED')
+    const provider = await readBindingProvider(memberId)
+    const current = () => {
+      const route = member.child?.model.current()?.provider ?? member.child?.session.requestHeader()?.config.provider
+      return (
+        tree.current() &&
+        ctx.get('agents', false)?.get(member.row.id) === member.child &&
+        (route === undefined || route === provider)
+      )
+    }
+    if (!current() || provider === undefined || !owns(provider)) throw new Error('ACP_TEAM_MEMBER_REQUIRED')
+    return { member, provider, current }
   }
   const memberModels = async (lead: string, id: string) => {
     if (models === undefined) throw new Error('ACP_TEAM_MODELS_UNAVAILABLE')
-    const { provider } = await resolveMember(lead, id)
-    const catalog = await models.catalog(provider)
-    const facts = await models.facts(id, provider)
-    const { member } = await resolveMember(lead, id)
-    // The committed route remains a valid undo target even after discovery no
-    // longer advertises it. Preserve that exit from an older pending selection.
+    const owner = await resolveMember(lead, id)
+    const catalog = await models.catalog(owner.provider)
+    const facts = await models.facts(id, owner.provider)
+    if (!owner.current()) throw new Error('ACP_TEAM_MEMBER_REQUIRED')
     const choices =
       facts.unavailableReason === 'model-switch' &&
       facts.currentModel !== null &&
       !catalog.some((model) => model.id === facts.currentModel)
         ? [...catalog, { id: facts.currentModel, name: facts.currentModel }]
         : catalog
-    return { ...facts, models: choices, writable: facts.writable && member.status === 'inactive' }
+    return { ...facts, models: choices, writable: facts.writable && owner.member.child?.status !== 'running' }
   }
   return {
     async members(id) {
-      const { teams, agent } = await resolveLead(id)
-      return await Promise.all(
-        teams
-          .listMembers(agent)
-          .filter((row) => row.role === 'teammate')
-          .map(async (row) => {
-            const child = ctx.get('agents', false)?.get(row.id)
-            const session = child?.session ?? ctx.get('sessions')?.get(row.id)
-            const provider =
-              child?.model.current()?.provider ??
-              session?.requestHeader()?.config.provider ??
-              child?.options.provider ??
-              (await readBindingProvider(row.id))
-            const facts = provider === undefined ? undefined : await models?.facts(row.id, provider)
-            return {
-              profileId: provider !== undefined && owns(provider) ? provider.slice(4) : null,
-              sessionId: row.id,
-              name: row.name,
-              status: row.status,
-              description: row.description ?? null,
-              model: facts?.currentModel ?? session?.requestHeader()?.config.model ?? child?.options.model ?? null,
-              pendingModel: facts?.pendingModel ?? null,
-              modelWritable: facts?.writable === true && row.status === 'inactive',
-              modelUnavailableReason: facts?.unavailableReason ?? null,
-            }
-          }),
-      )
+      const tree = await resolveLead(id)
+      const rows = await tree.descendants()
+      const result = []
+      for (const row of rows) {
+        const member = localMember(tree.root, row)
+        const path = subagentPath(tree.root.id, row.id, rows)
+        if (member === undefined || path === undefined) continue
+        const { child } = member
+        const session = child?.session ?? ctx.get('sessions', false)?.get(row.id)
+        const provider =
+          child?.model.current()?.provider ??
+          session?.requestHeader()?.config.provider ??
+          child?.options.provider ??
+          (await readBindingProvider(row.id))
+        if (provider === undefined || !owns(provider)) continue
+        const facts = await models?.facts(row.id, provider)
+        if (!tree.current() || ctx.get('agents', false)?.get(row.id) !== child)
+          throw new Error('ACP_TEAM_LEAD_UNAVAILABLE')
+        result.push({
+          resourcePath: [tree.root.id, ...path.map((entry) => entry.sessionId)],
+          profileId: provider.slice(4),
+          sessionId: row.id,
+          name: row.path ?? row.id,
+          status: child?.status === 'running' ? ('running' as const) : ('inactive' as const),
+          description: member.row.label ?? null,
+          model: facts?.currentModel ?? session?.requestHeader()?.config.model ?? child?.options.model ?? null,
+          pendingModel: facts?.pendingModel ?? null,
+          modelWritable: facts?.writable === true && child?.status !== 'running',
+          modelUnavailableReason: facts?.unavailableReason ?? null,
+        })
+      }
+      if (!tree.current()) throw new Error('ACP_TEAM_LEAD_UNAVAILABLE')
+      return result
     },
     models: memberModels,
     async selectModel(lead, id, model) {
       const view = await memberModels(lead, id)
       if (!view.writable || !view.models.some((item) => item.id === model))
         throw new Error('ACP_TEAM_MODEL_READ_ONLY_OR_UNAVAILABLE')
-      const { provider, member } = await resolveMember(lead, id)
-      if (member.status !== 'inactive') throw new Error('ACP_TEAM_MEMBER_BUSY')
+      const owner = await resolveMember(lead, id)
+      if (owner.member.child?.status === 'running') throw new Error('ACP_TEAM_MEMBER_BUSY')
       if (view.unavailableReason === 'model-switch' && model !== view.currentModel)
-        throw new LlmError(
-          'This ACP member cannot change models after its first request. Keep its current model or create an independent session.',
-          'ACP_MODEL_SWITCH_UNAVAILABLE',
-        )
-      await models!.save(id, provider, model, () => {
-        const owner = resolve(lead)
-        const current = owner.teams.listMembers(owner.agent).find((row) => row.id === id && row.role === 'teammate')
-        if (
-          owner.provider !== provider ||
-          current === undefined ||
-          current.status !== 'inactive' ||
-          ctx.get('agents', false)?.get(id as never)?.status === 'running'
-        )
-          throw new Error('ACP_TEAM_MEMBER_BUSY')
+        throw LlmError.fromFailure({
+          message:
+            'This ACP member cannot change models after its first request. Keep its current model or create an independent session.',
+          code: 'ACP_MODEL_SWITCH_UNAVAILABLE',
+        })
+      await models!.save(id, owner.provider, model, () => {
+        if (!owner.current() || owner.member.child?.status === 'running') throw new Error('ACP_TEAM_MEMBER_BUSY')
       })
       return await memberModels(lead, id)
     },

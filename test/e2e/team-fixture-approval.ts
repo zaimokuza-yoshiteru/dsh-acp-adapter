@@ -1,3 +1,4 @@
+import { treeRoots, treeMember, isDirectChild, treeMembers } from './subagent-tree.ts'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { expect } from 'vitest'
 import { summarizeRawInputForAudit } from '../../src/domain/policy/events.ts'
@@ -40,25 +41,23 @@ export function installTeamFixtureApprovals(
       )
         return next()
       let owner: string
-      if (host.ctx.agents.roots().includes(agent)) {
+      if (treeRoots(host.ctx).includes(agent)) {
         if (root === undefined) {
           if (options.initialPrompt === undefined) return next()
-          const matches = host.ctx.agents
-            .roots()
-            .filter(
-              (candidate) =>
-                candidate.options.provider === 'acp-devin' &&
-                candidate.session
-                  .snapshotEvents()
-                  .some(
-                    (event) =>
-                      event.type === 'user/message' &&
-                      event.data.source.kind === 'user' &&
-                      event.data.content.length === 1 &&
-                      event.data.content[0]?.type === 'text' &&
-                      event.data.content[0].text === options.initialPrompt,
-                  ),
-            )
+          const matches = treeRoots(host.ctx).filter(
+            (candidate) =>
+              candidate.options.provider === 'acp-devin' &&
+              candidate.session
+                .snapshotEvents()
+                .some(
+                  (event) =>
+                    event.type === 'user/message' &&
+                    event.data.source.kind === 'user' &&
+                    event.data.content.length === 1 &&
+                    event.data.content[0]?.type === 'text' &&
+                    event.data.content[0].text === options.initialPrompt,
+                ),
+          )
           if (matches.length !== 1 || matches[0] !== agent) return next()
           root = agent
         }
@@ -66,14 +65,14 @@ export function installTeamFixtureApprovals(
         owner = 'lead'
       } else {
         if (root === undefined || host.ctx.agents.get(root.id) !== root) return next()
-        const membership = host.ctx.agentTeams.tryMembership(agent)
+        const membership = treeMember(host.ctx, agent)
         if (
           membership?.role !== 'teammate' ||
           membership.root !== root ||
-          !host.ctx.agents.isOwnedBy(agent.id, root) ||
-          !host.ctx.agentTeams
-            .listMembers(root)
-            .some((member) => member.id === agent.id && member.name === membership.name)
+          !isDirectChild(host.ctx, agent.id, root) ||
+          !(await treeMembers(host.ctx, root)).some(
+            (member) => member.id === agent.id && member.name === membership.name,
+          )
         )
           return next()
         owner = membership.name
@@ -133,7 +132,7 @@ export function teamMemberSetupSteps(owner: string): TeamFixtureApprovalStep[] {
     {
       owner,
       callId: 'team-2',
-      tool: 'spawn_teammate',
+      tool: 'subagent',
       args: { name: 'nested', description: 'Denied nested spawn', prompt: 'do nothing' },
     },
   ]
@@ -154,7 +153,6 @@ export function teamStartSteps(host: AdapterWorld): TeamFixtureApprovalStep[] {
   }
   const calls: Omit<TeamFixtureApprovalStep, 'owner' | 'callId'>[] = [
     { tool: 'list_agents', args: {} },
-    { tool: 'wait_agent', args: { timeout_ms: 10_000 } },
     { tool: 'team_task_create', args: { subject: 'Compute fixture', description: 'Return 2' } },
     { tool: 'team_task_get', args: (agent) => ({ task_id: originalTask(agent).id }) },
     {
@@ -190,20 +188,13 @@ export function teamStartSteps(host: AdapterWorld): TeamFixtureApprovalStep[] {
         action: 'claim',
       }),
     },
-    { tool: 'send_message', args: { target: 'missing-member', message: 'must not deliver' } },
-    ...[{ context: 'fork' }, { model: 'mock-model-b' }, { agent: 'other' }, { provider: 'acp-other' }].map(
-      (override) => ({
-        tool: 'spawn_teammate',
-        args: { name: 'invalid', description: 'Must not create', prompt: 'do nothing', ...override },
-      }),
-    ),
+    { tool: 'send_message', args: { agent: 'missing-member', message: 'must not deliver' } },
     {
-      tool: 'spawn_teammate',
+      tool: 'subagent',
       args: {
         name: 'calculator',
         description: 'Compute fixture',
         prompt: 'E2E_TEAM_MEMBER calculate 1+1',
-        context: 'fresh',
       },
     },
   ]

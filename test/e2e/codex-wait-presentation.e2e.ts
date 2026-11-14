@@ -1,3 +1,4 @@
+import { treeRoots } from './subagent-tree.ts'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from 'playwright'
@@ -91,17 +92,18 @@ it('proves deferred Codex wait through the native MCP bridge and keeps untrusted
     await vi.waitFor(() => expect(existsSync(join(activeHost.workspaceCwd, 'control-parent-ready'))).toBe(true), {
       timeout: 30_000,
     })
-    const lead = required(host.ctx.agents.roots().find((agent) => agent.options.provider === 'acp-codex'))
+    const lead = required(treeRoots(host.ctx).find((agent) => agent.options.provider === 'acp-codex'))
     evidence.leadId = lead.id
-    const child = await host.ctx.agentTeams.spawnTeammate(lead, {
+    const child = await host.ctx.subagents.startActivation({
+      parent: lead,
+      delivery: 'parent',
       name: 'courier',
-      description: 'Send one real native relay',
-      context: 'fresh',
+      label: 'Send one real native relay',
       provider: 'spawn',
       prompt: [{ type: 'text', text: 'E2E_CONTROL_WAIT_CHILD' }],
       signal: context.signal,
     })
-    evidence.childId = child.member.id
+    evidence.childId = child.childId
     await vi.waitFor(
       () =>
         expect(
@@ -109,7 +111,7 @@ it('proves deferred Codex wait through the native MCP bridge and keeps untrusted
             (message) =>
               message.source.kind === 'agent-message' &&
               'senderSessionId' in message.source &&
-              message.source.senderSessionId === child.member.id &&
+              message.source.senderSessionId === child.childId &&
               JSON.stringify(message.content).includes('E2E_CONTROL_WAIT_REPLY'),
           ),
         ).toBe(true),
@@ -181,7 +183,7 @@ it('proves deferred Codex wait through the native MCP bridge and keeps untrusted
     await screenshot('running-wide-light')
     writeFileSync(join(host.workspaceCwd, 'control-finish-turn'), 'go')
     await page.getByText('E2E_CONTROL_WAIT_RECEIVED', { exact: true }).waitFor()
-    await waitForTeamSettlement(events, { parentId: lead.id, childId: child.member.id, after: 0 })
+    await waitForTeamSettlement(events, { parentId: lead.id, childId: child.childId, after: 0 })
     await lead.whenIdle()
     expect(await control().getAttribute('aria-expanded')).toBe('true')
     expect(

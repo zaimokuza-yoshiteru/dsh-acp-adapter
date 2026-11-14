@@ -7,7 +7,7 @@ import type { PeerScope } from '@deepseek-ai/dsh-typert-protocol'
 import type { RemoteAccessAction, RemoteAccessBinding } from '@deepseek-ai/dsh-api-remote-access'
 import type {} from '@deepseek-ai/dsh-api-gateway'
 import { AcpRemoteService } from '../../../src/remote/service.ts'
-import type { AcpTeamMemberView } from '../../../src/contract/remote.ts'
+import type { AcpApprovalChildView, AcpTeamMemberView } from '../../../src/contract/remote.ts'
 import { AcpNativeForkError } from '../../../src/domain/session/native-fork-error.ts'
 import { ACP_CONFIG_IDENTIFIER_MAX } from '../../../src/contract/config-options.ts'
 import { acpDeclaredModelRoute } from '../../../src/contract/model-selection.ts'
@@ -62,7 +62,7 @@ async function fixture() {
   let held: readonly RemoteAccessBinding[] = []
   const bindings = vi.fn(() => held)
   ctx.remoteAccess.registerPolicy('acp-resource-test', { bindings })
-  const members = vi.fn(async () => [member])
+  const members = vi.fn(async () => [{ ...member, resourcePath: ['lead', member.sessionId] }])
   const models = vi.fn(async () => ({ currentModel: 'test-model', pendingModel: null, models: [], writable: true }))
   const selectModel = vi.fn(async () => ({
     currentModel: 'test-model',
@@ -73,6 +73,25 @@ async function fixture() {
   const backend = vi.fn(async () => 'acp-test')
   const nativeFork = vi.fn(async () => {})
   const nativeForkScope = vi.fn(() => '11111111-1111-4111-8111-111111111111')
+  const approvalChildren = vi.fn(async (): Promise<readonly AcpApprovalChildView[]> => [
+    {
+      sessionId: 'member',
+      parentSessionId: 'lead',
+      name: 'worker',
+      mode: 'continuable',
+      path: [{ sessionId: 'member', name: 'worker' }],
+    },
+    {
+      sessionId: 'nested',
+      parentSessionId: 'middle',
+      name: 'nested worker',
+      mode: 'continuable',
+      path: [
+        { sessionId: 'middle', name: 'middle' },
+        { sessionId: 'nested', name: 'nested worker' },
+      ],
+    },
+  ])
   new AcpRemoteService(ctx, {
     registry: { agents: () => new Map(), probeCacheFor: () => undefined },
     nativeFork,
@@ -81,25 +100,7 @@ async function fixture() {
     queryVersion: async () => null,
     ownedSessionReadGate: async () => true,
     teamManagement: { members, models, selectModel },
-    approvalChildren: () => [
-      {
-        sessionId: 'member',
-        parentSessionId: 'lead',
-        name: 'worker',
-        mode: 'continuable',
-        path: [{ sessionId: 'member', name: 'worker' }],
-      },
-      {
-        sessionId: 'nested',
-        parentSessionId: 'middle',
-        name: 'nested worker',
-        mode: 'continuable',
-        path: [
-          { sessionId: 'middle', name: 'middle' },
-          { sessionId: 'nested', name: 'nested worker' },
-        ],
-      },
-    ],
+    approvalChildren,
     projectedSubagentIds: async () => ['lead', 'member', 'other'],
     listLiveSessions: () =>
       ['lead', 'member', 'other'].map((sessionId) => ({
@@ -137,6 +138,7 @@ async function fixture() {
     members,
     models,
     selectModel,
+    approvalChildren,
     backend,
     bindings,
     nativeFork,
@@ -144,7 +146,7 @@ async function fixture() {
   }
 }
 
-describe('ACP resources through the published RC1 Gateway and Peer', () => {
+describe('ACP resources through the published Gateway and Peer', () => {
   it('accepts a framed maximum-length member model while rejecting oversized Agent values', async () => {
     const h = await fixture()
     h.hold(['lead', 'member'])
@@ -221,6 +223,17 @@ describe('ACP resources through the published RC1 Gateway and Peer', () => {
     })
     await expect(h.call(h.owner, 'approvalChildren', { parent: 'native-parent' })).resolves.toHaveLength(2)
   })
+  it('does not return child approvals when root access is revoked during directory discovery', async () => {
+    const h = await fixture()
+    const rows = await h.approvalChildren()
+    h.hold(['lead', 'member', 'middle', 'nested'])
+    h.approvalChildren.mockImplementationOnce(async () => {
+      h.hold(['member', 'middle', 'nested'])
+      return rows
+    })
+    await expect(h.call(h.restricted, 'approvalChildren', { parent: 'lead' })).resolves.toEqual([])
+  })
+
   it('keeps owner defaults and complete discovery without consulting non-owner policies', async () => {
     const h = await fixture()
     await expect(h.call(h.owner, 'teamMembers', { lead: 'lead' })).resolves.toEqual([member])
@@ -234,11 +247,43 @@ describe('ACP resources through the published RC1 Gateway and Peer', () => {
   it('authorizes a lead resource without requiring global access and refuses another lead before reading', async () => {
     const h = await fixture()
     h.hold(['lead'])
+    await expect(h.call(h.restricted, 'teamMembers', { lead: 'lead' })).resolves.toEqual([])
+    h.hold(['lead', 'member'])
     await expect(h.call(h.restricted, 'teamMembers', { lead: 'lead' })).resolves.toEqual([member])
     await expect(h.call(h.restricted, 'teamMembers', { lead: 'other' })).rejects.toMatchObject({
       code: 'remote-access/denied',
     })
-    expect(h.members).toHaveBeenCalledTimes(1)
+    expect(h.members).toHaveBeenCalledTimes(2)
+  })
+
+  it('requires each creation ancestor for member discovery and direct model controls', async () => {
+    const h = await fixture()
+    const nested = { ...member, sessionId: 'nested', name: 'worker/checker' }
+    const internal = { ...nested, resourcePath: ['lead', 'middle', 'nested'] }
+    h.members.mockResolvedValue([internal])
+    h.hold(['lead', 'nested'])
+    await expect(h.call(h.restricted, 'teamMembers', { lead: 'lead' })).resolves.toEqual([])
+    for (const method of ['teamMemberModels', 'setTeamMemberModel'])
+      await expect(
+        h.call(h.restricted, method, {
+          lead: 'lead',
+          sessionId: 'nested',
+          ...(method === 'setTeamMemberModel' ? { model: 'test-model' } : {}),
+        }),
+      ).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
+    expect(h.models).not.toHaveBeenCalled()
+    expect(h.selectModel).not.toHaveBeenCalled()
+    h.hold(['lead', 'middle', 'nested'])
+    await expect(h.call(h.restricted, 'teamMembers', { lead: 'lead' })).resolves.toEqual([nested])
+    await expect(
+      h.call(h.restricted, 'teamMemberModels', { lead: 'lead', sessionId: 'nested' }),
+    ).resolves.toMatchObject({ currentModel: 'test-model' })
+    // Recheck permissions after discovery yields, including the root resource.
+    h.members.mockImplementationOnce(async () => {
+      h.hold(['middle', 'nested'])
+      return [internal]
+    })
+    await expect(h.call(h.restricted, 'teamMembers', { lead: 'lead' })).resolves.toEqual([])
   })
 
   it.each(['teamMemberModels', 'setTeamMemberModel'])(

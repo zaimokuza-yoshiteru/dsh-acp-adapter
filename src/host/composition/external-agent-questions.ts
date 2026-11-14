@@ -1,9 +1,10 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-subagent'
-import type {} from '@deepseek-ai/dsh-experimental-agent-team'
 import type {} from '../../contract/external-subagent.ts'
 import type { AcpNativeUserQuestionService, AcpPermissionQuestionService } from '../../domain/policy/elicitation.ts'
+
+import { captureSubagentTree, localSubagentIdentity, subagentPath } from '../subagent/tree.ts'
 
 type QuestionRequest = Parameters<AcpNativeUserQuestionService['ask']>[0]
 
@@ -46,44 +47,27 @@ export function externalAgentPermissionQuestions(
       if (agents === undefined || child === undefined || request.agent !== child || agents.get(child.id) !== child)
         throw new ExternalPermissionQuestionError('CALLER_NOT_LIVE')
       if (request.signal?.aborted) throw new ExternalPermissionQuestionError('ASK_ABORTED')
-      if (agents.roots().includes(child)) return native.ask(request)
-
-      const projections = ctx.get('sessionProjections', false)
-      if (projections === undefined) throw new ExternalPermissionQuestionError('DELEGATED_CALLER')
-      const zh = locale?.toLowerCase().startsWith('zh') === true
-      const path: { agent: Agent; name: string }[] = []
-      const seen = new Set<Agent>()
-      let root = child
-      while (!agents.roots().includes(root)) {
-        if (seen.has(root) || agents.get(root.id) !== root || root.session.header.origin !== 'subagent')
-          throw new ExternalPermissionQuestionError('DELEGATED_CALLER')
-        seen.add(root)
-        const view = projections.snapshot(root.session, ['subagent', 'acpExecution']).values
-        const identity = view.subagent
-        if (identity == null || !root.session.isOwnSeq(identity.seq) || view.acpExecution?.externalSubagent === true)
-          throw new ExternalPermissionQuestionError('DELEGATED_CALLER')
-        const membership = ctx.get('agentTeams', false)?.tryMembership(root)
-        path.unshift({
-          agent: root,
-          name:
-            sourceText(membership?.role === 'teammate' ? membership.name : (identity.label ?? '')) ||
-            (zh ? '子 Agent' : 'Subagent'),
-        })
-        // The runtime owner is authoritative. Persisted parentSession is not a
-        // permission to route a restored independent fork to an old parent.
-        const owners = agents.list().filter((candidate) => agents.isOwnedBy(root.id, candidate))
-        if (owners.length !== 1) throw new ExternalPermissionQuestionError('DELEGATED_CALLER')
-        root = owners[0]!
+      const tree = captureSubagentTree(ctx, child)
+      if (tree === undefined) {
+        if (ctx.get('subagents', false) === undefined && child.session.header.origin !== 'subagent')
+          return native.ask(request)
+        throw new ExternalPermissionQuestionError('DELEGATED_CALLER')
       }
-      const chain = [root, ...path.map((entry) => entry.agent)]
+      if (tree.root === child) return native.ask(request)
+      if (localSubagentIdentity(ctx, child) === undefined) throw new ExternalPermissionQuestionError('DELEGATED_CALLER')
+      const root = tree.root
+      const rows = await tree.descendants(request.signal)
+      const path = subagentPath(root.id, child.id, rows)
+      if (path === undefined) throw new ExternalPermissionQuestionError('DELEGATED_CALLER')
+      const zh = locale?.toLowerCase().startsWith('zh') === true
+      // Creators may be dormant. Only the native runtime root and this caller
+      // own the live question; catalog ancestors supply display/resource facts.
+      const chain = [root, child]
       const current = () =>
         getAgent() === child &&
         child.status === 'running' &&
-        agents.roots().includes(root) &&
-        chain.every(
-          (agent, index) =>
-            agents.get(agent.id) === agent && (index === 0 || agents.isOwnedBy(agent.id, chain[index - 1]!)),
-        )
+        tree.current() &&
+        localSubagentIdentity(ctx, child) !== undefined
       if (!current()) throw new ExternalPermissionQuestionError('ASK_ABORTED')
 
       const lifetime = new AbortController()
@@ -119,13 +103,15 @@ export function externalAgentPermissionQuestions(
         if (signal.aborted || !current()) throw new ExternalPermissionQuestionError('ASK_ABORTED')
 
         const liveIds = agents.list().map((agent) => agent.id)
-        const names = path.map((entry) => `${entry.name} · ${shortSessionId(entry.agent.id, liveIds)}`).join(' → ')
-        const source = path.map((entry) => `${entry.name} (${entry.agent.id})`).join(' → ')
+        const names = path
+          .map((entry) => `${sourceText(entry.name)} · ${shortSessionId(entry.sessionId, liveIds)}`)
+          .join(' → ')
+        const source = path.map((entry) => `${sourceText(entry.name)} (${entry.sessionId})`).join(' → ')
         let delimiterLength = 1
         for (const match of source.matchAll(/`+/g)) delimiterLength = Math.max(delimiterLength, match[0].length + 1)
         const delimiter = '`'.repeat(delimiterLength)
         const detail = `${zh ? '来源子会话' : 'Source child session'}: ${delimiter} ${source} ${delimiter}`
-        onPresentation?.({ rootSessionId: root.id, path: path.map((entry) => entry.agent.id) })
+        onPresentation?.({ rootSessionId: root.id, path: path.map((entry) => entry.sessionId) })
         const question = native.ask({
           agent: root,
           questions: request.questions.map((item) => ({

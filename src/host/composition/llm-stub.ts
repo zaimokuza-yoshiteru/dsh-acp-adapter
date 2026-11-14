@@ -288,7 +288,7 @@ function acpProbeFailure(
     message: string,
   ): { kind: AcpErrorKind; error: LlmError; phase: AcpProbePhase | undefined } => ({
     kind,
-    error: new LlmError(message, 'ACP_PROBE_FAILED', { cause: error }),
+    error: LlmError.fromFailure({ message, code: 'ACP_PROBE_FAILED' }, { cause: error }),
     phase,
   })
   if (error instanceof AcpClientError) {
@@ -378,13 +378,13 @@ export class AcpStubAdapter extends LlmAdapter {
   override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     const config = this.options.agents().get(provider)
     if (config === undefined) {
-      throw new LlmError(
-        `ACP provider "${provider}" is no longer configured; refresh the model catalog`,
-        'ACP_UNKNOWN_PROVIDER',
-      )
+      throw LlmError.fromFailure({
+        message: `ACP provider "${provider}" is no longer configured; refresh the model catalog`,
+        code: 'ACP_UNKNOWN_PROVIDER',
+      })
     }
     const retired = retiredAgentReason(provider.replace(/^acp-/, ''), config)
-    if (retired !== undefined) throw new LlmError(retired, 'ACP_AGENT_RETIRED')
+    if (retired !== undefined) throw LlmError.fromFailure({ message: retired, code: 'ACP_AGENT_RETIRED' })
     const key = acpProbeConfigKey(config)
     const cached = this.cache.get(provider)
     // 新鲜度集中判定（agent-config.ts acpProbeFresh）：key 相等且未过期
@@ -413,10 +413,11 @@ export class AcpStubAdapter extends LlmAdapter {
    * normalizes the throw into a terminal stream failure).
    */
   override stream(_options: GenerateOptions): AsyncIterable<StreamChunk> {
-    throw new LlmError(
-      'An ACP provider does not execute through the native model-call path. Select the ACP model for a new session instead',
-      'ACP_STUB_ROUTE',
-    )
+    throw LlmError.fromFailure({
+      message:
+        'An ACP provider does not execute through the native model-call path. Select the ACP model for a new session instead',
+      code: 'ACP_STUB_ROUTE',
+    })
   }
 
   /** Drop probe outcomes and retained catalogs so an explicit re-check starts fresh. */

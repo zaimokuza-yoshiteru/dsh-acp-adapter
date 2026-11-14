@@ -15,6 +15,7 @@ import type { DispatchLedgerStore, DispatchRecord } from '../../../src/runtime/s
 import { profileLaunchIdentityHash, acpLaunchFingerprint } from '../../../src/domain/session/launch-fingerprint.ts'
 import { acpCanonicalHash16 } from '../../../src/persistence/sidecar.ts'
 import { AcpClientError } from '../../../src/protocol/v1/errors.ts'
+import { AcpHostContinuity } from '../../../src/host/composition/host-continuity.ts'
 
 const profile = (): AcpAgentConfig => ({ name: 'Test', command: 'agent', args: ['acp'], env: {} })
 const user = (text: string) => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
@@ -225,11 +226,12 @@ describe('M3a binding-first ACP provider', () => {
   it('fails closed before any ACP runtime work when the sidecar is absent', async () => {
     const records = { starts: 0, prompts: 0, restores: 0 }
     const message = user('hello')
+    const live = session(message)
     const adapter = new AcpProfileAdapter(
       'test',
       profile,
       seam(),
-      () => session(message),
+      () => live,
       new Ledger(),
       undefined,
       runtimeFactory(records),
@@ -657,11 +659,12 @@ describe('M3a binding-first ACP provider', () => {
     try {
       const records = { starts: 0, prompts: 0, restores: 0 }
       const message = user('hello')
+      const live = session(message)
       const adapter = new AcpProfileAdapter(
         'test',
         profile,
         seam(),
-        () => session(message),
+        () => live,
         ledgerFor(sidecar),
         undefined,
         () => ({
@@ -860,13 +863,14 @@ describe('M3a binding-first ACP provider', () => {
     const { sidecar, root } = sidecarAt()
     try {
       const message = user('hello')
+      const live = session(message)
       let mode: 'fail' | 'restore' = 'fail'
       let prompts = 0
       const adapter = new AcpProfileAdapter(
         'test',
         profile,
         seam(),
-        () => session(message),
+        () => live,
         ledgerFor(sidecar),
         undefined,
         () => ({
@@ -911,13 +915,14 @@ describe('M3a binding-first ACP provider', () => {
     const { sidecar, root } = sidecarAt()
     try {
       const message = user('hello')
+      const live = session(message)
       let current = profile()
       const records = { starts: 0, prompts: 0, restores: 0 }
       const adapter = new AcpProfileAdapter(
         'test',
         () => current,
         seam(),
-        () => session(message),
+        () => live,
         ledgerFor(sidecar),
         undefined,
         runtimeFactory(records),
@@ -942,11 +947,12 @@ describe('M3a binding-first ACP provider', () => {
     const { sidecar, root } = sidecarAt()
     try {
       const message = user('hello')
+      const live = session(message)
       const first = new AcpProfileAdapter(
         'test',
         profile,
         seam(),
-        () => session(message),
+        () => live,
         ledgerFor(sidecar),
         undefined,
         runtimeFactory({ starts: 0, prompts: 0, restores: 0 }),
@@ -1293,6 +1299,261 @@ describe('runtime failure and host disposal ownership', () => {
   )
 })
 
+describe('recovery operation ownership', () => {
+  async function setup() {
+    const { sidecar, root } = sidecarAt()
+    const message = user('original')
+    const live = withSessionFacts({ ...session(message), id: 'recovery-owner' })
+    let current = live
+    const records = { starts: 0, prompts: 0, restores: 0 }
+    const initial = new AcpProfileAdapter(
+      'test',
+      profile,
+      seam(),
+      () => live,
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory(records),
+      sidecar,
+    )
+    await drain(initial.stream(request(live.id, message)))
+    await initial.close()
+    await sidecar.writeRecoveryState({
+      dshSessionId: live.id,
+      kind: 'outcome-unknown',
+      cause: 'load-failed',
+      detail: 'Review the previous operation.',
+      updatedAt: 1,
+    })
+    const continuity = new AcpHostContinuity()
+    const runtime = runtimeFactory(records)({})
+    const factory = vi.fn(() => runtime)
+    const subject = new AcpProfileAdapter(
+      'test',
+      profile,
+      seam(),
+      () => current,
+      ledgerFor(sidecar),
+      undefined,
+      factory,
+      sidecar,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      continuity,
+    )
+    return {
+      sidecar,
+      live,
+      subject,
+      runtime,
+      factory,
+      continuity,
+      replace: () => {
+        current = withSessionFacts({ ...session(message), id: live.id })
+      },
+      async close() {
+        await subject.close()
+        await continuity.close()
+        await sidecar.dispose()
+        fs.rmSync(root, { recursive: true, force: true })
+      },
+    }
+  }
+
+  it.each(['retryOriginal', 'rebindBlank'] as const)(
+    'drains an admitted %s read during profile close without starting a process or changing recovery',
+    async (action) => {
+      const fixture = await setup()
+      const entered = Promise.withResolvers<void>()
+      const resume = Promise.withResolvers<void>()
+      const original = await fixture.sidecar.readLatestBinding(fixture.live.id as never)
+      const order: string[] = []
+      vi.spyOn(fixture.sidecar, 'readLatestBinding').mockImplementationOnce(async () => {
+        entered.resolve()
+        await resume.promise
+        order.push('read-finished')
+        return original
+      })
+      const writes = vi.spyOn(fixture.sidecar, 'writeRecoveryState')
+      try {
+        const recovery = expect(fixture.subject[action](fixture.live.id)).rejects.toMatchObject({
+          code: 'ACP_RECOVERY_REQUIRED',
+        })
+        await entered.promise
+        const closing = fixture.subject.close().then(() => {
+          order.push('close-finished')
+        })
+        // All other cleanup is immediate in this fixture; the controlled read is its remaining dependency.
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        resume.resolve()
+        await recovery
+        await closing
+        expect(order).toEqual(['read-finished', 'close-finished'])
+        expect(fixture.factory).not.toHaveBeenCalled()
+        expect(writes).not.toHaveBeenCalled()
+        await expect(fixture.subject[action](fixture.live.id)).rejects.toMatchObject({ code: 'ACP_RECOVERY_REQUIRED' })
+      } finally {
+        resume.resolve()
+        await fixture.close()
+      }
+    },
+  )
+
+  it.each(['retryOriginal', 'rebindBlank'] as const)(
+    'does not apply %s to a replacement Session after an asynchronous binding read',
+    async (action) => {
+      const fixture = await setup()
+      const entered = Promise.withResolvers<void>()
+      const resume = Promise.withResolvers<void>()
+      const original = await fixture.sidecar.readLatestBinding(fixture.live.id as never)
+      vi.spyOn(fixture.sidecar, 'readLatestBinding').mockImplementationOnce(async () => {
+        entered.resolve()
+        await resume.promise
+        return original
+      })
+      const writes = vi.spyOn(fixture.sidecar, 'writeRecoveryState')
+      try {
+        const recovery = expect(fixture.subject[action](fixture.live.id)).rejects.toMatchObject({
+          code: 'ACP_RECOVERY_REQUIRED',
+        })
+        await entered.promise
+        fixture.replace()
+        resume.resolve()
+        await recovery
+        expect(fixture.factory).not.toHaveBeenCalled()
+        expect(writes).not.toHaveBeenCalled()
+      } finally {
+        resume.resolve()
+        await fixture.close()
+      }
+    },
+  )
+
+  it('retires recovery when the native Agent disposes but retains the same Session', async () => {
+    const fixture = await setup()
+    const entered = Promise.withResolvers<void>()
+    const resume = Promise.withResolvers<void>()
+    const original = await fixture.sidecar.readLatestBinding(fixture.live.id as never)
+    vi.spyOn(fixture.sidecar, 'readLatestBinding').mockImplementationOnce(async () => {
+      entered.resolve()
+      await resume.promise
+      return original
+    })
+    const writes = vi.spyOn(fixture.sidecar, 'writeRecoveryState')
+    try {
+      const recovery = expect(fixture.subject.retryOriginal(fixture.live.id)).rejects.toMatchObject({
+        code: 'ACP_RECOVERY_REQUIRED',
+      })
+      await entered.promise
+      const disposing = fixture.subject.disposeSession(fixture.live)
+      await expect(fixture.subject.retryOriginal(fixture.live.id)).rejects.toMatchObject({
+        code: 'ACP_RECOVERY_REQUIRED',
+      })
+      resume.resolve()
+      await recovery
+      await disposing
+      expect(fixture.factory).not.toHaveBeenCalled()
+      expect(writes).not.toHaveBeenCalled()
+      // The retained Session may later be activated again by its native owner.
+      await fixture.subject.retryOriginal(fixture.live.id)
+      expect(fixture.factory).toHaveBeenCalledOnce()
+    } finally {
+      resume.resolve()
+      await fixture.close()
+    }
+  })
+
+  it('awaits a cancelled restore during profile close without overwriting its durable recovery gate', async () => {
+    const fixture = await setup()
+    const entered = Promise.withResolvers<void>()
+    const resume = Promise.withResolvers<void>()
+    const closeEntered = Promise.withResolvers<void>()
+    fixture.runtime.restore = async () => {
+      entered.resolve()
+      await resume.promise
+      return 'resumed'
+    }
+    fixture.runtime.close = vi.fn(async () => {
+      closeEntered.resolve()
+    })
+    const writes = vi.spyOn(fixture.sidecar, 'writeRecoveryState')
+    try {
+      const recovery = expect(fixture.subject.retryOriginal(fixture.live.id)).rejects.toMatchObject({
+        code: 'ACP_RECOVERY_REQUIRED',
+      })
+      await entered.promise
+      let closed = false
+      const closing = fixture.subject.close().then(() => {
+        closed = true
+      })
+      await closeEntered.promise
+      expect(closed).toBe(false)
+      resume.resolve()
+      await recovery
+      await closing
+      expect(fixture.runtime.close).toHaveBeenCalledOnce()
+      expect(writes).not.toHaveBeenCalled()
+      expect(await fixture.sidecar.readRecoveryState(fixture.live.id as never)).toMatchObject({
+        kind: 'outcome-unknown',
+      })
+    } finally {
+      resume.resolve()
+      await fixture.close()
+    }
+  })
+
+  it.each(['healthy', 'failed'] as const)(
+    'preserves replacement recovery facts when the old %s state write completes late',
+    async (outcome) => {
+      const fixture = await setup()
+      const entered = Promise.withResolvers<void>()
+      const resume = Promise.withResolvers<void>()
+      const write = fixture.sidecar.writeRecoveryState.bind(fixture.sidecar)
+      if (outcome === 'failed')
+        fixture.runtime.restore = async () => {
+          throw new Error('restore disconnected')
+        }
+      vi.spyOn(fixture.sidecar, 'writeRecoveryState').mockImplementationOnce(async (state, options) => {
+        if (outcome === 'healthy') await write(state, options)
+        entered.resolve()
+        await resume.promise
+        if (outcome === 'failed') throw new Error('storage unavailable')
+      })
+      try {
+        const recovery = expect(fixture.subject.retryOriginal(fixture.live.id)).rejects.toMatchObject({
+          code: 'ACP_RECOVERY_REQUIRED',
+        })
+        await entered.promise
+        fixture.replace()
+        const replacement = {
+          dshSessionId: fixture.live.id,
+          kind: 'outcome-unknown' as const,
+          cause: 'load-failed' as const,
+          detail: 'The replacement owns its own pending operation.',
+          updatedAt: 2,
+        }
+        fixture.continuity.executionOwners.setRecoveryFallback(replacement)
+        resume.resolve()
+        await recovery
+        expect(fixture.continuity.executionOwners.getRecoveryFallback(fixture.live.id)).toBe(replacement)
+        expect(fixture.subject.recoveryStateFallback(fixture.live.id)).toBe(replacement)
+        expect(fixture.sidecar.writeRecoveryState).toHaveBeenCalledOnce()
+      } finally {
+        resume.resolve()
+        await fixture.close()
+      }
+    },
+  )
+})
+
 it('does not resurrect an explicitly retried runtime after its host session is disposed', async () => {
   const { sidecar, root } = sidecarAt()
   const message = user('original'),
@@ -1333,12 +1594,12 @@ it('does not resurrect an explicitly retried runtime after its host session is d
     await drain(initial.stream(request(live.id, message)))
     await initial.close()
     const retry = subject.retryOriginal(live.id)
-    const rejected = expect(retry).rejects.toThrow('disposed during recovery')
+    const rejected = expect(retry).rejects.toMatchObject({ code: 'ACP_RECOVERY_REQUIRED' })
     await entered.promise
-    await subject.disposeSession(live)
-    expect(close).toHaveBeenCalledOnce()
+    const disposing = subject.disposeSession(live)
     finish.resolve()
     await rejected
+    await disposing
     await subject.close()
     expect(close).toHaveBeenCalledOnce()
     expect((await sidecar.readLatestBinding(live.id as never))?.status).toBe('ok')

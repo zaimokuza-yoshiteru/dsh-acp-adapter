@@ -3,7 +3,9 @@
  * normal application has no sink and writes no additional logs.
  */
 export type LiveDiagnosticTool =
-  | 'spawn_teammate'
+  | 'subagent'
+  | 'subagent_fork'
+  | 'subagent_oar'
   | 'send_message'
   | 'list_agents'
   | 'wait_agent'

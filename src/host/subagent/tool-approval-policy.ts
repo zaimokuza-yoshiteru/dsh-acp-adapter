@@ -1,9 +1,9 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Session } from '@deepseek-ai/dsh-session'
-import type {} from '@deepseek-ai/dsh-experimental-agent-team'
 import type { AcpSidecar } from '../../persistence/sidecar.ts'
 import type { AcpToolApprovalPolicySnapshot } from '../../contract/remote.ts'
+import { captureSubagentTree, localSubagentIdentity } from './tree.ts'
 import { acpAgentIdFromRoute } from '../../domain/session/agent-config.ts'
 
 /** ACP transport approval preferences are separate from native delegated tool authority. */
@@ -55,79 +55,49 @@ export function createToolApprovalPolicyReader(
         return { sessionId, policy: defaultPolicy(), source: 'session', editable: false }
       throw new Error('ACP_TOOL_APPROVAL_SESSION_NOT_ACP')
     }
-    const teams = ctx.get('agentTeams', false)
-    const membership = agent === undefined ? undefined : teams?.tryMembership(agent)
-    let root: Agent | undefined
-    let teamId: string | undefined
-    if (membership?.role === 'teammate') {
-      root = membership.root
-      teamId = membership.id
-    } else if (header.origin === 'subagent' && teams !== undefined && header.parentSession !== undefined) {
-      // Every ordinary root is an implicit Lead. A child belongs to its Team
-      // only when the authoritative roster contains that exact child id.
-      let parent = ctx.get('agents', false)?.get(header.parentSession)
-      const saved = await sidecar.readToolApprovalPolicy(sessionId as never)
-      const parentSession = sessionOf(header.parentSession)
-      if (
-        parent === undefined &&
-        saved === undefined &&
-        parentSession !== undefined &&
-        parentSession.header.origin !== 'subagent'
-      ) {
-        const activated = await ctx.get('sessionController', false)?.resolveAgent(header.parentSession)
-        if (activated !== undefined && 'error' in activated) throw activated.error
-        parent = ctx.get('agents', false)?.get(header.parentSession)
-      }
-      if (parent !== undefined) {
-        const parentMembership = teams.tryMembership(parent)
-        if (parentMembership === undefined && parentSession?.header.origin !== 'subagent')
-          throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
-        if (parentMembership?.role === 'lead' && parentMembership.root === parent) {
-          const row = teams.listMembers(parent).find((entry) => entry.id === sessionId && entry.role === 'teammate')
-          if (row !== undefined) {
-            if (row.status === 'failed' || (agent !== undefined && membership === undefined))
-              throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
-            root = parent
-            teamId = parentMembership.id
-          }
-        }
-      } else if (saved === undefined) {
-        throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
-      }
-    }
-    if (root !== undefined) {
-      const lead = root
-      const authenticated = (): boolean => {
-        const currentLead = teams?.tryMembership(lead)
-        if (
-          ctx.get('agents', false)?.get(lead.id) !== lead ||
-          currentLead?.role !== 'lead' ||
-          currentLead.root !== lead ||
-          currentLead.id !== teamId
-        )
-          return false
-        if (agent !== undefined) {
-          const current = teams?.tryMembership(agent)
-          return (
-            ctx.get('agents', false)?.get(agent.id) === agent &&
-            current?.role === 'teammate' &&
-            current.root === lead &&
-            current.id === teamId
-          )
-        }
-        const row = teams?.listMembers(lead).find((entry) => entry.id === sessionId && entry.role === 'teammate')
-        return row !== undefined && row.status !== 'failed'
-      }
-      if (!authenticated()) throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
-      const policy = await sidecar.readToolApprovalPolicy(lead.id, defaultPolicy())
-      if (policy === undefined) throw new Error('ACP_TOOL_APPROVAL_POLICY_UNAVAILABLE')
-      if (!authenticated()) throw new Error('ACP_TOOL_APPROVAL_LEAD_CHANGED')
-      return { sessionId, policy, source: 'lead', editable: false }
-    }
+    // Existing snapshots retain their policy across this migration. New local
+    // descendants inherit their runtime root, independently of the Team toggle.
     const saved = await sidecar.readToolApprovalPolicy(sessionId as never)
     if (saved !== undefined) return { sessionId, policy: saved, source: 'session', editable: true }
-    if (header.origin === 'subagent' && header.parentSession === undefined)
-      throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
+    if (header.origin === 'subagent') {
+      let root: Agent | undefined
+      let tree: ReturnType<typeof captureSubagentTree>
+      if (agent !== undefined) {
+        tree = captureSubagentTree(ctx, agent)
+        if (tree === undefined || tree.root === agent || localSubagentIdentity(ctx, agent) === undefined)
+          throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
+        root = tree.root
+      } else {
+        // Durable lineage locates a candidate only. The native root's catalog
+        // must independently confirm this dormant local descendant below it.
+        const seen = new Set<string>([sessionId])
+        let ancestor = header
+        while (ancestor.origin === 'subagent') {
+          const parentId = ancestor.parentSession
+          if (parentId === undefined || seen.has(parentId)) throw new Error('ACP_TOOL_APPROVAL_PARENT_CYCLE')
+          seen.add(parentId)
+          const parent =
+            sessionOf(parentId)?.header ?? (await ctx.get('sessionPersistence', false)?.stat(parentId))?.header
+          if (parent === undefined) throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
+          ancestor = parent
+        }
+        root = ctx.get('agents', false)?.get(ancestor.id)
+        if (root === undefined) {
+          const activated = await ctx.get('sessionController', false)?.resolveAgent(ancestor.id)
+          if (activated !== undefined && 'error' in activated) throw activated.error
+          root = ctx.get('agents', false)?.get(ancestor.id)
+        }
+        tree = root === undefined ? undefined : captureSubagentTree(ctx, root)
+        if (root === undefined || tree?.root !== root) throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
+        const rows = await tree.descendants()
+        if (!rows.some((row) => row.kind === 'child' && row.id === sessionId && row.mode === 'continuable'))
+          throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
+      }
+      const policy = await read(root.id, nextAncestry, true)
+      if (!tree.current() || (agent === undefined && ctx.get('agents', false)?.get(sessionId as never) !== undefined))
+        throw new Error('ACP_TOOL_APPROVAL_LEAD_CHANGED')
+      return { sessionId, policy: policy.policy, source: 'lead', editable: false }
+    }
     // Independent children and ordinary forks snapshot once. Their parent is
     // ancestry, not live authority after that snapshot has been committed.
     const initial =

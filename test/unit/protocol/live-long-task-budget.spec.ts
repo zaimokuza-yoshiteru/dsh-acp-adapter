@@ -17,11 +17,9 @@ import {
 it('allows two planned spawns and rejects the third before dispatch', () => {
   const budget = createLongTaskBudget()
   for (let index = 0; index < 2; index += 1) {
-    expect(
-      admitLongTaskTool(budget, { scene: 'B', toolName: 'spawn_teammate', callId: `spawn-${index}` }),
-    ).toBeUndefined()
+    expect(admitLongTaskTool(budget, { scene: 'B', toolName: 'subagent', callId: `spawn-${index}` })).toBeUndefined()
   }
-  expect(admitLongTaskTool(budget, { scene: 'B', toolName: 'spawn_teammate', callId: 'spawn-3' })).toBe(
+  expect(admitLongTaskTool(budget, { scene: 'B', toolName: 'subagent', callId: 'spawn-3' })).toBe(
     'LONG_TASK_SPAWN_BUDGET',
   )
   expect(budget.totalDispatches).toBe(2)

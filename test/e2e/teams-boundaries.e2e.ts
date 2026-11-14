@@ -1,3 +1,5 @@
+import { openNativeMembers } from './native-team-ui.ts'
+import { treeMember, treeMembers } from './subagent-tree.ts'
 import { acpPermissionAudit } from './acp-permission-audit.ts'
 import { teamBoundaryDiagnostics } from './team-boundary-diagnostics.ts'
 import { waitForTeamSettlement } from './team-settlement.ts'
@@ -13,7 +15,7 @@ import { launchBrowser, newEnglishPage } from './browser.ts'
 import type { ObservedEvent } from './types.ts'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { LlmAdapter } from '@deepseek-ai/dsh-llm'
+import { LlmAdapter, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { expect, it, vi } from 'vitest'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
@@ -34,7 +36,7 @@ class NativeTeamControl extends LlmAdapter {
     return { mode: 'normal', maxRetries: 0, retryableCodes: [], initialDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 }
   }
   async *stream(options: Parameters<LlmAdapter['stream']>[0]): ReturnType<LlmAdapter['stream']> {
-    expect((options.tools ?? []).some((tool) => tool.name === 'spawn_teammate')).toBe(true)
+    expect((options.tools ?? []).some((tool) => tool.name === 'subagent')).toBe(true)
     if (options.messages.some((message) => JSON.stringify(message.content).includes('Calculate 1+1'))) {
       expect(JSON.stringify(options.messages)).toContain('Approval prompts are disabled in this session')
     }
@@ -80,14 +82,39 @@ async function setup(teams: boolean, native = false, mockLog?: string) {
   return { host, browser, page, send }
 }
 
-it('does not expose Teams UI or services when the native profile is off', async () => {
+it('keeps ordinary subagents available while native Team task mode is off', async () => {
   const { host, browser, page, send } = await setup(false)
   try {
     await send('E2E_MESSAGE')
     await page.getByText('E2E_DONE mock-model-a', { exact: true }).waitFor()
-    expect(await page.locator('[data-team-action]').count()).toBe(0)
-    expect(host.ctx.get('agentTeams')).toBeUndefined()
-    expect(host.ctx.tools.get('spawn_teammate', host.ctx.agents.list()[0])).toBeUndefined()
+    const lead = required(host.ctx.agents.list().find((agent) => treeMember(host.ctx, agent)?.role === 'lead'))
+    expect(host.ctx.agentTeams.isEnabled(lead)).toBe(false)
+    const signal = new AbortController().signal
+    const modelSelection = required(lead.model.current())
+    const toolSet = await host.ctx.tools.resolve({ agent: lead, modelSelection, signal })
+    try {
+      const assembly = await host.ctx.systemPrompt.assemble({
+        scope: lead,
+        agent: lead,
+        modelSelection,
+        signal,
+        toolSet,
+      })
+      const names = assembly.tools.map((tool) => tool.name)
+      expect(names).toContain('subagent')
+      for (const name of ['team_task_create', 'team_task_list', 'team_task_get', 'team_task_update'])
+        expect(names).not.toContain(name)
+      const result = await host.ctx.tools.execute({
+        agent: lead,
+        signal,
+        toolSet,
+        calls: [{ type: 'tool-call', id: ToolCallId('team-off-task-list'), name: 'team_task_list', arguments: '{}' }],
+      })
+      expect(result.results[0]?.result).toMatchObject({ isError: true, error: { info: { code: 'UNKNOWN_TOOL' } } })
+    } finally {
+      toolSet.dispose()
+    }
+    expect(await page.locator('[data-team-panel]').count()).toBe(0)
   } finally {
     await browser.close()
     await host.close()
@@ -145,10 +172,8 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
     await send('E2E_TEAM_START')
     diagnostics.stage('bootstrap-ready')
     await page.getByText('E2E_TEAM_READY', { exact: true }).waitFor()
-    const lead = required(
-      host.ctx.agents.list().find((agent) => host.ctx.agentTeams.tryMembership(agent)?.role === 'lead'),
-    )
-    const childAId = required(host.ctx.agentTeams.listMembers(lead).find((member) => member.role === 'teammate')).id
+    const lead = required(host.ctx.agents.list().find((agent) => treeMember(host.ctx, agent)?.role === 'lead'))
+    const childAId = required((await treeMembers(host.ctx, lead)).find((member) => member.role === 'teammate')).id
     diagnostics.stage('bootstrap-member-permission')
     await expect
       .poll(
@@ -181,12 +206,11 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
         {
           owner: 'lead',
           callId: 'team-2',
-          tool: 'spawn_teammate',
+          tool: 'subagent',
           args: {
             name: 'calculator-b',
             description: 'Model B member',
             prompt: 'E2E_TEAM_MEMBER calculate 1+1',
-            context: 'fresh',
           },
         },
         ...teamMemberSetupSteps('calculator-b'),
@@ -196,7 +220,7 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
     await send('E2E_TEAM_SECOND')
     diagnostics.stage('sibling-ready')
     await page.getByText('E2E_TEAM_SECOND_READY', { exact: true }).waitFor()
-    const childBId = required(host.ctx.agentTeams.listMembers(lead).find((member) => member.name === 'calculator-b')).id
+    const childBId = required((await treeMembers(host.ctx, lead)).find((member) => member.name === 'calculator-b')).id
     diagnostics.stage('sibling-member-permission')
     await expect
       .poll(
@@ -281,7 +305,7 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
             owner: name,
             callId: 'team-3',
             tool: 'send_message',
-            args: { target: 'lead', message: 'E2E_TEAM_REPLY result=2' },
+            args: { agent: 'lead', message: 'E2E_TEAM_REPLY result=2' },
           },
           ...teamReplySteps(),
         ],
@@ -310,9 +334,9 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
     diagnostics.stage('all-members-idle')
     await vi.waitFor(async () => expect(await pendingCard.count()).toBe(0))
     await vi.waitFor(
-      () =>
+      async () =>
         expect(
-          host.ctx.agentTeams.listMembers(lead).every((member) => ['idle', 'inactive'].includes(member.status)),
+          (await treeMembers(host.ctx, lead)).every((member) => ['idle', 'inactive'].includes(member.status)),
         ).toBe(true),
       { timeout: 30_000 },
     )
@@ -328,16 +352,14 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
           owner: 'calculator',
           callId: 'team-2',
           tool: 'send_message',
-          args: { target: 'lead', message: 'E2E_TEAM_REPLY continued' },
+          args: { agent: 'lead', message: 'E2E_TEAM_REPLY continued' },
         },
         ...teamReplySteps(),
       ],
     })
     const continuationStart = events.length
     diagnostics.stage('continuation-send')
-    await host.ctx.agentTeams.sendMessage(lead, {
-      target: 'calculator',
-      content: [{ type: 'text', text: 'E2E_TEAM_CONTINUE' }],
+    await host.ctx.subagents.sendMessage(lead, childAId, [{ type: 'text', text: 'E2E_TEAM_CONTINUE' }], {
       signal: new AbortController().signal,
     })
     diagnostics.stage('continuation-header')
@@ -403,7 +425,7 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
       childAId,
       childBId,
       selected,
-      roster: host.ctx.agentTeams.listMembers(lead),
+      roster: await treeMembers(host.ctx, lead),
       ordinaryApprovals: memberAudit('asked')
         .filter((entry) => entry.sessionId === childAId || entry.sessionId === childBId)
         .map((entry) => ({ sessionId: entry.sessionId, tool: entry.data.toolCall })),
@@ -425,8 +447,8 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
       events.findLast((event) => event.type === 'request/header' && event.data.header.config.provider === 'acp-codex'),
     ).sessionId
     expect(destinationId).not.toBe(lead.id)
-    expect(host.ctx.agentTeams.listMembers(required(host.ctx.agents.get(destinationId)))).toHaveLength(1)
-    expect(host.ctx.agentTeams.listMembers(lead)).toHaveLength(3)
+    expect(await treeMembers(host.ctx, required(host.ctx.agents.get(destinationId)))).toHaveLength(1)
+    expect(await treeMembers(host.ctx, lead)).toHaveLength(3)
     evidence.crossAgentDestinationId = destinationId
     // No browser coordinator is present: a direct Remote selection must not bypass host execution policy.
     await page.goto('about:blank')
@@ -483,19 +505,20 @@ it('preserves native Teams model inheritance and switching with the ACP plugin i
   try {
     await send('native baseline')
     await page.getByText('NATIVE_TEAM_DONE native-a', { exact: true }).first().waitFor()
-    const lead = host.ctx.agents.list().find((agent) => host.ctx.agentTeams.tryMembership(agent)?.role === 'lead')
+    const lead = host.ctx.agents.list().find((agent) => treeMember(host.ctx, agent)?.role === 'lead')
     const spawn = (name: string) =>
-      host.ctx.agentTeams.spawnTeammate(required(lead), {
+      host.ctx.subagents.startActivation({
+        parent: required(lead),
+        delivery: 'caller',
         name,
-        description: name,
+        label: name,
         prompt: [{ type: 'text', text: 'Calculate 1+1' }],
-        context: 'fresh',
         provider: 'spawn',
         signal: new AbortController().signal,
       })
     const first = await spawn('native-first')
     await vi.waitFor(
-      () => expect(headers.some((item) => item.id === first.member.id && item.config.model === 'native-a')).toBe(true),
+      () => expect(headers.some((item) => item.id === first.childId && item.config.model === 'native-a')).toBe(true),
       { timeout: 20_000 },
     )
     await page.getByRole('button', { name: /^Select model/ }).click()
@@ -505,24 +528,25 @@ it('preserves native Teams model inheritance and switching with the ACP plugin i
     await page.getByText('NATIVE_TEAM_DONE native-b', { exact: true }).first().waitFor()
     const second = await spawn('native-second')
     await vi.waitFor(
-      () => expect(headers.some((item) => item.id === second.member.id && item.config.model === 'native-b')).toBe(true),
+      () => expect(headers.some((item) => item.id === second.childId && item.config.model === 'native-b')).toBe(true),
       { timeout: 20_000 },
     )
     await vi.waitFor(
       () => {
-        for (const id of [first.member.id, second.member.id])
+        for (const id of [first.childId, second.childId])
           expect(settled.find((item) => item.id === id)?.reason).toMatchObject({ kind: 'completed' })
       },
       { timeout: 20_000 },
     )
-    expect(
-      headers.filter((item) => item.id === first.member.id).every((item) => item.config.model === 'native-a'),
-    ).toBe(true)
+    expect(headers.filter((item) => item.id === first.childId).every((item) => item.config.model === 'native-a')).toBe(
+      true,
+    )
     expect(await page.getByRole('dialog').count()).toBe(0)
-    expect(await page.locator('[data-team-action]').isVisible()).toBe(true)
-    expect(required(host.ctx.tools.get('spawn_teammate', lead)).parameters).toMatchObject({
-      properties: { context: { enum: expect.arrayContaining(['fork']) } },
-    })
+    const panel = await openNativeMembers(page)
+    await panel.getByRole('treeitem').filter({ hasText: 'native-first' }).first().waitFor()
+    await panel.getByRole('treeitem').filter({ hasText: 'native-second' }).first().waitFor()
+    expect(host.ctx.tools.get('subagent', lead)).toBeDefined()
+    expect(host.ctx.tools.get('subagent_fork', lead)).toBeDefined()
   } finally {
     await browser.close()
     await host.close()

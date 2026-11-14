@@ -119,7 +119,7 @@ export async function teamWaitTurn(session: MockSession, msg: PromptMessage, pee
     if (prompt.includes('E2E_CONTROL_WAIT_CHILD')) {
       const result = await call(
         'send_message',
-        { target: 'lead', message: 'E2E_CONTROL_WAIT_REPLY' },
+        { agent: 'lead', message: 'E2E_CONTROL_WAIT_REPLY' },
         'control-child-send',
       )
       if (result.isError) throw new Error('Native child relay failed')

@@ -91,8 +91,8 @@ function createRuntime(
       argv,
       env,
       spawnPlan: { argv, env },
-      ...(mcpLease === undefined ? {} : { mcpLease }),
     }),
+    createMcpLease: async () => mcpLease,
     onPermissionRequest,
     ...(onPermissionCheck === undefined ? {} : { onPermissionCheck }),
   })

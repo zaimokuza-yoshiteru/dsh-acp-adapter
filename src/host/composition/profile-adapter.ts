@@ -726,6 +726,13 @@ export class AcpProfileAdapter extends LlmAdapter {
   private readonly pendingExternalProjections = new Set<Promise<void>>()
   /** Prompt response handlers can enqueue terminal writes after transport cancellation. */
   private readonly pendingTerminalResponses = new Set<Promise<void>>()
+  private readonly pendingRecoveries = new Set<{
+    readonly sessionId: string
+    readonly owner: object | undefined
+    readonly completion: Promise<void>
+    retired: boolean
+  }>()
+  private readonly retiringRecoveryOwners = new WeakMap<object, number>()
   private readonly ledger: DispatchLedger
   private readonly settlementSink: AcpLocalSettlementSink
   private readonly continuity: AcpHostContinuity
@@ -913,7 +920,10 @@ export class AcpProfileAdapter extends LlmAdapter {
         binding,
       )
     if (runtime.hasPendingHostCalls?.() || runtime.hasUncommittedHostFeedback?.())
-      throw new LlmError('Host tool results must settle before changing the ACP directory', 'ACP_RECOVERY_REQUIRED')
+      throw LlmError.fromFailure({
+        message: 'Host tool results must settle before changing the ACP directory',
+        code: 'ACP_RECOVERY_REQUIRED',
+      })
     // A Stop before RPC dispatch leaves a known, retryable handoff rather than
     // turning a completed native cwd change into an unknown remote outcome.
     await this.sidecar!.writeRecoveryState({
@@ -1033,7 +1043,10 @@ export class AcpProfileAdapter extends LlmAdapter {
   override async resolveModel(provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo> {
     const generation = this.currentProbeGeneration()
     if (generation === undefined)
-      throw new LlmError(`ACP profile "${this.profileId}" is no longer configured`, 'ACP_UNKNOWN_PROFILE')
+      throw LlmError.fromFailure({
+        message: `ACP profile "${this.profileId}" is no longer configured`,
+        code: 'ACP_UNKNOWN_PROFILE',
+      })
     const models = await generation.probe.listModels(provider)
     const found = models.find((entry) => entry.id === model)
     const reasoning = reasoningInfoFromConfigOptions(
@@ -1089,7 +1102,10 @@ export class AcpProfileAdapter extends LlmAdapter {
   override async prepareCall(provider: string, model: string, signal?: AbortSignal) {
     const generation = this.generationOf(snapshotProfile(this.readConfig()))
     if (generation === undefined)
-      throw new LlmError(`ACP profile "${this.profileId}" is no longer configured`, 'ACP_UNKNOWN_PROFILE')
+      throw LlmError.fromFailure({
+        message: `ACP profile "${this.profileId}" is no longer configured`,
+        code: 'ACP_UNKNOWN_PROFILE',
+      })
     const resolved = await this.resolveModelForGeneration(provider, model, generation, signal)
     return {
       model: resolved,
@@ -1199,10 +1215,10 @@ export class AcpProfileAdapter extends LlmAdapter {
   private async restoreCancelledRuntimeForControl(sessionId: string, runtime: AcpProfileRuntime): Promise<void> {
     if (runtime.cancelledSessionRefreshPending !== true) return
     if (runtime.restore === undefined || this.sidecar === undefined)
-      throw new LlmError(
-        'The cancelled ACP session cannot be restored for this control change',
-        'ACP_BINDING_UNAVAILABLE',
-      )
+      throw LlmError.fromFailure({
+        message: 'The cancelled ACP session cannot be restored for this control change',
+        code: 'ACP_BINDING_UNAVAILABLE',
+      })
     const lookup = await this.sidecar.readLatestBinding(sessionId as never)
     const profile = this.readConfig()
     if (
@@ -1213,24 +1229,24 @@ export class AcpProfileAdapter extends LlmAdapter {
       profile === undefined ||
       !acpLaunchFingerprintsCompatible(lookup.binding.launchFingerprint, await this.launchFingerprint(profile))
     )
-      throw new LlmError(
-        'The original ACP session binding is unavailable for this control change',
-        'ACP_BINDING_UNAVAILABLE',
-      )
+      throw LlmError.fromFailure({
+        message: 'The original ACP session binding is unavailable for this control change',
+        code: 'ACP_BINDING_UNAVAILABLE',
+      })
     const binding = lookup.binding
     const recovery = this.recoveryStateFallback(sessionId) ?? (await this.sidecar.readRecoveryState(sessionId as never))
     if (recovery !== undefined && recovery.kind !== 'healthy')
-      throw new LlmError(
-        'The ACP session must be recovered before its controls can be changed',
-        'ACP_RECOVERY_REQUIRED',
-      )
+      throw LlmError.fromFailure({
+        message: 'The ACP session must be recovered before its controls can be changed',
+        code: 'ACP_RECOVERY_REQUIRED',
+      })
     const session = this.sessionOf(sessionId)
     const expectedOwner = session?.identity ?? session
     if (expectedOwner !== undefined && this.runtimeOwners.get(runtime) !== expectedOwner)
-      throw new LlmError(
-        'The ACP session owner changed before its controls could be restored',
-        'ACP_BINDING_UNAVAILABLE',
-      )
+      throw LlmError.fromFailure({
+        message: 'The ACP session owner changed before its controls could be restored',
+        code: 'ACP_BINDING_UNAVAILABLE',
+      })
     await runtime.restore({ agentSessionId: binding.agentSessionId })
     const latest = await this.sidecar.readLatestBinding(sessionId as never)
     const latestRecovery =
@@ -1246,7 +1262,10 @@ export class AcpProfileAdapter extends LlmAdapter {
       latest.binding.generation !== binding.generation ||
       latest.binding.bindingEpoch !== binding.bindingEpoch
     )
-      throw new LlmError('The ACP session changed while restoring its controls', 'ACP_SESSION_OPTIONS_READ_ONLY')
+      throw LlmError.fromFailure({
+        message: 'The ACP session changed while restoring its controls',
+        code: 'ACP_SESSION_OPTIONS_READ_ONLY',
+      })
   }
 
   private runtimeForSession(sessionId: string): AcpProfileRuntime | undefined {
@@ -1332,10 +1351,10 @@ export class AcpProfileAdapter extends LlmAdapter {
     if (selection.kind === 'current-config' && options.reasoningEffort === undefined) return
     const snapshot = runtime.configOptions
     if (snapshot === undefined)
-      throw new LlmError(
-        'ACP session did not advertise configuration options required by the selected model',
-        'ACP_CONFIG_UNSUPPORTED',
-      )
+      throw LlmError.fromFailure({
+        message: 'ACP session did not advertise configuration options required by the selected model',
+        code: 'ACP_CONFIG_UNSUPPORTED',
+      })
     const modelOption = this.findSelectOption(snapshot, 'model')
     // ACP option lists describe values that may be selected now. They do not
     // necessarily repeat a legacy value that an older, resumed session is
@@ -1347,7 +1366,10 @@ export class AcpProfileAdapter extends LlmAdapter {
       (modelOption === undefined ||
         (modelOption.currentValue !== selection.value && !acpSelectValues(modelOption).has(selection.value)))
     ) {
-      throw new LlmError(`ACP session does not allow model "${options.model}"`, 'ACP_CONFIG_UNSUPPORTED')
+      throw LlmError.fromFailure({
+        message: `ACP session does not allow model "${options.model}"`,
+        code: 'ACP_CONFIG_UNSUPPORTED',
+      })
     }
     const previousModel = modelOption?.currentValue
     const modelChanged = selection.kind === 'declared-model' && previousModel !== selection.value
@@ -1356,18 +1378,27 @@ export class AcpProfileAdapter extends LlmAdapter {
       value: string,
     ): Promise<void> => {
       if (runtime.setConfigOption === undefined)
-        throw new LlmError('ACP runtime cannot change its model configuration', 'ACP_CONFIG_UNSUPPORTED')
+        throw LlmError.fromFailure({
+          message: 'ACP runtime cannot change its model configuration',
+          code: 'ACP_CONFIG_UNSUPPORTED',
+        })
       try {
         await runtime.setConfigOption(option.id, value, options.signal)
       } catch (error) {
-        throw new LlmError(
-          `ACP configuration could not be applied: ${error instanceof Error ? error.message : String(error)}`,
-          'ACP_CONFIG_SYNC_FAILED',
+        throw LlmError.fromFailure(
+          {
+            ...(error instanceof LlmError ? error.failure : {}),
+            message: `ACP configuration could not be applied: ${error instanceof Error ? error.message : String(error)}`,
+            code: 'ACP_CONFIG_SYNC_FAILED',
+          },
           { cause: error },
         )
       }
       if (runtime.configOptions?.find((entry) => entry.id === option.id)?.currentValue !== value) {
-        throw new LlmError(`ACP agent did not confirm configuration "${option.id}"`, 'ACP_CONFIG_SYNC_FAILED')
+        throw LlmError.fromFailure({
+          message: `ACP agent did not confirm configuration "${option.id}"`,
+          code: 'ACP_CONFIG_SYNC_FAILED',
+        })
       }
     }
     if (!modelChanged && options.reasoningEffort === undefined) return
@@ -1377,7 +1408,10 @@ export class AcpProfileAdapter extends LlmAdapter {
     // the confirmed response snapshot rather than the pre-change object.
     const confirmedSnapshot = runtime.configOptions
     if (confirmedSnapshot === undefined)
-      throw new LlmError('ACP agent did not return a configuration snapshot', 'ACP_CONFIG_SYNC_FAILED')
+      throw LlmError.fromFailure({
+        message: 'ACP agent did not return a configuration snapshot',
+        code: 'ACP_CONFIG_SYNC_FAILED',
+      })
     const reasoningOption = this.findSelectOption(confirmedSnapshot, 'reasoning')
     try {
       const requestedReasoning = String(options.reasoningEffort)
@@ -1386,10 +1420,10 @@ export class AcpProfileAdapter extends LlmAdapter {
         (reasoningOption.currentValue !== requestedReasoning &&
           !acpSelectValues(reasoningOption).has(requestedReasoning))
       ) {
-        throw new LlmError(
-          `ACP session does not allow reasoning effort "${String(options.reasoningEffort)}"`,
-          'ACP_CONFIG_UNSUPPORTED',
-        )
+        throw LlmError.fromFailure({
+          message: `ACP session does not allow reasoning effort "${String(options.reasoningEffort)}"`,
+          code: 'ACP_CONFIG_UNSUPPORTED',
+        })
       }
       if (reasoningOption.currentValue !== requestedReasoning) {
         await applyOption(reasoningOption, requestedReasoning)
@@ -1409,15 +1443,19 @@ export class AcpProfileAdapter extends LlmAdapter {
           throw new Error('previous model is no longer selectable')
         await applyOption(rollbackOption, previousModel)
       } catch (rollbackError) {
-        throw new LlmError(
-          `ACP configuration failed and the previous model could not be restored; inspect the Agent session (${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)})`,
-          'ACP_CONFIG_SYNC_FAILED',
+        throw LlmError.fromFailure(
+          {
+            message: `ACP configuration failed and the previous model could not be restored; inspect the Agent session (${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)})`,
+            code: 'ACP_CONFIG_SYNC_FAILED',
+          },
           { cause: error },
         )
       }
-      throw new LlmError(
-        `ACP reasoning configuration is unavailable for the selected model; the previous model was restored (${error instanceof Error ? error.message : String(error)})`,
-        error instanceof LlmError ? error.code : 'ACP_CONFIG_SYNC_FAILED',
+      throw LlmError.fromFailure(
+        {
+          ...(error instanceof LlmError ? error.failure : { code: 'ACP_CONFIG_SYNC_FAILED' }),
+          message: `ACP reasoning configuration is unavailable for the selected model; the previous model was restored (${error instanceof Error ? error.message : String(error)})`,
+        },
         { cause: error },
       )
     }
@@ -1430,7 +1468,10 @@ export class AcpProfileAdapter extends LlmAdapter {
     const self = this
     return (async function* (): AsyncGenerator<StreamChunk> {
       if (options.purpose !== undefined)
-        throw new LlmError('ACP does not execute auxiliary title or compaction requests', 'ACP_AUXILIARY_CALL')
+        throw LlmError.fromFailure({
+          message: 'ACP does not execute auxiliary title or compaction requests',
+          code: 'ACP_AUXILIARY_CALL',
+        })
       const key = String(options.sessionId ?? '')
       if (key.length > 0) {
         const session = self.sessionOf(key)
@@ -1454,21 +1495,26 @@ export class AcpProfileAdapter extends LlmAdapter {
       }
       const sharedFallback = self.continuity.executionOwners.getRecoveryFallback(key)
       if (sharedFallback !== undefined && sharedFallback.kind !== 'healthy')
-        throw new LlmError(
-          sharedFallback.detail ?? 'ACP session requires recovery before another prompt',
-          'ACP_RECOVERY_REQUIRED',
-        )
+        throw LlmError.fromFailure({
+          message: sharedFallback.detail ?? 'ACP session requires recovery before another prompt',
+          code: 'ACP_RECOVERY_REQUIRED',
+        })
       try {
         self.continuity.executionOwners.assertQuiescent(key)
       } catch (error) {
-        throw new LlmError(
-          'ACP Host tool execution is still active; recovery must wait for it to settle',
-          'ACP_RECOVERY_REQUIRED',
+        throw LlmError.fromFailure(
+          {
+            message: 'ACP Host tool execution is still active; recovery must wait for it to settle',
+            code: 'ACP_RECOVERY_REQUIRED',
+          },
           { cause: error },
         )
       }
       if (self.inMemoryRecoveryRequired.has(key))
-        throw new LlmError('ACP steering outcome requires explicit recovery before continuing', 'ACP_RECOVERY_REQUIRED')
+        throw LlmError.fromFailure({
+          message: 'ACP steering outcome requires explicit recovery before continuing',
+          code: 'ACP_RECOVERY_REQUIRED',
+        })
       const carry: StreamChunk[] = []
       let owner = self.handoffs.get(key)
       const retire = async (candidate: HandoffOwner, collectRemainder = false): Promise<void> => {
@@ -1484,7 +1530,8 @@ export class AcpProfileAdapter extends LlmAdapter {
         owner = undefined
       }
       if (owner !== undefined) {
-        if (!owner.stream.suspended) throw new LlmError('ACP stream is already active', 'ACP_PROMPT_ALREADY_ACTIVE')
+        if (!owner.stream.suspended)
+          throw LlmError.fromFailure({ message: 'ACP stream is already active', code: 'ACP_PROMPT_ALREADY_ACTIVE' })
         const sameToolDirectory =
           isDeepStrictEqual(owner.options.tools, options.tools) &&
           owner.toolDirectoryKey === self.mcpKey?.(key, options.tools)
@@ -1520,9 +1567,12 @@ export class AcpProfileAdapter extends LlmAdapter {
             }
             await retire(owner).catch(() => undefined)
           }
-          throw new LlmError(error instanceof Error ? error.message : String(error), 'ACP_STEERING_FAILED', {
-            cause: error,
-          })
+          throw LlmError.fromFailure(
+            { message: error instanceof Error ? error.message : String(error), code: 'ACP_STEERING_FAILED' },
+            {
+              cause: error,
+            },
+          )
         }
         if (!resumed) {
           await retire(owner, true)
@@ -1620,16 +1670,20 @@ export class AcpProfileAdapter extends LlmAdapter {
     const self = this
     return (async function* (): AsyncGenerator<StreamChunk> {
       if (options.purpose !== undefined) {
-        throw new LlmError('ACP does not execute auxiliary title or compaction requests', 'ACP_AUXILIARY_CALL')
+        throw LlmError.fromFailure({
+          message: 'ACP does not execute auxiliary title or compaction requests',
+          code: 'ACP_AUXILIARY_CALL',
+        })
       }
       const sessionKey = String(options.sessionId ?? '')
-      if (sessionKey.length === 0) throw new LlmError('ACP requires a DSH session id', 'ACP_SESSION_UNAVAILABLE')
+      if (sessionKey.length === 0)
+        throw LlmError.fromFailure({ message: 'ACP requires a DSH session id', code: 'ACP_SESSION_UNAVAILABLE' })
       await self.sessionControls.waitForSessionControlWrite(sessionKey, options.signal)
       if (self.sidecar === undefined)
-        throw new LlmError(
-          'ACP sidecar is unavailable; the Agent binding cannot be made durable',
-          'ACP_BINDING_UNAVAILABLE',
-        )
+        throw LlmError.fromFailure({
+          message: 'ACP sidecar is unavailable; the Agent binding cannot be made durable',
+          code: 'ACP_BINDING_UNAVAILABLE',
+        })
       const durableSidecar = self.sidecar
       const session = self.sessionOf(sessionKey)
       let admissionProof: CurrentStepProof | undefined
@@ -1639,7 +1693,7 @@ export class AcpProfileAdapter extends LlmAdapter {
           admissionProof = proof
         })
       } catch (error: unknown) {
-        if (error instanceof AcpAdmissionError) throw new LlmError(error.message, error.code)
+        if (error instanceof AcpAdmissionError) throw LlmError.fromFailure({ message: error.message, code: error.code })
         throw error
       }
       const captureRemoteCancellationHook = (proof: CurrentStepProof | undefined) =>
@@ -1653,8 +1707,12 @@ export class AcpProfileAdapter extends LlmAdapter {
       self.admittedToolSchemaOwners.set(sessionKey, session?.identity ?? session ?? self)
       const profile = generation?.config
       if (profile === undefined || generation === undefined)
-        throw new LlmError(`ACP profile "${self.profileId}" is no longer configured`, 'ACP_UNKNOWN_PROFILE')
-      if (!self.subprocess.ok) throw new LlmError(self.subprocess.message, 'ACP_SPAWN_FAILURE')
+        throw LlmError.fromFailure({
+          message: `ACP profile "${self.profileId}" is no longer configured`,
+          code: 'ACP_UNKNOWN_PROFILE',
+        })
+      if (!self.subprocess.ok)
+        throw LlmError.fromFailure({ message: self.subprocess.message, code: 'ACP_SPAWN_FAILURE' })
       const runtimeKey = `${sessionKey}:${generation.id}`
       const priorGeneration = [...self.runtimes.keys()].find((key) => key.startsWith(`${sessionKey}:`))
       if (priorGeneration !== undefined && priorGeneration !== runtimeKey) {
@@ -1668,10 +1726,10 @@ export class AcpProfileAdapter extends LlmAdapter {
               'The ACP profile changed while this DSH session was active; restore the original profile or explicitly rebind blank',
           })
         }
-        throw new LlmError(
-          'ACP profile changed; recover or start a new DSH session before continuing',
-          'ACP_PROFILE_CHANGED',
-        )
+        throw LlmError.fromFailure({
+          message: 'ACP profile changed; recover or start a new DSH session before continuing',
+          code: 'ACP_PROFILE_CHANGED',
+        })
       }
       const runtimeCwd = self.canonicalCwd(session?.workingDirectory)
       let runtime = self.runtimes.get(runtimeKey) ?? self.createRuntime(sessionKey, profile, runtimeCwd)
@@ -1777,7 +1835,8 @@ export class AcpProfileAdapter extends LlmAdapter {
           }
         } catch (error: unknown) {
           await self.releaseRuntime(runtimeKey, runtime)
-          if (error instanceof AcpPromptContentError) throw new LlmError(error.message, 'ACP_INPUT_NOT_SUPPORTED')
+          if (error instanceof AcpPromptContentError)
+            throw LlmError.fromFailure({ message: error.message, code: 'ACP_INPUT_NOT_SUPPORTED' })
           throw error
         }
         const prompt = validatedPrompt
@@ -1824,10 +1883,10 @@ export class AcpProfileAdapter extends LlmAdapter {
           !forceBlank &&
           !deferredDirectoryHandoff
         ) {
-          throw new LlmError(
-            persistedRecovery.detail ?? 'ACP session requires recovery before another prompt',
-            'ACP_RECOVERY_REQUIRED',
-          )
+          throw LlmError.fromFailure({
+            message: persistedRecovery.detail ?? 'ACP session requires recovery before another prompt',
+            code: 'ACP_RECOVERY_REQUIRED',
+          })
         }
         if (runtime.pendingAgentTurnFailure !== undefined && binding === undefined) {
           await self.blockRecovery(
@@ -1975,7 +2034,7 @@ export class AcpProfileAdapter extends LlmAdapter {
               // marker so a later user request can retry session/load without
               // creating a recovery gate or dispatching this prompt.
               retainCancelledRuntimeForRefreshRetry = true
-              throw new LlmError(error.message, error.code, { cause: error })
+              throw LlmError.fromFailure({ message: error.message, code: error.code }, { cause: error })
             }
             if (options.signal?.aborted === true && cancelledRefreshPending) {
               retainCancelledRuntimeForRefreshRetry = true
@@ -2015,10 +2074,11 @@ export class AcpProfileAdapter extends LlmAdapter {
               (ordinaryFork !== undefined && session.inheritedEventCount !== ordinaryFork.atSeq + 1))
           ) {
             await self.releaseRuntime(runtimeKey, runtime)
-            throw new LlmError(
-              'This ordinary ACP fork has no verified source; fork from the source conversation again or explicitly start blank.',
-              'ACP_FORK_SOURCE_REQUIRED',
-            )
+            throw LlmError.fromFailure({
+              message:
+                'This ordinary ACP fork has no verified source; fork from the source conversation again or explicitly start blank.',
+              code: 'ACP_FORK_SOURCE_REQUIRED',
+            })
           }
           // Explicit blank recovery abandons ACP history; it must not retry the
           // original delegated fork or require that old parent to remain live.
@@ -2111,9 +2171,12 @@ export class AcpProfileAdapter extends LlmAdapter {
                       })
                     } catch (cleanupError) {
                       await self.releaseRuntime(runtimeKey, runtime)
-                      throw new LlmError(
-                        'The undispatched fork intent could not be cleared; retry recovery before continuing.',
-                        'ACP_FORK_INTENT_FAILED',
+                      throw LlmError.fromFailure(
+                        {
+                          message:
+                            'The undispatched fork intent could not be cleared; retry recovery before continuing.',
+                          code: 'ACP_FORK_INTENT_FAILED',
+                        },
                         { cause: cleanupError },
                       )
                     }
@@ -2127,9 +2190,11 @@ export class AcpProfileAdapter extends LlmAdapter {
                     forkReason = 'parent-binding-mismatch'
                   } else if (error instanceof AcpForkPreDispatchError && error.code === 'ACP_FORK_INTENT_FAILED') {
                     await self.releaseRuntime(runtimeKey, runtime)
-                    throw new LlmError(
-                      'ACP fork intent could not be persisted; no remote fork was sent',
-                      'ACP_FORK_INTENT_FAILED',
+                    throw LlmError.fromFailure(
+                      {
+                        message: 'ACP fork intent could not be persisted; no remote fork was sent',
+                        code: 'ACP_FORK_INTENT_FAILED',
+                      },
                       { cause: error },
                     )
                   } else {
@@ -2150,10 +2215,10 @@ export class AcpProfileAdapter extends LlmAdapter {
           if (!forceBlank && !forked && session?.header?.isSeeded === true && session.inheritedEventCount !== 0) {
             await self.releaseRuntime(runtimeKey, runtime)
             const delegated = session.header.origin === 'subagent'
-            throw new LlmError(
-              `This ACP fork cannot preserve the selected conversation history (${forkReason ?? 'candidate-not-available'}). Start a separate session with fresh context.`,
-              delegated ? 'ACP_DELEGATED_FORK_UNAVAILABLE' : 'ACP_FORK_UNAVAILABLE',
-            )
+            throw LlmError.fromFailure({
+              message: `This ACP fork cannot preserve the selected conversation history (${forkReason ?? 'candidate-not-available'}). Start a separate session with fresh context.`,
+              code: delegated ? 'ACP_DELEGATED_FORK_UNAVAILABLE' : 'ACP_FORK_UNAVAILABLE',
+            })
           }
           // Runtime startup has no prompt side effect; do it before the WAL so a
           // missing executable/login/session creation does not poison recovery.
@@ -2176,7 +2241,10 @@ export class AcpProfileAdapter extends LlmAdapter {
               agentSessionId:
                 runtime.acpSessionId ??
                 (() => {
-                  throw new LlmError('ACP runtime did not return a session id', 'ACP_SESSION_UNAVAILABLE')
+                  throw LlmError.fromFailure({
+                    message: 'ACP runtime did not return a session id',
+                    code: 'ACP_SESSION_UNAVAILABLE',
+                  })
                 })(),
               profileId: self.profileId,
               canonicalCwd,
@@ -2242,10 +2310,10 @@ export class AcpProfileAdapter extends LlmAdapter {
               self.nextGenerations.delete(sessionKey)
             } catch (error: unknown) {
               await self.releaseRuntime(runtimeKey, runtime)
-              throw new LlmError(
-                `ACP binding could not be persisted; no prompt was sent (${error instanceof Error ? error.message : String(error)})`,
-                'ACP_BINDING_PERSIST_FAILED',
-              )
+              throw LlmError.fromFailure({
+                message: `ACP binding could not be persisted; no prompt was sent (${error instanceof Error ? error.message : String(error)})`,
+                code: 'ACP_BINDING_PERSIST_FAILED',
+              })
             }
           }
         }
@@ -2269,18 +2337,21 @@ export class AcpProfileAdapter extends LlmAdapter {
             // live controls available and send no prompt under a different mode.
             retainHealthyRuntimeAfterNotDispatched = true
             if (!(await self.sessionControls.restoreConfirmedUserMode(sessionKey, runtime, bindingForModeRestore!)))
-              throw new LlmError(
-                'The Agent no longer supports the selected mode. Choose a supported mode to continue; no prompt was sent.',
-                'ACP_CONFIG_UNSUPPORTED',
-              )
+              throw LlmError.fromFailure({
+                message:
+                  'The Agent no longer supports the selected mode. Choose a supported mode to continue; no prompt was sent.',
+                code: 'ACP_CONFIG_UNSUPPORTED',
+              })
           }
           await self.persistRuntimeSnapshot(sessionKey, runtime)
         } catch (error: unknown) {
           if (!restoreSavedMode) await self.releaseRuntime(runtimeKey, runtime)
           if (error instanceof LlmError) throw error
-          throw new LlmError(
-            `ACP session configuration could not be applied: ${error instanceof Error ? error.message : String(error)}`,
-            'ACP_CONFIG_SYNC_FAILED',
+          throw LlmError.fromFailure(
+            {
+              message: `ACP session configuration could not be applied: ${error instanceof Error ? error.message : String(error)}`,
+              code: 'ACP_CONFIG_SYNC_FAILED',
+            },
             { cause: error },
           )
         }
@@ -2312,10 +2383,10 @@ export class AcpProfileAdapter extends LlmAdapter {
             /* original durable ledger error remains the primary cause */
           }
           await self.releaseRuntime(runtimeKey, runtime)
-          throw new LlmError(
-            'ACP dispatch is blocked by a durable recovery guard; review the session before continuing',
-            'ACP_RECOVERY_REQUIRED',
-          )
+          throw LlmError.fromFailure({
+            message: 'ACP dispatch is blocked by a durable recovery guard; review the session before continuing',
+            code: 'ACP_RECOVERY_REQUIRED',
+          })
         }
         let localSettlementTask: ((sink: AcpLocalSettlementSink) => Promise<void>) | undefined
         let committedBindingAfterSettle: AcpBindingData | undefined
@@ -3138,7 +3209,10 @@ export class AcpProfileAdapter extends LlmAdapter {
             }
             if (changedWorkingDirectory !== undefined && options.signal?.aborted !== true) {
               if (session === undefined || committedBinding === undefined)
-                throw new LlmError('ACP directory handoff has no durable binding', 'ACP_BINDING_UNAVAILABLE')
+                throw LlmError.fromFailure({
+                  message: 'ACP directory handoff has no durable binding',
+                  code: 'ACP_BINDING_UNAVAILABLE',
+                })
               continuationBinding = await self.forkWorkingDirectory(
                 sessionKey,
                 session,
@@ -3461,16 +3535,21 @@ export class AcpProfileAdapter extends LlmAdapter {
             retainHealthyRuntimeAfterNotDispatched = true
             failure =
               localSettlementFailure === undefined
-                ? new LlmError(
-                    'The ACP Agent completed, but the response could not be projected into the DSH turn.',
-                    'ACP_RESPONSE_PROJECTION_FAILED',
+                ? LlmError.fromFailure(
+                    {
+                      message: 'The ACP Agent completed, but the response could not be projected into the DSH turn.',
+                      code: 'ACP_RESPONSE_PROJECTION_FAILED',
+                    },
                     { cause: error },
                   )
-                : new LlmError(
-                    localSettlementFailure instanceof Error
-                      ? localSettlementFailure.message
-                      : 'ACP results are not saved yet; local storage will retry automatically.',
-                    'ACP_LOCAL_SETTLEMENT_FAILED',
+                : LlmError.fromFailure(
+                    {
+                      message:
+                        localSettlementFailure instanceof Error
+                          ? localSettlementFailure.message
+                          : 'ACP results are not saved yet; local storage will retry automatically.',
+                      code: 'ACP_LOCAL_SETTLEMENT_FAILED',
+                    },
                     { cause: localSettlementFailure },
                   )
           } finally {
@@ -3513,11 +3592,14 @@ export class AcpProfileAdapter extends LlmAdapter {
                 settleRunningActivities()
                 await activityWriteTail
                 retainHealthyRuntimeAfterNotDispatched = true
-                failure = new LlmError(
-                  settlementError instanceof Error
-                    ? settlementError.message
-                    : 'ACP results are not saved yet; local storage will retry automatically.',
-                  'ACP_LOCAL_SETTLEMENT_FAILED',
+                failure = LlmError.fromFailure(
+                  {
+                    message:
+                      settlementError instanceof Error
+                        ? settlementError.message
+                        : 'ACP results are not saved yet; local storage will retry automatically.',
+                    code: 'ACP_LOCAL_SETTLEMENT_FAILED',
+                  },
                   { cause: settlementError },
                 )
                 done = true
@@ -3529,18 +3611,23 @@ export class AcpProfileAdapter extends LlmAdapter {
             try {
               await settleKnownRemoteTerminal()
               retainHealthyRuntimeAfterNotDispatched = true
-              failure = new LlmError(
-                'The ACP Agent completed, but its response could not be recovered to finish the turn.',
-                'ACP_HOST_FEEDBACK_COMMIT_FAILED',
+              failure = LlmError.fromFailure(
+                {
+                  message: 'The ACP Agent completed, but its response could not be recovered to finish the turn.',
+                  code: 'ACP_HOST_FEEDBACK_COMMIT_FAILED',
+                },
                 { cause: error },
               )
             } catch (settlementError) {
               retainHealthyRuntimeAfterNotDispatched = true
-              failure = new LlmError(
-                settlementError instanceof Error
-                  ? settlementError.message
-                  : 'ACP results are not saved yet; local storage will retry automatically.',
-                'ACP_LOCAL_SETTLEMENT_FAILED',
+              failure = LlmError.fromFailure(
+                {
+                  message:
+                    settlementError instanceof Error
+                      ? settlementError.message
+                      : 'ACP results are not saved yet; local storage will retry automatically.',
+                  code: 'ACP_LOCAL_SETTLEMENT_FAILED',
+                },
                 { cause: settlementError },
               )
             }
@@ -3568,13 +3655,16 @@ export class AcpProfileAdapter extends LlmAdapter {
                 self.settlementSink,
                 self.profileId,
               )
-              failure = new LlmError(error.message, error.code, { cause: error })
+              failure = LlmError.fromFailure({ message: error.message, code: error.code }, { cause: error })
             } catch (settlementError) {
-              failure = new LlmError(
-                settlementError instanceof Error
-                  ? settlementError.message
-                  : 'ACP results are not saved yet; local storage will retry automatically.',
-                'ACP_LOCAL_SETTLEMENT_FAILED',
+              failure = LlmError.fromFailure(
+                {
+                  message:
+                    settlementError instanceof Error
+                      ? settlementError.message
+                      : 'ACP results are not saved yet; local storage will retry automatically.',
+                  code: 'ACP_LOCAL_SETTLEMENT_FAILED',
+                },
                 { cause: settlementError },
               )
             }
@@ -3594,18 +3684,23 @@ export class AcpProfileAdapter extends LlmAdapter {
             try {
               await settleKnownRemoteTerminal()
               retainHealthyRuntimeAfterNotDispatched = true
-              failure = new LlmError(
-                'The ACP Agent ended its response before the DSH Host tool was dispatched',
-                'ACP_HOST_TOOL_NOT_DISPATCHED',
+              failure = LlmError.fromFailure(
+                {
+                  message: 'The ACP Agent ended its response before the DSH Host tool was dispatched',
+                  code: 'ACP_HOST_TOOL_NOT_DISPATCHED',
+                },
                 { cause: error },
               )
             } catch (settlementError) {
               retainHealthyRuntimeAfterNotDispatched = true
-              failure = new LlmError(
-                settlementError instanceof Error
-                  ? settlementError.message
-                  : 'ACP results are not saved yet; local storage will retry automatically.',
-                'ACP_LOCAL_SETTLEMENT_FAILED',
+              failure = LlmError.fromFailure(
+                {
+                  message:
+                    settlementError instanceof Error
+                      ? settlementError.message
+                      : 'ACP results are not saved yet; local storage will retry automatically.',
+                  code: 'ACP_LOCAL_SETTLEMENT_FAILED',
+                },
                 { cause: settlementError },
               )
             }
@@ -3629,14 +3724,17 @@ export class AcpProfileAdapter extends LlmAdapter {
             try {
               await settleKnownRemoteTerminal()
               retainHealthyRuntimeAfterNotDispatched = true
-              failure = new LlmError(error.message, error.code, { cause: error })
+              failure = LlmError.fromFailure({ message: error.message, code: error.code }, { cause: error })
             } catch (settlementError) {
               retainHealthyRuntimeAfterNotDispatched = true
-              failure = new LlmError(
-                settlementError instanceof Error
-                  ? settlementError.message
-                  : 'ACP results are not saved yet; local storage will retry automatically.',
-                'ACP_LOCAL_SETTLEMENT_FAILED',
+              failure = LlmError.fromFailure(
+                {
+                  message:
+                    settlementError instanceof Error
+                      ? settlementError.message
+                      : 'ACP results are not saved yet; local storage will retry automatically.',
+                  code: 'ACP_LOCAL_SETTLEMENT_FAILED',
+                },
                 { cause: settlementError },
               )
             }
@@ -3662,9 +3760,7 @@ export class AcpProfileAdapter extends LlmAdapter {
                 ? 'The ACP tool feedback commit into the native Agent inbox could not be confirmed; inspect the Agent session before continuing.'
                 : reconciliationRequired
                   ? 'A DSH Host tool failed inside the Host before its result was recorded, or was still executing when the ACP Agent ended its response; inspect both sides before continuing.'
-                  : settlementFailure?.code === 'ACP_HOST_CALL_DRAIN_TIMEOUT'
-                    ? 'ACP prompt ended while a DSH Host tool was still active and its outcome could not be confirmed.'
-                    : 'ACP prompt ended before its remote outcome was confirmed',
+                  : 'ACP prompt ended before its remote outcome was confirmed',
             provider: options.provider,
             ...(runtime.acpSessionId === undefined ? {} : { acpSessionId: runtime.acpSessionId }),
             updatedAt: Date.now(),
@@ -3679,9 +3775,11 @@ export class AcpProfileAdapter extends LlmAdapter {
           failure =
             settlementFailure === undefined
               ? error
-              : new LlmError(
-                  recoveryState.detail!,
-                  reconciliationRequired ? 'ACP_RECONCILIATION_REQUIRED' : 'ACP_RECOVERY_REQUIRED',
+              : LlmError.fromFailure(
+                  {
+                    message: recoveryState.detail!,
+                    code: reconciliationRequired ? 'ACP_RECONCILIATION_REQUIRED' : 'ACP_RECOVERY_REQUIRED',
+                  },
                   { cause: error },
                 )
           done = true
@@ -3705,7 +3803,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             // Preserve the ACP taxonomy at that host boundary instead of letting
             // a classified AcpClientError degrade to UNKNOWN in the turn UI.
             if (failure instanceof AcpClientError) {
-              throw new LlmError(failure.message, failure.code, { cause: failure })
+              throw LlmError.fromFailure({ message: failure.message, code: failure.code }, { cause: failure })
             }
             throw failure
           }
@@ -3737,7 +3835,10 @@ export class AcpProfileAdapter extends LlmAdapter {
 
   private canonicalCwd(cwd: string | undefined): string {
     if (cwd === undefined || cwd.length === 0)
-      throw new LlmError('ACP requires the DSH session working directory', 'ACP_SESSION_CWD_UNAVAILABLE')
+      throw LlmError.fromFailure({
+        message: 'ACP requires the DSH session working directory',
+        code: 'ACP_SESSION_CWD_UNAVAILABLE',
+      })
     try {
       return fs.realpathSync.native(cwd)
     } catch {
@@ -3768,12 +3869,15 @@ export class AcpProfileAdapter extends LlmAdapter {
       await this.sidecar.writeRecoveryState(recovery)
     } catch (error: unknown) {
       this.rememberRecoveryFallback(recovery)
-      throw new LlmError(
-        `ACP recovery state could not be persisted: ${error instanceof Error ? error.message : String(error)}`,
-        'ACP_RECOVERY_STATE_UNAVAILABLE',
-      )
+      throw LlmError.fromFailure({
+        message: `ACP recovery state could not be persisted: ${error instanceof Error ? error.message : String(error)}`,
+        code: 'ACP_RECOVERY_STATE_UNAVAILABLE',
+      })
     }
-    throw new LlmError(state.detail ?? 'ACP session requires recovery before another prompt', errorCode)
+    throw LlmError.fromFailure({
+      message: state.detail ?? 'ACP session requires recovery before another prompt',
+      code: errorCode,
+    })
   }
 
   private async refreshBindingHead(
@@ -3895,17 +3999,54 @@ export class AcpProfileAdapter extends LlmAdapter {
   }
 
   /** Explicitly discard only ACP-side continuity; DSH history is untouched. */
-  async rebindBlank(sessionId: string): Promise<void> {
+  rebindBlank(sessionId: string): Promise<void> {
+    return this.runRecoveryOperation(sessionId, (assertCurrent) => this.rebindBlankCurrent(sessionId, assertCurrent))
+  }
+
+  private async runRecoveryOperation(
+    sessionId: string,
+    operation: (assertCurrent: () => void) => Promise<void>,
+  ): Promise<void> {
+    const session = this.sessionOf(sessionId)
+    const owner = session?.identity ?? session
+    const completion = Promise.withResolvers<void>()
+    const pending = { sessionId, owner, completion: completion.promise, retired: false }
+    const assertCurrent = (): void => {
+      const current = this.sessionOf(sessionId)
+      if (
+        this.closing !== undefined ||
+        pending.retired ||
+        (owner !== undefined && this.retiringRecoveryOwners.has(owner)) ||
+        (current?.identity ?? current) !== owner
+      )
+        throw LlmError.fromFailure({
+          message: 'ACP recovery stopped because its session or adapter was closed or replaced.',
+          code: 'ACP_RECOVERY_REQUIRED',
+        })
+    }
+    assertCurrent()
+    this.pendingRecoveries.add(pending)
+    try {
+      await operation(assertCurrent)
+    } finally {
+      this.pendingRecoveries.delete(pending)
+      completion.resolve()
+    }
+  }
+
+  private async rebindBlankCurrent(sessionId: string, assertCurrent: () => void): Promise<void> {
     this.assertNoQuarantinedHostCalls(sessionId, true)
     if (this.sidecar === undefined)
-      throw new LlmError(
-        'ACP sidecar is unavailable; the blank rebind cannot be made durable',
-        'ACP_BINDING_UNAVAILABLE',
-      )
+      throw LlmError.fromFailure({
+        message: 'ACP sidecar is unavailable; the blank rebind cannot be made durable',
+        code: 'ACP_BINDING_UNAVAILABLE',
+      })
     const binding = await this.sidecar.readLatestBinding(sessionId as never)
+    assertCurrent()
     const nextGeneration = binding?.status === 'ok' ? binding.binding.generation + 1 : 1
     this.nextGenerations.set(sessionId, nextGeneration)
     await this.closeSessionRuntime(sessionId)
+    assertCurrent()
     this.assertNoQuarantinedHostCalls(sessionId, true)
     // Explicitly abandoning the old Agent context also resolves any
     // dispatch-uncertain guard; no remote prompt is retried automatically.
@@ -3921,7 +4062,9 @@ export class AcpProfileAdapter extends LlmAdapter {
     }
     try {
       await this.sidecar.writeRecoveryState(healthyState, { clearDispatch: true })
+      assertCurrent()
     } catch (error) {
+      assertCurrent()
       this.rememberRecoveryFallback({
         ...healthyState,
         kind: 'outcome-unknown',
@@ -3929,9 +4072,12 @@ export class AcpProfileAdapter extends LlmAdapter {
         detail: 'Blank rebind did not complete durably; the previous ACP outcome still requires recovery.',
         updatedAt: Date.now(),
       })
-      throw new LlmError('ACP blank rebind could not be completed durably', 'ACP_RECOVERY_STATE_UNAVAILABLE', {
-        cause: error,
-      })
+      throw LlmError.fromFailure(
+        { message: 'ACP blank rebind could not be completed durably', code: 'ACP_RECOVERY_STATE_UNAVAILABLE' },
+        {
+          cause: error,
+        },
+      )
     }
     this.continuity.executionOwners.clear(sessionId)
     this.continuity.executionOwners.clearRecoveryFallback(sessionId)
@@ -3940,35 +4086,48 @@ export class AcpProfileAdapter extends LlmAdapter {
   }
 
   /** Allow a user-selected retry to reuse the original durable ACP binding. */
-  async retryOriginal(sessionId: string): Promise<void> {
+  retryOriginal(sessionId: string): Promise<void> {
+    return this.runRecoveryOperation(sessionId, (assertCurrent) => this.retryOriginalCurrent(sessionId, assertCurrent))
+  }
+
+  private async retryOriginalCurrent(sessionId: string, assertCurrent: () => void): Promise<void> {
     this.assertNoQuarantinedHostCalls(sessionId, true)
     if (this.sidecar === undefined)
-      throw new LlmError(
-        'ACP sidecar is unavailable; the original binding cannot be restored',
-        'ACP_BINDING_UNAVAILABLE',
-      )
+      throw LlmError.fromFailure({
+        message: 'ACP sidecar is unavailable; the original binding cannot be restored',
+        code: 'ACP_BINDING_UNAVAILABLE',
+      })
     const bindingResult = await this.sidecar.readLatestBinding(sessionId as never)
+    assertCurrent()
     if (bindingResult?.status !== 'ok')
-      throw new LlmError('The original ACP binding is unavailable', 'ACP_BINDING_UNAVAILABLE')
+      throw LlmError.fromFailure({
+        message: 'The original ACP binding is unavailable',
+        code: 'ACP_BINDING_UNAVAILABLE',
+      })
     const binding = bindingResult.binding
     const profile = snapshotProfile(this.readConfig())
     const session = this.sessionOf(sessionId)
     if (profile === undefined || session === undefined)
-      throw new LlmError('The original ACP profile or DSH session is unavailable', 'ACP_RECONCILIATION_REQUIRED')
+      throw LlmError.fromFailure({
+        message: 'The original ACP profile or DSH session is unavailable',
+        code: 'ACP_RECONCILIATION_REQUIRED',
+      })
     const cwd = this.canonicalCwd(session.workingDirectory)
     const fingerprint = await this.launchFingerprint(profile)
+    assertCurrent()
     if (binding.canonicalCwd !== cwd || !acpLaunchFingerprintsCompatible(binding.launchFingerprint, fingerprint)) {
-      throw new LlmError(
-        'The original ACP profile and working directory must be restored before retry',
-        'ACP_RECONCILIATION_REQUIRED',
-      )
+      throw LlmError.fromFailure({
+        message: 'The original ACP profile and working directory must be restored before retry',
+        code: 'ACP_RECONCILIATION_REQUIRED',
+      })
     }
     const retired = retiredAgentReason(this.profileId, profile)
-    if (retired !== undefined) throw new LlmError(retired, 'ACP_AGENT_RETIRED')
-    if (!this.subprocess.ok) throw new LlmError(this.subprocess.message, 'ACP_SPAWN_FAILURE')
+    if (retired !== undefined) throw LlmError.fromFailure({ message: retired, code: 'ACP_AGENT_RETIRED' })
+    if (!this.subprocess.ok) throw LlmError.fromFailure({ message: this.subprocess.message, code: 'ACP_SPAWN_FAILURE' })
     // Retry only replaces runtimes owned by this DSH session. Other DSH
     // sessions must keep their live Agent processes untouched.
     await this.closeSessionRuntime(sessionId)
+    assertCurrent()
     this.assertNoQuarantinedHostCalls(sessionId, true)
     const generation: ProfileGeneration = {
       id: profileLaunchIdentityHash(this.profileId, profile),
@@ -3982,8 +4141,10 @@ export class AcpProfileAdapter extends LlmAdapter {
     try {
       if (typeof runtime.restore !== 'function') throw new Error('ACP runtime cannot restore the original session')
       await runtime.restore(binding)
+      assertCurrent()
       if (this.runtimes.get(runtimeKey) !== runtime) throw new Error('ACP session was disposed during recovery')
       await this.persistRuntimeSnapshot(sessionId, runtime)
+      assertCurrent()
       // The user explicitly reviewed the uncertain outcome. Remove only the
       // durable dispatch guard; the ACP binding and all DSH history remain.
       const healthyState: AcpRecoveryState = {
@@ -3996,12 +4157,16 @@ export class AcpProfileAdapter extends LlmAdapter {
         updatedAt: Date.now(),
       }
       await this.sidecar.writeRecoveryState(healthyState, { clearDispatch: true })
+      assertCurrent()
       this.continuity.executionOwners.clear(sessionId)
       this.continuity.executionOwners.clearRecoveryFallback(sessionId)
       this.inMemoryRecoveryRequired.delete(sessionId)
       this.inMemoryRecoveryStates.delete(sessionId)
     } catch (error: unknown) {
       await this.releaseRuntime(runtimeKey, runtime)
+      // A retired recovery has no authority to overwrite its replacement's
+      // durable state, even when the old restore finishes with an error.
+      assertCurrent()
       const detail = `ACP retry failed: ${error instanceof Error ? error.message : String(error)}`
       const missing = /(?:session[_ -]?)?(?:not[ -]?found|unknown[_ -]?session)|does not exist/i.test(detail)
       const capability = /cannot restore|does not advertise/i.test(detail)
@@ -4017,10 +4182,12 @@ export class AcpProfileAdapter extends LlmAdapter {
       }
       try {
         await this.sidecar.writeRecoveryState(recoveryFailure)
+        assertCurrent()
       } catch {
+        assertCurrent()
         this.rememberRecoveryFallback(recoveryFailure)
       }
-      throw new LlmError(detail, missing ? 'ACP_SESSION_NOT_FOUND' : 'ACP_RETRY_FAILED')
+      throw LlmError.fromFailure({ message: detail, code: missing ? 'ACP_SESSION_NOT_FOUND' : 'ACP_RETRY_FAILED' })
     }
   }
 
@@ -4109,6 +4276,8 @@ export class AcpProfileAdapter extends LlmAdapter {
     )
     while (this.pendingTerminalResponses.size > 0)
       recordFailures(await Promise.allSettled([...this.pendingTerminalResponses]))
+    while (this.pendingRecoveries.size > 0)
+      await Promise.all([...this.pendingRecoveries].map((operation) => operation.completion))
     recordFailures(
       await Promise.allSettled(
         handoffs
@@ -4213,9 +4382,11 @@ export class AcpProfileAdapter extends LlmAdapter {
     try {
       this.continuity.executionOwners.assertQuiescent(sessionId, recoveryAction)
     } catch (error) {
-      throw new LlmError(
-        'ACP Host tool execution is still active; wait for it to settle before recovery',
-        'ACP_RECOVERY_REQUIRED',
+      throw LlmError.fromFailure(
+        {
+          message: 'ACP Host tool execution is still active; wait for it to settle before recovery',
+          code: 'ACP_RECOVERY_REQUIRED',
+        },
         { cause: error },
       )
     }
@@ -4235,6 +4406,24 @@ export class AcpProfileAdapter extends LlmAdapter {
   /** Release only the disposed host session's runtimes; keep its durable history. */
   async disposeSession(session: { readonly id: string; readonly identity?: object }): Promise<void> {
     const owner = session.identity ?? session
+    this.retiringRecoveryOwners.set(owner, (this.retiringRecoveryOwners.get(owner) ?? 0) + 1)
+    try {
+      await this.disposeSessionResources(session, owner)
+    } finally {
+      const remaining = this.retiringRecoveryOwners.get(owner)! - 1
+      if (remaining === 0) this.retiringRecoveryOwners.delete(owner)
+      else this.retiringRecoveryOwners.set(owner, remaining)
+    }
+  }
+
+  private async disposeSessionResources(
+    session: { readonly id: string; readonly identity?: object },
+    owner: object,
+  ): Promise<void> {
+    const recoveries = [...this.pendingRecoveries].filter(
+      (operation) => operation.sessionId === session.id && operation.owner === owner,
+    )
+    for (const operation of recoveries) operation.retired = true
     const waiters = this.settlementSessionWaitControllers.get(session.id)
     if (waiters !== undefined) {
       for (const waiter of [...waiters]) {
@@ -4248,6 +4437,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     const releaseControls = await this.sessionControls.retireSession(session.id, owner)
     try {
       await this.closeSessionRuntime(session.id, owner)
+      await Promise.all(recoveries.map((operation) => operation.completion))
       if (this.admittedToolSchemaOwners.get(session.id) === owner) {
         this.admittedToolSchemaOwners.delete(session.id)
         this.admittedToolSchemas.delete(session.id)
@@ -4304,8 +4494,8 @@ export class AcpProfileAdapter extends LlmAdapter {
     terminalOutcomes: HostTerminalOutcomes,
   ): ConstructorParameters<typeof AcpSessionRuntime>[0] {
     const retired = retiredAgentReason(this.profileId, profile)
-    if (retired !== undefined) throw new LlmError(retired, 'ACP_AGENT_RETIRED')
-    if (!this.subprocess.ok) throw new LlmError(this.subprocess.message, 'ACP_SPAWN_FAILURE')
+    if (retired !== undefined) throw LlmError.fromFailure({ message: retired, code: 'ACP_AGENT_RETIRED' })
+    if (!this.subprocess.ok) throw LlmError.fromFailure({ message: this.subprocess.message, code: 'ACP_SPAWN_FAILURE' })
     const processSeam = this.subprocess.seam
     const runtime = effectiveRuntimeOf(this.profileId, profile)
     // ACP client-capability operations are external side effects too.  Keep
@@ -4389,17 +4579,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       config: profile,
       subprocess: processSeam,
       cwd,
-      prepareLaunch: (config, launchCwd) =>
-        prepareAgentLaunch(
-          runtime,
-          config as AcpStubAgentConfig,
-          launchCwd,
-          processSeam,
-          this.createMcpLease === undefined
-            ? undefined
-            : (capabilities) =>
-                this.createMcpLease!(sessionId, capabilities, runtime, this.admittedToolSchemas.get(sessionId)),
-        ),
+      prepareLaunch: (config) => prepareAgentLaunch(runtime, config as AcpStubAgentConfig),
       createFileSystemHandlers: () =>
         createAcpFileSystemHandlers({
           profileId: this.profileId,

@@ -105,16 +105,14 @@ it.skipIf(process.env.DSH_E2E_LIVE_MANAGED_APPROVAL !== '1')(
         provider: 'spawn',
         label: 'Devin approval verification',
         delivery: 'caller',
-        request: {
-          parent,
-          agentOptions: { provider: 'acp-devin', model: 'swe-2-high' },
-          prompt: [
-            {
-              type: 'text',
-              text: markerWritePrompt(writeSchema, path, marker),
-            },
-          ],
-        },
+        parent,
+        agentOptions: { provider: 'acp-devin', model: 'swe-2-high' },
+        prompt: [
+          {
+            type: 'text',
+            text: markerWritePrompt(writeSchema, path, marker),
+          },
+        ],
         signal: new AbortController().signal,
       })
       child = required(host.ctx.agents.get(activation.childId))

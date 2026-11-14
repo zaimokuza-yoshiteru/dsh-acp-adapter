@@ -58,7 +58,7 @@ function fixture() {
       reasoning: secret,
       metadata: { request_id: request, generation_model: 'swe-2-high', finish_reason: 'tool_calls' },
       tool_calls: [
-        { id: call, arguments: { tool_name: 'send_message', arguments: { target: 'lead', message: rawMarker } } },
+        { id: call, arguments: { tool_name: 'send_message', arguments: { agent: 'lead', message: rawMarker } } },
       ],
     })
   const receipt = (
@@ -82,6 +82,66 @@ afterEach(() => {
 })
 
 describe('isolated Devin history evidence', () => {
+  it('emits fixed CLI tool categories for failed runs without revealing private discovery names or payloads', () => {
+    const test = fixture()
+    test.insert(1, null, {
+      role: 'assistant',
+      metadata: { request_id: 'synthetic-generation' },
+      tool_calls: [
+        { id: 'discovery', name: 'list_mcp_tools', arguments: { query: secret } },
+        { id: 'native', name: 'subagent', arguments: { prompt: secret } },
+        {
+          id: 'dsh',
+          name: 'call_mcp_tool',
+          arguments: { server_name: 'dsh', tool_name: 'subagent', arguments: { prompt: secret } },
+        },
+        { id: 'unknown', name: secret, arguments: { prompt: secret } },
+      ],
+    })
+    const result = readDevinHistory(test.scope)
+    expect(result.status).toBe('unsupported')
+    const trace = new DevinLiveTrace({ directory: join(test.root, 'safe-trace'), key: Buffer.alloc(32, 8) })
+    emitDevinHistory(trace, result)
+    trace.finish('fail', {})
+    const text = readFileSync(trace.filePath, 'utf8')
+    const rows = text
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(rows.filter((row) => row.event === 'devin-history/tool').map((row) => row.cliToolKind)).toEqual([
+      'mcp-discovery',
+      'native-subagent',
+      'dsh-subagent',
+      'other',
+    ])
+    expect(text).not.toContain(secret)
+    expect(text).not.toContain('synthetic-generation')
+  })
+
+  it('recognizes RC.2 native text receipts without treating arbitrary result prose as delivery', () => {
+    const test = fixture()
+    test.insert(1, null, { role: 'user', content: secret })
+    test.generation(2, 1, 'request-one', 'call-one')
+    test.receipt(3, 2, 'call-one', 'message delivered to agent lead')
+    test.generation(4, 3, 'request-two', 'call-two')
+    test.receipt(5, 4, 'call-two', 'Not delivered: message delivered to agent lead')
+    const trace = new DevinLiveTrace({ directory: join(test.root, 'safe-trace'), key: Buffer.alloc(32, 8) })
+    emitDevinHistory(trace, readDevinHistory(test.scope))
+    trace.finish('pass', {})
+    const rows = readFileSync(trace.filePath, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(rows.filter((row) => row.event === 'devin-history/receipt').map((row) => row.sendStatus)).toEqual([
+      'accepted',
+      'unknown',
+    ])
+    expect(rows.filter((row) => row.event === 'devin-history/send')[1]).toMatchObject({
+      historyParentReceiptSaysSent: true,
+      historySameArguments: true,
+    })
+  })
+
   it('joins exact test bindings, successful stored receipt and a distinct child generation without publishing raw data', () => {
     const test = fixture()
     test.populate()
@@ -166,7 +226,7 @@ describe('isolated Devin history evidence', () => {
     missing.insert(1, null, {
       role: 'assistant',
       tool_calls: [
-        { id: 'call', arguments: { tool_name: 'send_message', arguments: { target: 'lead', message: rawMarker } } },
+        { id: 'call', arguments: { tool_name: 'send_message', arguments: { agent: 'lead', message: rawMarker } } },
       ],
     })
     missing.receipt(2, 1, 'call')
@@ -248,7 +308,7 @@ describe('isolated Devin history evidence', () => {
             id: 'call-one',
             arguments: {
               tool_name: 'send_message',
-              arguments: { target: 'lead', message: mismatch === 'args' ? 'other-synthetic-marker' : rawMarker },
+              arguments: { agent: 'lead', message: mismatch === 'args' ? 'other-synthetic-marker' : rawMarker },
             },
           },
         ],
@@ -352,7 +412,7 @@ describe('isolated Devin history evidence', () => {
         tool_calls: [
           {
             id: `call-${call}`,
-            arguments: { tool_name: 'send_message', arguments: { target: 'lead', message: 'x'.repeat(60_000) } },
+            arguments: { tool_name: 'send_message', arguments: { agent: 'lead', message: 'x'.repeat(60_000) } },
           },
         ],
       })

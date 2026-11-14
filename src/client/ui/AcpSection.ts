@@ -109,6 +109,22 @@ function Loaded({
   const [approvalMenuOpen, setApprovalMenuOpen] = useState(false)
   // Delegate placement, scrolling, focus and keyboard interaction to the native Menu.
   const [addMenuOpen, setAddMenuOpen] = useState(false)
+  const addTrigger = useRef<HTMLButtonElement>(null)
+  const addFooter = useRef<HTMLSpanElement>(null)
+  useEffect(() => {
+    const trigger = addTrigger.current
+    if (!addMenuOpen || trigger === null) return
+    // CSS hides a portaled menu when its anchor is fully clipped. Close it so
+    // a subsequent Tab cannot select the previously focused, invisible row.
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry === undefined || entry.intersectionRatio > 0) return
+      if (addFooter.current?.closest('[role="menu"]')?.contains(trigger.ownerDocument.activeElement))
+        trigger.focus({ preventScroll: true })
+      setAddMenuOpen(false)
+    })
+    observer.observe(trigger)
+    return () => observer.disconnect()
+  }, [addMenuOpen])
   // Opening the panel reads saved health facts; only an explicit recheck probes.
   useEffect(() => {
     panel.refreshHealth()
@@ -299,7 +315,9 @@ function Loaded({
               ]),
           ...unverified.map(catalogItem),
         ],
-        footer: [{ id: customAgentItemId, label: h('span', { className: css.catalogEntry }, t('addCustom')) }],
+        footer: [
+          { id: customAgentItemId, label: h('span', { className: css.catalogEntry, ref: addFooter }, t('addCustom')) },
+        ],
         onClose: () => {
           setAddMenuOpen(false)
         },
@@ -316,6 +334,7 @@ function Loaded({
           'button',
           {
             type: 'button',
+            ref: addTrigger,
             className: css.addButton,
             disabled: readOnly,
             'aria-haspopup': 'menu',

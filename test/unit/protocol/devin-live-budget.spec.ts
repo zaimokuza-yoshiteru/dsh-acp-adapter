@@ -18,7 +18,7 @@ it('allows one Lead spawn and one teammate mailbox message', () => {
       sessionKey: 'lead-session',
       role: 'lead',
       phase: 'initial',
-      tool: 'spawn_teammate',
+      tool: 'subagent',
     }),
   ).toBeUndefined()
   expect(
@@ -146,7 +146,7 @@ it('uses the Host ToolRuntime guard to deny prohibited Lead messages before the 
     defineTool({
       name: 'send_message',
       description: 'Send a Team message.',
-      parameters: { target: { type: 'string', required: true }, message: { type: 'string', required: true } },
+      parameters: { agent: { type: 'string', required: true }, message: { type: 'string', required: true } },
       output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
       execute: () => {
         bodyCalls += 1
@@ -173,7 +173,7 @@ it('uses the Host ToolRuntime guard to deny prohibited Lead messages before the 
           type: 'tool-call',
           id: ToolCallId('prohibited-lead-message'),
           name: 'send_message',
-          arguments: JSON.stringify({ target: 'lead', message: 'marker' }),
+          arguments: JSON.stringify({ agent: 'lead', message: 'marker' }),
         },
       ],
       agent: { id: 'lead-0', options: { provider: 'acp-devin' } } as never,

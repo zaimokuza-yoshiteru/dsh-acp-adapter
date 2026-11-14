@@ -4,6 +4,26 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.2.2-rc.2.1
+
+### 中文
+
+- 兼容目标更新为 DSH `0.2.2-rc.2`。使用 DSH RC.1 的用户请继续使用插件 `0.2.2-rc.1.2`。
+- ACP 成员设置整合到原生子代理目录，沿用原生成员导航和任务板。关闭 Teams 后仍可管理已有子代理；读取成员信息和修改设置均核查相关会话权限。
+- 使用原生工作目录准入保护已绑定的 Agent 上下文，在准入时拒绝不支持的目录切换。首次会话和同一实际目录的访问保持正常。
+- Devin 要求 `3000.12.43` 或更新版本，改用会话级 MCP，不再写入用户 MCP 配置。修正大型工具目录的发现指引，由 Devin 自身读取所需定义，保持原有审批规则。
+- 调整窗口大小或滚动设置页使“添加 Agent”移出视野时，目录菜单自动关闭，防止 Tab 误选隐藏的条目。
+- 修复会话恢复与关闭并发时可能遗留 Agent 进程的问题。
+
+### English
+
+- Update the compatibility target to DSH `0.2.2-rc.2`. Users on DSH RC.1 should keep plugin version `0.2.2-rc.1.2`.
+- Integrate ACP member settings into the native subagent catalog, reusing its navigation and task board. Existing subagents remain manageable after disabling Teams; member information and settings respect the relevant session permissions.
+- Protect bound Agent context through native working-directory admission, rejecting unsupported directory switches during admission. Initial sessions and access to the same physical directory remain available.
+- Require Devin `3000.12.43` or newer and use session-level MCP without writing user MCP configuration. Correct large-catalog discovery guidance so Devin reads the needed definitions itself, preserving existing approval rules.
+- Close the Agent catalog when resizing or scrolling moves its button out of view, so Tab cannot activate a hidden entry.
+- Fix Agent processes potentially surviving concurrent session recovery and shutdown.
+
 ## 0.2.2-rc.1.2
 
 ### 中文

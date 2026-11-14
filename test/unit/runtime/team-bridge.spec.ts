@@ -91,20 +91,26 @@ it.each([undefined, 'devin'])(
     const fixture = await setup(wireProfile)
     const instructions = fixture.client.getInstructions() ?? ''
     for (const text of [instructions, fixture.lease.instructions]) {
-      expect(text).toContain('members share the workspace and only fresh context is supported')
+      expect(text).not.toContain('only fresh context is supported')
       expect(text).not.toContain('explicit user request for a team')
       expect(text).not.toContain('Create teams only when explicitly requested')
     }
-    expect(fixture.lease.instructions).toContain('Team target names resolve within the caller’s Team')
+    expect(fixture.lease.instructions).toContain('Agent names resolve within the caller’s subagent tree')
     const serverName = fixture.lease.servers[0]!.name
     expect(serverName).toMatch(/^(?:dsh|dshteam_[a-f0-9]{16})$/)
-    expect(fixture.lease.instructions).toContain(
-      `select the exact server namespace ${serverName} and list only tool names`,
-    )
-    expect(fixture.lease.instructions).toContain('then inspect the definitions of the tools you need')
-    expect(fixture.lease.instructions).toContain(
-      'A truncated or partial catalog is not evidence that a tool is unavailable',
-    )
+    expect(fixture.lease.instructions).toContain(`Current DSH tools connection: MCP server ${serverName}`)
+    expect(fixture.lease.instructions).not.toContain('list only tool names')
+    if (wireProfile === 'devin') {
+      expect(fixture.lease.instructions).toContain('To discover this server’s tools, use mcp_list_tools')
+      expect(fixture.lease.instructions).toContain('built-in grep')
+      expect(fixture.lease.instructions).toContain('Never use exec, shell commands or DSH file tools')
+      expect(fixture.lease.instructions).toContain('that exact returned file')
+      expect(fixture.lease.instructions).toContain('Your native tool permissions still apply')
+    } else {
+      expect(fixture.lease.instructions).toContain('supported discovery operations')
+      expect(fixture.lease.instructions).not.toContain('mcp_list_tools')
+      expect(fixture.lease.instructions).not.toContain('Devin')
+    }
     expect(fixture.lease.instructions).not.toMatch(/ALL_TOOLS|functions\.exec|tools\.exec/)
   },
 )
@@ -139,13 +145,13 @@ it('records actual MCP-to-Host execution correlation and isolates a throwing tra
   fixture.lease.beginPrompt(new AbortController().signal)
   const result = await fixture.client.callTool({
     name: 'send_message',
-    arguments: { target: 'lead', message: 'private test body' },
+    arguments: { agent: 'lead', message: 'private test body' },
   })
   expect(result.isError).not.toBe(true)
   expect(fixture.execute).toHaveBeenCalledTimes(1)
   const secondResult = await fixture.client.callTool({
     name: 'send_message',
-    arguments: { target: 'lead', message: 'private test body' },
+    arguments: { agent: 'lead', message: 'private test body' },
   })
   expect(secondResult.isError).not.toBe(true)
   const bridgeEvents = events as unknown as Array<{
@@ -200,7 +206,7 @@ it('records actual MCP-to-Host execution correlation and isolates a throwing tra
   diagnosticRemovers.push(removeThrowing)
   const thirdResult = await fixture.client.callTool({
     name: 'send_message',
-    arguments: { target: 'lead', message: 'private test body' },
+    arguments: { agent: 'lead', message: 'private test body' },
   })
   expect(thirdResult.isError).not.toBe(true)
   expect(fixture.execute).toHaveBeenCalledTimes(3)
@@ -221,12 +227,25 @@ async function setup(
     nextStep: [] as ReturnType<typeof createUserMessage>[],
     nextTurn: [] as ReturnType<typeof createUserMessage>[],
   })
-  const session = withSession
+  let session = withSession
     ? (initialSession ?? createFeedbackSession())
-    : { seq: 0, snapshotEvents: vi.fn(() => [] as readonly unknown[]) }
+    : {
+        seq: 0,
+        snapshotEvents: vi.fn(() => [] as readonly unknown[]),
+        header: { origin: role === 'teammate' ? 'subagent' : undefined },
+        isOwnSeq: () => true,
+      }
+  if (withSession && role === 'teammate') {
+    const original = session as Session
+    session = Session.create(original.id, original.snapshotEvents(), {
+      ...original.header,
+      origin: 'subagent',
+      parentSession: SessionId('team-root'),
+    })
+  }
   const agent = {
     id: 'lead',
-    ...(withSession ? { session } : {}),
+    session,
     inbox: createInbox(),
     steer: vi.fn(),
     inject: vi.fn(),
@@ -238,7 +257,7 @@ async function setup(
     ...registeredTools,
     ...(hasTeams
       ? [
-          'spawn_teammate',
+          'subagent',
           'send_message',
           'list_agents',
           'wait_agent',
@@ -264,14 +283,23 @@ async function setup(
   const membership = { current: { role, id: 'member-1', root: rootAgent } }
   const execute = vi.fn(async (input) => ({ content: [{ type: 'text' as const, text: input.name }], isError: false }))
   const services: Record<string, unknown> = {
-    agentTeams: {
-      tryMembership: (value: unknown) =>
-        value === rootAgent
-          ? { role: 'lead', id: 'member-1', root: rootAgent }
-          : value === agent
-            ? membership.current
+    subagents: {
+      rootOf: (value: unknown) =>
+        value === agent
+          ? membership.current.role === 'lead'
+            ? agent
+            : membership.current.root
+          : value === rootAgent
+            ? rootAgent
             : undefined,
+      namesOf: (value: unknown) => ({ self: value === rootAgent ? 'lead' : 'worker' }),
     },
+    sessionProjections: {
+      snapshot: () => ({
+        values: { subagent: { seq: 0, mode: 'continuable' }, acpExecution: { externalSubagent: false } },
+      }),
+    },
+    agentTeams: { isEnabled: () => true },
     agents: {
       get: (id: string) => (id === 'lead' ? agent : id === 'team-root' ? rootAgent : undefined),
       withInitiator,
@@ -288,7 +316,7 @@ async function setup(
   if (diagnosticTrace !== undefined) services.acpLiveDiagnostics = diagnosticTrace
   if (withSession) services.sessions = { get: (id: string) => (id === 'lead' ? currentAgent.session : undefined) }
   const listeners = new Map<string, (...args: any[]) => void>()
-  if (!hasTeams) delete services.agentTeams
+  if (!hasTeams) delete services.subagents
   const getService = (name: string) => services[name]
   const ownership = new CordisContext()
   ownership.provide('tools', services.tools as never)
@@ -375,7 +403,7 @@ async function rawMcp(server: { url: string }, message: Record<string, unknown>,
 }
 
 describe('session-owned native Teams MCP bridge', () => {
-  it.each(['spawn_teammate', 'send_message'] as const)(
+  it.each(['subagent', 'send_message'] as const)(
     'keeps verified %s approval facts readable and its complete task in request details',
     async (tool) => {
       const seed = createFeedbackSession()
@@ -384,7 +412,7 @@ describe('session-owned native Teams MCP bridge', () => {
       lease.beginPrompt(new AbortController().signal)
       const task = 'Inspect the parser and report every edge case.\n'.repeat(80)
       const rawInput =
-        tool === 'spawn_teammate'
+        tool === 'subagent'
           ? {
               name: 'parser-reviewer',
               description: 'Review parser',
@@ -393,7 +421,7 @@ describe('session-owned native Teams MCP bridge', () => {
               model: 'explicit-model',
               unknown_scope: { write: ['/private/target'] },
             }
-          : { target: 'lead', message: task, unknown_scope: { write: ['/private/target'] } }
+          : { agent: 'lead', message: task, unknown_scope: { write: ['/private/target'] } }
       const request = {
         ...permission(tool),
         toolCall: { ...permission(tool).toolCall, rawInput },
@@ -414,11 +442,11 @@ describe('session-owned native Teams MCP bridge', () => {
       expect(ask).toHaveBeenCalledOnce()
       const question = ask.mock.calls[0]![0].questions[0]!
       expect(question.question).not.toContain('Inspect the parser')
-      expect(question.question).toContain(tool === 'spawn_teammate' ? 'parser-reviewer' : 'lead')
+      expect(question.question).toContain(tool === 'subagent' ? 'parser-reviewer' : 'lead')
       expect(question.question).toContain('unknown_scope')
       expect(question.question).toContain('/private/target')
-      if (tool === 'spawn_teammate') {
-        expect(question.question).toContain('Context: fresh')
+      if (tool === 'subagent') {
+        expect(question.question).not.toContain('Context: fresh')
         expect(question.question).toContain('Model: explicit-model')
         expect(question.question).toContain('Shared workspace: /workspace/shared')
       }
@@ -431,32 +459,27 @@ describe('session-owned native Teams MCP bridge', () => {
   it.each(['bare-name', 'other-server', 'cached-name', 'inactive-prompt', 'replaced-definition', 'without-teams'])(
     'does not summarize task text from a %s identity',
     async (identity) => {
-      const f = await setup(
-        'devin',
-        identity === 'without-teams' ? ['spawn_teammate'] : [],
-        identity !== 'without-teams',
-      )
+      const f = await setup('devin', identity === 'without-teams' ? ['subagent'] : [], identity !== 'without-teams')
       const controller = new AbortController()
       f.lease.beginPrompt(controller.signal)
       const original = {
-        ...f.permission('spawn_teammate').toolCall,
+        ...f.permission('subagent').toolCall,
         rawInput: { name: 'worker', prompt: 'Complete task whose full text must stay visible', scope: '/restricted' },
       }
       let call = original
       if (identity === 'bare-name')
         call = {
           ...original,
-          name: 'spawn_teammate',
-          _meta: { dshTeamPresentation: { tool: 'spawn_teammate' } },
+          name: 'subagent',
+          _meta: { dshTeamPresentation: { tool: 'subagent' } },
         } as typeof original
-      if (identity === 'other-server') call = { ...original, name: 'mcp__other__spawn_teammate' }
+      if (identity === 'other-server') call = { ...original, name: 'mcp__other__subagent' }
       if (identity === 'cached-name') {
         f.lease.presentTool!(original)
         call = { ...original, name: null }
       }
       if (identity === 'inactive-prompt') controller.abort()
-      if (identity === 'replaced-definition')
-        f.definitions.set('spawn_teammate', { ...f.definitions.get('spawn_teammate') })
+      if (identity === 'replaced-definition') f.definitions.set('subagent', { ...f.definitions.get('subagent') })
       const ask = vi.fn(async ({ questions }: Parameters<AcpNativeUserQuestionService['ask']>[0]) => ({
         answers: [{ id: questions[0]!.id, selected: [questions[0]!.options![0]!.label] }],
       }))
@@ -915,6 +938,9 @@ describe('session-owned native Teams MCP bridge', () => {
 
   it('retains feedback without retry when acceptance cannot be proven', async () => {
     const fixture = await setup()
+    vi.spyOn(fixture.session, 'snapshotEvents').mockImplementation(() => {
+      throw new Error('The Session acceptance evidence is unavailable')
+    })
     fixture.lease.beginPrompt(new AbortController().signal)
     const context = createUserMessage({
       source: { kind: 'test' } as never,
@@ -1828,8 +1854,8 @@ describe('session-owned native Teams MCP bridge', () => {
       )
       const bodySignal = await started.promise
       expect(cause).toBe('teams-unload')
-      delete fixture.services.agentTeams
-      fixture.listeners.get('internal/service')!('agentTeams')
+      delete fixture.services.subagents
+      fixture.listeners.get('internal/service')!('subagents')
       expect.soft(fixture.lease.signal.aborted).toBe(true)
       expect.soft(bodySignal.aborted).toBe(true)
       let closed = false
@@ -1850,21 +1876,21 @@ describe('session-owned native Teams MCP bridge', () => {
   )
 
   it('does not expose global tools hidden from this agent or team tools to non-members', async () => {
-    const { ctx, definitions, hidden, services } = await setup(undefined, ['present', 'spawn_teammate'], false)
+    const { ctx, definitions, hidden, services } = await setup(undefined, ['present', 'subagent'], false)
     hidden.add('present')
     expect(await createDshToolBridge(ctx, 'lead', {})).toBeUndefined()
     expect(definitions.has('present')).toBe(true)
     expect((services.tools as { schemas(scope?: unknown): unknown[] }).schemas()).toEqual([])
   })
   it('leaves a same-name custom spawn tool unchanged outside a native Team', async () => {
-    const { client, lease, tools, execute } = await setup(undefined, ['spawn_teammate'], false)
-    const spawn = tools.find((tool) => tool.name === 'spawn_teammate')!
+    const { client, lease, tools, execute } = await setup(undefined, ['subagent'], false)
+    const spawn = tools.find((tool) => tool.name === 'subagent')!
     expect(spawn.inputSchema.properties).toEqual({})
     expect(spawn.inputSchema.additionalProperties).toBeUndefined()
     lease.beginPrompt(new AbortController().signal)
     const args = { name: 'custom', provider: 'custom-provider', model: 'custom-model', context: 'fork' }
-    expect((await client.callTool({ name: 'spawn_teammate', arguments: args })).isError).not.toBe(true)
-    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ name: 'spawn_teammate', arguments: args }))
+    expect((await client.callTool({ name: 'subagent', arguments: args })).isError).not.toBe(true)
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ name: 'subagent', arguments: args }))
   })
   it('publishes only model-visible schemas and invalidates the key when those schemas change', async () => {
     const fixture = await setup(undefined, ['file_read', 'file_write'], false)
@@ -2041,7 +2067,7 @@ describe('session-owned native Teams MCP bridge', () => {
     const fixture = await setup()
     expect(await createDshToolBridge(fixture.ctx, 'another', {})).toBeUndefined()
   })
-  it('exports nine upstream schemas, dispatches exact identity, and rejects fork and unadvertised tool names', async () => {
+  it('exports native schemas unchanged and leaves route and fork validation to the admitted tool', async () => {
     const { lease, client, tools, name, execute, agent } = await setup()
     expect(tools).toHaveLength(9)
     expect((await client.callTool({ name })).isError).toBe(true)
@@ -2049,19 +2075,20 @@ describe('session-owned native Teams MCP bridge', () => {
     expect((await client.callTool({ name })).content).toEqual([{ type: 'text', text: 'list_agents' }])
     expect(execute.mock.calls[0]![0].agent).toBe(agent)
     expect((await client.callTool({ name: 'bash', arguments: { command: 'echo no' } })).isError).toBe(true)
-    const spawn = tools.find((tool) => tool.name === 'spawn_teammate')!
-    expect((await client.callTool({ name: spawn.name, arguments: { context: 'fork' } })).isError).toBe(true)
-    for (const override of [
-      { model: 'other' },
-      { provider: 'acp-other' },
-      { agent: 'other' },
-      { reasoningEffort: 'high' },
-    ]) {
-      expect((await client.callTool({ name: spawn.name, arguments: { context: 'fresh', ...override } })).isError).toBe(
-        true,
-      )
-    }
-    expect(execute).toHaveBeenCalledTimes(1)
+    const spawn = tools.find((tool) => tool.name === 'subagent')!
+    const arguments_ = { name: 'reviewer', provider: 'acp-other', model: 'other' }
+    expect(spawn.inputSchema).toEqual({ type: 'object', properties: {} })
+    expect((await client.callTool({ name: spawn.name, arguments: arguments_ })).isError).not.toBe(true)
+    expect(execute).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'subagent', arguments: arguments_ }))
+  })
+
+  it('keeps admitted tree tools live when Team task mode is disabled', async () => {
+    const { lease, client, services, listeners, name } = await setup()
+    lease.beginPrompt(new AbortController().signal)
+    services.agentTeams = { isEnabled: () => false }
+    listeners.get('internal/service')!('agentTeams')
+    expect(lease.signal.aborted).toBe(false)
+    expect((await client.callTool({ name })).isError).not.toBe(true)
   })
 
   it('correlates actual Codex deferred replies without executing wait or consuming queued messages', async () => {
@@ -2328,14 +2355,14 @@ describe('session-owned native Teams MCP bridge', () => {
     for (const fixture of [one, two]) {
       fixture.lease.beginPrompt(new AbortController().signal)
       expect(await fixture.lease.permission(fixture.permission('send_message'))).toBeUndefined()
-      await fixture.client.callTool({ name: 'send_message', arguments: { target: 'lead', message: 'hello' } })
+      await fixture.client.callTool({ name: 'send_message', arguments: { agent: 'lead', message: 'hello' } })
       expect(fixture.execute.mock.calls[0]![0].agent).toBe(fixture.agent)
     }
     expect(one.agent).not.toBe(two.agent)
     await one.lease.close()
     expect(await one.lease.permission(one.permission('send_message'))).toBeUndefined()
     expect(
-      (await two.client.callTool({ name: 'send_message', arguments: { target: 'lead', message: 'still alive' } }))
+      (await two.client.callTool({ name: 'send_message', arguments: { agent: 'lead', message: 'still alive' } }))
         .isError,
     ).toBe(false)
   })
@@ -2413,18 +2440,18 @@ describe('session-owned native Teams MCP bridge', () => {
     const { lease, client, execute } = await setup('devin', [], true, 'teammate')
     const report = vi.fn()
     lease.beginPrompt(new AbortController().signal, report)
-    await client.callTool({ name: 'send_message', arguments: { target: 'lead', message: 'Done' } })
+    await client.callTool({ name: 'send_message', arguments: { agent: 'lead', message: 'Done' } })
     expect(report).toHaveBeenCalledTimes(1)
-    await client.callTool({ name: 'send_message', arguments: { target: 'peer', message: 'Done' } })
-    await client.callTool({ name: 'send_message', arguments: { target: 'lead', message: '   ' } })
+    await client.callTool({ name: 'send_message', arguments: { agent: 'peer', message: 'Done' } })
+    await client.callTool({ name: 'send_message', arguments: { agent: 'lead', message: '   ' } })
     execute.mockResolvedValueOnce({ content: [{ type: 'text', text: 'failed' }], isError: true })
-    await client.callTool({ name: 'send_message', arguments: { target: 'lead', message: 'Not queued' } })
+    await client.callTool({ name: 'send_message', arguments: { agent: 'lead', message: 'Not queued' } })
     expect(report).toHaveBeenCalledTimes(1)
 
     const lead = await setup('devin')
     const leadReport = vi.fn()
     lead.lease.beginPrompt(new AbortController().signal, leadReport)
-    await lead.client.callTool({ name: 'send_message', arguments: { target: 'lead', message: 'Done' } })
+    await lead.client.callTool({ name: 'send_message', arguments: { agent: 'lead', message: 'Done' } })
     expect(leadReport).not.toHaveBeenCalled()
 
     const changing = await setup('devin', [], true, 'teammate')
@@ -2434,7 +2461,7 @@ describe('session-owned native Teams MCP bridge', () => {
       changing.membership.current.role = 'lead'
       return { content: [{ type: 'text', text: 'queued' }], isError: false }
     })
-    await changing.client.callTool({ name: 'send_message', arguments: { target: 'lead', message: 'Done' } })
+    await changing.client.callTool({ name: 'send_message', arguments: { agent: 'lead', message: 'Done' } })
     expect(changingReport).not.toHaveBeenCalled()
 
     let release!: (result: { content: Array<{ type: 'text'; text: string }>; isError: boolean }) => void
@@ -2453,7 +2480,7 @@ describe('session-owned native Teams MCP bridge', () => {
     const oldPromptReport = vi.fn()
     lease.endPrompt()
     lease.beginPrompt(prompt.signal, oldPromptReport)
-    const late = client.callTool({ name: 'send_message', arguments: { target: 'lead', message: 'Late completion' } })
+    const late = client.callTool({ name: 'send_message', arguments: { agent: 'lead', message: 'Late completion' } })
     await executionStarted
     lease.endPrompt()
     const nextReport = vi.fn()
@@ -2642,7 +2669,7 @@ describe('session-owned native Teams MCP bridge', () => {
       content: [{ type: 'text', text: 'ACP_TEAM_TOOL_UNAVAILABLE' }],
     })
     expect(lease.signal.aborted).toBe(false)
-    delete services.agentTeams
+    delete services.subagents
     expect((await fetch(server.url)).status).toBe(403)
   })
   it('propagates prompt cancellation to native execution and revokes coordination permission', async () => {
@@ -2788,15 +2815,15 @@ describe('session-owned native Teams MCP bridge', () => {
     await expect(pending).rejects.toThrow()
     await vi.waitFor(() => expect(signal.aborted).toBe(true))
   })
-  it('releases the capability immediately when its native member is disposed or Teams is disabled', async () => {
+  it('releases the capability immediately when its native member or subagent runtime is disposed', async () => {
     const first = await setup()
     first.listeners.get('agent/disposed')!({ agent: first.agent })
     expect(first.lease.signal.aborted).toBe(true)
     await first.lease.close()
     await expect(fetch(first.server.url)).rejects.toThrow()
     const second = await setup()
-    delete second.services.agentTeams
-    second.listeners.get('internal/service')!('agentTeams')
+    delete second.services.subagents
+    second.listeners.get('internal/service')!('subagents')
     expect(second.lease.signal.aborted).toBe(true)
     expect(second.listeners.size).toBe(0)
   })
@@ -2810,7 +2837,7 @@ describe('session-owned native Teams MCP bridge', () => {
       }),
     ).toBeUndefined()
     expect(
-      await lease.permission({ ...permission(), toolCall: { toolCallId: 'generic', title: 'spawn_teammate' } }),
+      await lease.permission({ ...permission(), toolCall: { toolCallId: 'generic', title: 'subagent' } }),
     ).toBeUndefined()
   })
   it('answers only a correlated Codex MCP approval with once scope, never other forms or servers', async () => {

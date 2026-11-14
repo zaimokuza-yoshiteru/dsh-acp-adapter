@@ -18,6 +18,7 @@ import type { SessionLike } from '../../../src/domain/session/current-step-admis
 import { ACP_ACTIVITY_RAW_MAX, createAcpSidecar, type AcpSidecar } from '../../../src/persistence/sidecar.ts'
 import type { AcpSubprocessExitFact, SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
 import type { AcpTerminalHandlers } from '../../../src/protocol/v1/types.ts'
+import { AcpClientError } from '../../../src/protocol/v1/errors.ts'
 import type { AcpHostToolControlOutcome } from '../../../src/contract/tool-control-outcome.ts'
 
 const roots: string[] = []
@@ -3012,7 +3013,7 @@ describe('provider activity bridge', () => {
       acpSessionId: 'agent-host-owner',
       start: async () => undefined,
       prompt: async () => {
-        throw new AcpHostSettlementError('ACP_HOST_CALL_DRAIN_TIMEOUT')
+        throw new AcpClientError('crash', 'ACP transport closed before a response was confirmed')
       },
       close: async () => undefined,
       hasPendingHostCalls: () => pending,
@@ -3049,11 +3050,11 @@ describe('provider activity bridge', () => {
       for await (const _chunk of first.stream(request(sessionId, message))) {
         // Drain the public stream so the adapter's settlement path completes.
       }
-    }).rejects.toMatchObject({ code: 'ACP_RECOVERY_REQUIRED' })
+    }).rejects.toMatchObject({ code: 'ACP_CRASH' })
     const fallbackAdapter = makeAdapter('replacement-profile')
     expect(fallbackAdapter.recoveryStateFallback(sessionId)).toMatchObject({
       kind: 'outcome-unknown',
-      detail: 'ACP prompt ended while a DSH Host tool was still active and its outcome could not be confirmed.',
+      detail: 'ACP prompt ended before its remote outcome was confirmed',
     })
     await expect(fallbackAdapter.rebindBlank(sessionId)).rejects.toMatchObject({ code: 'ACP_RECOVERY_REQUIRED' })
     const blockedChunks: unknown[] = []

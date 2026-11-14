@@ -10,6 +10,7 @@ import {
   type AcpPermissionAuditRecord,
 } from '../../../src/domain/policy/permissions.ts'
 import type { AcpNativeUserQuestionService } from '../../../src/domain/policy/elicitation.ts'
+import { intactPermissionInput } from '../../e2e/live-devin-team-scope.ts'
 
 // Use the pinned, published service through the existing Host installation.
 const requireDsh = createRequire(import.meta.resolve('@deepseek-ai/dsh/package.json'))
@@ -31,9 +32,35 @@ async function fixture() {
   const agents = {
     get: (id: string) => live.get(id),
     list: () => [...live.values()],
-    roots: () => [...live.values()].filter((agent) => !owners.has(agent.id)),
-    isOwnedBy: (id: string, owner: Agent) => owners.get(id) === owner,
   }
+  const recorded = new Map<string, Agent>()
+  const rootOf = (agent: Agent): Agent => {
+    const visited = new Set<Agent>()
+    let current = agent
+    while (owners.has(current.id)) {
+      if (visited.has(current)) throw new Error('UNAUTHORIZED')
+      visited.add(current)
+      current = owners.get(current.id)!
+    }
+    if (live.get(agent.id) !== agent || live.get(current.id) !== current) throw new Error('UNAUTHORIZED')
+    return current
+  }
+  ctx.provide('subagents', {
+    rootOf,
+    namesOf: (agent: Agent) => ({ self: agent.id }),
+    listDescendants: async () =>
+      [...recorded.values()]
+        .filter((agent) => owners.has(agent.id))
+        .map((agent) => ({
+          kind: 'child',
+          id: agent.id,
+          parentId: owners.get(agent.id)?.id,
+          mode: 'continuable',
+          label: facts.get(agent.id)?.subagent?.label,
+          activity: 'inactive',
+          hasChildren: false,
+        })),
+  } as never)
   ctx.provide('agents', agents as never)
   ctx.provide('sessionProjections', {
     register: () => () => {},
@@ -56,6 +83,7 @@ async function fixture() {
       },
     } as unknown as Agent
     live.set(id, agent)
+    recorded.set(id, agent)
     if (parent) owners.set(id, parent)
     facts.set(id, {
       subagent: parent ? { seq: 1, label: `Worker ${id}` } : null,
@@ -89,8 +117,60 @@ type Answer = Awaited<ReturnType<AcpNativeUserQuestionService['ask']>>
 
 describe('external permission root presentation', () => {
   it.each([
-    ['root', 'spawn_teammate'],
-    ['child', 'spawn_teammate'],
+    ['en', 'send_message'],
+    ['zh', 'send_message'],
+    ['en', 'subagent'],
+    ['zh', 'subagent'],
+  ] as const)('keeps an exact original input proof in forwarded %s %s details', async (locale, tool) => {
+    const f = await fixture()
+    const text = 'Token: TEAM_forwarded. Verify the calculation, then report it.\n'.repeat(100)
+    const input =
+      tool === 'send_message'
+        ? { agent: 'lead', message: text }
+        : { name: 'calculator', description: 'Calculate 1+1', prompt: text }
+    const records: AcpPermissionAuditRecord[] = []
+    const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async (request) => {
+      expect(request.agent).toBe(f.root)
+      const detail = request.questions[0]!.detail!
+      expect(detail).toMatch(locale === 'en' ? /^Source child session:/ : /^来源子会话:/)
+      const asked = records.find((entry) => entry.data.phase === 'asked')!.data
+      if (asked.phase !== 'asked') throw new Error('expected asked audit')
+      expect(() => intactPermissionInput(asked.toolCall.rawInputSummary, asked.toolCall.rawInputHash)).toThrow()
+      expect(intactPermissionInput(asked.toolCall.rawInputSummary, asked.toolCall.rawInputHash, detail)).toEqual(input)
+      expect(() =>
+        intactPermissionInput(asked.toolCall.rawInputSummary, asked.toolCall.rawInputHash, `${detail}\n\n${detail}`),
+      ).toThrow('DETAIL_INVALID')
+      return { answers: [] }
+    })
+    f.ctx.on('user-questions/request', ask as never)
+    await createAcpNativePermissionHandler({
+      getAgent: () => f.child,
+      userQuestions: f.native,
+      permissionQuestions: f.presenter(f.child, locale),
+      permissionProfile: 'devin',
+      audit: {
+        append: async (entry) => {
+          records.push(entry)
+        },
+      },
+    })({
+      sessionId: 'external-child',
+      toolCall: withDshTeamPermissionPresentation(
+        { toolCallId: 'long-input', title: tool, name: tool, rawInput: input },
+        { tool },
+      ),
+      options: [
+        { optionId: 'once', name: 'Allow', kind: 'allow_once' },
+        { optionId: 'session', name: 'Allow this session', kind: 'allow_always' },
+        { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
+      ],
+    })
+    expect(ask).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['root', 'subagent'],
+    ['child', 'subagent'],
     ['root', 'send_message'],
     ['child', 'send_message'],
   ] as const)(
@@ -100,7 +180,7 @@ describe('external permission root presentation', () => {
       const agent = f[owner]
       const task = 'Review every case, then report the results.\n'.repeat(60)
       const rawInput =
-        tool === 'spawn_teammate'
+        tool === 'subagent'
           ? {
               name: 'parser-reviewer',
               description: 'Review parser',
@@ -109,7 +189,7 @@ describe('external permission root presentation', () => {
               model: 'explicit-model',
               extra_scope: { path: '/restricted' },
             }
-          : { target: 'lead', message: task, extra_scope: { path: '/restricted' } }
+          : { agent: 'lead', message: task, extra_scope: { path: '/restricted' } }
       const options = [
         { optionId: 'once', kind: 'allow_once' as const, name: 'Allow once' },
         { optionId: 'session', kind: 'allow_always' as const, name: 'Allow only this tool for this session' },
@@ -142,7 +222,7 @@ describe('external permission root presentation', () => {
       expect(request.agent).toBe(f.root)
       expect(question.header).toBe(owner === 'root' ? 'Permission request' : 'Child permission: Worker child · child')
       expect(question.question).not.toContain('Review every case')
-      expect(question.question).toContain(tool === 'spawn_teammate' ? 'Member: parser-reviewer' : 'Recipient: lead')
+      expect(question.question).toContain(tool === 'subagent' ? 'Member: parser-reviewer' : 'Recipient: lead')
       expect(question.question).toContain('extra_scope')
       expect(question.question).toContain('/restricted')
       expect(question.detail).toContain(JSON.stringify(task).slice(1, -1))
@@ -281,9 +361,25 @@ describe('external permission root presentation', () => {
     })
   })
 
+  it('routes a cold-restored nested member while its creator is no longer resident', async () => {
+    const f = await fixture()
+    const leaf = f.add('leaf', f.child)
+    f.live.delete(f.child.id)
+    const ask = vi.fn(async (request: Parameters<AcpNativeUserQuestionService['ask']>[0]) => {
+      expect(request.agent).toBe(f.root)
+      expect(request.questions[0]?.detail).toContain('Worker child (child)')
+      expect(request.questions[0]?.detail).toContain('Worker leaf (leaf)')
+      return { answers: [] }
+    })
+    f.ctx.on('user-questions/request', ask as never)
+    await f.presenter(leaf).ask({ agent: leaf, questions: [question] })
+    expect(ask).toHaveBeenCalledOnce()
+  })
+
   it('leaves an independent runtime root on its own native question surface despite persisted ancestry', async () => {
     const f = await fixture()
     f.owners.delete(f.child.id)
+    Object.assign(f.child.session.header, { origin: undefined })
     const ask = vi.fn(async (request: Parameters<AcpNativeUserQuestionService['ask']>[0]) => {
       expect(request.agent).toBe(f.child)
       expect(request.questions).toEqual([question])
@@ -347,6 +443,7 @@ describe('external permission root presentation', () => {
   it('keeps simultaneous child permissions and the root own question separate', async () => {
     const f = await fixture()
     const second = f.add('second', f.root)
+    const entered = Promise.withResolvers<void>()
     const waiting = new Map<
       string,
       { request: Parameters<AcpNativeUserQuestionService['ask']>[0]; done: PromiseWithResolvers<Answer> }
@@ -354,12 +451,14 @@ describe('external permission root presentation', () => {
     f.ctx.on('user-questions/request', ((request: Parameters<AcpNativeUserQuestionService['ask']>[0]) => {
       const done = Promise.withResolvers<Answer>()
       waiting.set(request.questions[0]!.id, { request, done })
+      if (waiting.size === 3) entered.resolve()
       return done.promise
     }) as never)
     const child = f.presenter().ask({ agent: f.child, questions: [{ ...question, id: 'child' }] })
     const other = f.presenter(second).ask({ agent: second, questions: [{ ...question, id: 'second' }] })
     const root = f.native.ask({ agent: f.root, questions: [{ ...question, id: 'root' }] })
-    expect([...waiting.keys()]).toEqual(['child', 'second', 'root'])
+    await entered.promise
+    expect([...waiting.keys()].sort()).toEqual(['child', 'root', 'second'])
     expect(waiting.get('root')?.request.questions[0]?.question).toBe('Choose scope')
     for (const [id, entry] of waiting)
       entry.done.resolve({ answers: [{ id, selected: [id === 'second' ? 'Once' : 'Session'] }] })

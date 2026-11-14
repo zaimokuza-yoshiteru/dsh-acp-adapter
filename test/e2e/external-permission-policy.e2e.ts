@@ -1,3 +1,4 @@
+import { isDirectChild } from './subagent-tree.ts'
 /** Public package + published Host + real ACP subprocess; no model credentials. */
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
@@ -101,24 +102,24 @@ async function fixture() {
     await host.ctx.plugin(Policy)
     expect(host.ctx.get('acpPermissionPolicy')).toBeDefined()
     const spawn = async (key: string, owner = parent, native = false) => {
+      const name = `policy-${key}`
       const activation = await host.ctx.subagents.startActivation({
         provider: 'spawn',
+        name,
         label: `Policy worker ${key}`,
         delivery: 'caller',
-        request: {
-          parent: owner,
-          prompt: [
-            { type: 'text', text: native ? 'HOLD_POLICY_NATIVE_PARENT' : `E2E_PARENT_PERMISSION_OPTIONS:${key}` },
-          ],
-          agentOptions: {
-            provider: native ? 'policy-native' : 'acp-policy-fixture',
-            model: native ? 'fixture' : 'mock-model-a',
-          },
+        parent: owner,
+        prompt: [{ type: 'text', text: native ? 'HOLD_POLICY_NATIVE_PARENT' : `E2E_PARENT_PERMISSION_OPTIONS:${key}` }],
+        agentOptions: {
+          provider: native ? 'policy-native' : 'acp-policy-fixture',
+          model: native ? 'fixture' : 'mock-model-a',
         },
         signal: new AbortController().signal,
       })
       activations.push(activation)
       const child = required(host.ctx.agents.get(activation.childId))
+      const parentName = host.ctx.subagents.namesOf(owner).self
+      expect(host.ctx.subagents.namesOf(child).self).toBe(parentName === 'lead' ? name : `${parentName}/${name}`)
       children.push(child)
       return { activation, child }
     }
@@ -253,7 +254,9 @@ it('isolates concurrent machine decisions while preserving the original full par
     const card = world.card('manual')
     await card.getByRole('radio', { name: 'Allow', exact: true }).waitFor()
     expect(await card.getByRole('radio').count()).toBe(PARENT_PERMISSION_OPTIONS.length)
-    expect(await card.locator('[data-question-source]').innerText()).toContain(manual.child.id.slice(0, 8))
+    expect(await card.locator('[data-question-source]').innerText()).toContain(
+      `${world.ctx.subagents.namesOf(manual.child).self} · ${manual.child.id.slice(0, 8)}`,
+    )
     expect(world.effects('manual')).toEqual([])
     await world.save('manual-pending-wide', { calls, legacyCalls })
     await world.page.reload()
@@ -312,8 +315,8 @@ it('cancels a nested child policy and ignores its late allow without changing ex
     const request = await entered.promise
     expect(request.agent).toBe(leaf.child)
     expect(request.agent).not.toBe(middle.child)
-    expect(world.ctx.agents.isOwnedBy(leaf.child.id, middle.child)).toBe(true)
-    expect(world.ctx.agents.isOwnedBy(middle.child.id, world.parent)).toBe(true)
+    expect(isDirectChild(world.ctx, leaf.child.id, middle.child)).toBe(true)
+    expect(isDirectChild(world.ctx, middle.child.id, world.parent)).toBe(true)
     expect(world.effects('nested-cancel')).toEqual([])
     await world.save('nested-policy-pending-wide', { requestId: request.requestId, policyAgentId: request.agent.id })
     leaf.child.cancel({ kind: 'user' })

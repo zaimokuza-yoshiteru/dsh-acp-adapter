@@ -1,13 +1,9 @@
-/** Prepare a native Agent process, including the optional Devin native MCP registration. */
+/** Prepare native Agent process arguments and environment; MCP is negotiated after initialize. */
 /// <reference types="node" />
-import type * as acp from '@agentclientprotocol/sdk'
 import type { AcpAgentId, AcpStubAgentConfig } from '../../contract/agent-config.ts'
 import { acpLaunchEnvironment } from '../../domain/session/launch-fingerprint.ts'
 import { buildAcpSpawnPlan } from '../../domain/policy/sandbox.ts'
 import type { AcpRuntimeLaunch } from '../../runtime/session/session-runtime.ts'
-import type { SubprocessSeam } from '../../runtime/process/subprocess.ts'
-import type { AcpMcpLease } from '../../runtime/session/mcp-lease.ts'
-import { prepareDevinMcp } from '../tools/devin-config.ts'
 
 /** Python falls back to OS proxy settings only when no environment proxy wins. */
 function hasExplicitProxyEnvironment(env: Record<string, string>): boolean {
@@ -46,14 +42,11 @@ function loopbackEnvironment(env: Record<string, string>, hosts: readonly string
 export async function prepareAgentLaunch(
   runtime: AcpAgentId | undefined,
   config: AcpStubAgentConfig,
-  cwd: string,
-  subprocess: SubprocessSeam,
-  createMcpLease: ((capabilities: acp.AgentCapabilities) => Promise<AcpMcpLease | undefined>) | undefined,
 ): Promise<AcpRuntimeLaunch> {
   let env = await acpLaunchEnvironment({ config })
   // Discovery can initialize this process before MCP tools become available;
   // the same connection needs the bypass when its first DSH session is opened.
-  if (runtime === 'codex') env = loopbackEnvironment(env, ['127.0.0.1'])
+  if (runtime === 'codex' || runtime === 'devin') env = loopbackEnvironment(env, ['127.0.0.1'])
   // Official Antigravity connects to its own local harness at these two hosts.
   // Sending that WebSocket through a system SOCKS proxy requires an optional
   // dependency the official server does not bundle, so session/new fails.
@@ -61,32 +54,10 @@ export async function prepareAgentLaunch(
   // settings: NO_PROXY alone would suppress that external proxy configuration.
   if (runtime === 'antigravity' && hasExplicitProxyEnvironment(env))
     env = loopbackEnvironment(env, ['localhost', '127.0.0.1'])
-  let mcpLease: AcpMcpLease | undefined
-  // Devin reads MCP servers from its config at process startup, before ACP initialize.
-  if (runtime === 'devin') {
-    const lease = await createMcpLease?.({ mcpCapabilities: { http: true } })
-    if (lease !== undefined) {
-      const prepared = await prepareDevinMcp({
-        subprocess,
-        command: config.command,
-        args: config.args,
-        cwd,
-        env,
-        lease,
-      })
-      env = prepared.env
-      mcpLease = prepared.lease
-    }
-  }
-  try {
-    const plan = buildAcpSpawnPlan({
-      mode: 'danger-full-access',
-      argv: [config.command, ...config.args],
-      env,
-    })
-    return { argv: plan.argv, env: plan.env, spawnPlan: plan, ...(mcpLease === undefined ? {} : { mcpLease }) }
-  } catch (error) {
-    await mcpLease?.close()
-    throw error
-  }
+  const plan = buildAcpSpawnPlan({
+    mode: 'danger-full-access',
+    argv: [config.command, ...config.args],
+    env,
+  })
+  return { argv: plan.argv, env: plan.env, spawnPlan: plan }
 }

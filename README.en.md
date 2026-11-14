@@ -6,13 +6,13 @@ Use ACP Agents in DSH with native sessions, tool approvals, and team collaborati
 
 ## Install
 
-Plugin version [`0.2.2-rc.1.2`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.1.2) supports DSH `0.2.2-rc.1`. Match that host version before installing. See [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for other versions.
+Released plugin version [`0.2.2-rc.2.1`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.2.1) supports DSH `0.2.2-rc.2`. Match that host version before installing. See [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for other versions.
 
 **Recommended:** In DSH Creator mode, send:
 
-> Install and enable the ACP plugin: `@zaimokuza/dsh-acp-adapter@0.2.2-rc.1.2`.
+> Install and enable the ACP plugin: `@zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1`.
 
-Confirm the native prompt to install; the new plugin is enabled by default. Alternatively, open **Plugins → Add plugin**, paste `@zaimokuza/dsh-acp-adapter@0.2.2-rc.1.2`, install it, then select **Enable now**.
+Confirm the native prompt to install; the new plugin is enabled by default. Alternatively, open **Plugins → Add plugin**, paste `@zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1`, install it, then select **Enable now**.
 
 <details>
 <summary>Other installation methods: CLI, Git, and archive</summary>
@@ -23,10 +23,10 @@ Before using the Desktop CLI, fully quit the app; reopen it after the command co
 
 ```bash
 # Desktop
-dsh plugin --profile desktop add @zaimokuza/dsh-acp-adapter@0.2.2-rc.1.2
+dsh plugin --profile desktop add @zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1
 
 # Web
-npx @deepseek-ai/dsh@0.2.2-rc.1 plugin --profile web add @zaimokuza/dsh-acp-adapter@0.2.2-rc.1.2
+npx @deepseek-ai/dsh@0.2.2-rc.2 plugin --profile web add @zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1
 ```
 
 Git and archive examples:
@@ -35,8 +35,8 @@ In the plugin manager, paste the Git address or .tgz URL below in place of the p
 
 | Source                         | Example                                                                                                                                                    |
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Git                            | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.2-rc.1.2`                                                                             |
-| Prebuilt plugin archive (.tgz) | [Download 0.2.2-rc.1.2](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.2-rc.1.2/zaimokuza-dsh-acp-adapter-0.2.2-rc.1.2.tgz) |
+| Git                            | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.2-rc.2.1`                                                                             |
+| Prebuilt plugin archive (.tgz) | [Download 0.2.2-rc.2.1](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.2-rc.2.1/zaimokuza-dsh-acp-adapter-0.2.2-rc.2.1.tgz) |
 
 This archive includes compiled output and matches the npm package. GitHub's automatically generated Source code ZIP/TAR.GZ files are source archives, not built plugin packages. Uncached dependencies still require network access.
 
@@ -50,13 +50,13 @@ The plugin ships with a snapshot of the [official ACP Agent catalog](https://age
 
 > If an Agent has no model catalog, select **Agent current configuration** to use its current settings.
 >
-> DSH RC.1 cannot change models in an existing ACP session. To use another model, start an independent session; it does not inherit the original Agent context. Existing history and drafts are kept, and reasoning effort can still change on the same model.
+> DSH RC.1 / RC.2 cannot change models in an existing ACP session. To use another model, start an independent session; it does not inherit the original Agent context. Existing history and drafts are kept, and reasoning effort can still change on the same model.
 
 Launch and sign-in commands for common Agents:
 
 | Agent                     | ACP command                                 | Authentication       |
 | ------------------------- | ------------------------------------------- | -------------------- |
-| Devin                     | `devin acp`                                 | `devin auth login`   |
+| Devin (3000.12.43+)       | `devin acp`                                 | `devin auth login`   |
 | CodeBuddy CLI (WorkBuddy) | `codebuddy --acp`                           | `codebuddy`          |
 | Antigravity               | `agy_acp_server.par` (official raw `1.3.0`) | Separate ACP sign-in |
 | Claude                    | `claude-agent-acp`                          | `claude`             |
@@ -101,4 +101,4 @@ Kimi is no longer supported. Saved configurations and history are retained; remo
 
 Export the safe summary JSON from **ACP Diagnostics**; it excludes message text, commands, paths, raw session IDs, and ACP credentials. DSH's native session-log ZIP may contain prompts, tool arguments, file paths, and attachments; inspect and redact it before sharing.
 
-For help, open an [issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) with the error reference, DSH/plugin versions, and redacted log excerpts. See the [native reuse boundaries](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.1.2/docs/native-reuse.en.md).
+For help, open an [issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) with the error reference, DSH/plugin versions, and redacted log excerpts. See the [native reuse boundaries](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.2.1/docs/native-reuse.en.md).
