@@ -6,13 +6,13 @@ Use ACP Agents in DSH with native sessions, tool approvals, and team collaborati
 
 ## Install
 
-Released plugin version [`0.2.2-rc.2.1`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.2.1) supports DSH `0.2.2-rc.2`. Match that host version before installing. See [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for other versions.
+Released plugin version [`0.2.2-rc.3.1`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.3.1) supports DSH `0.2.2-rc.3`. Match that host version before installing. See [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for other versions.
 
 **Recommended:** In DSH Creator mode, send:
 
-> Install and enable the ACP plugin: `@zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1`.
+> Install and enable the ACP plugin: `@zaimokuza/dsh-acp-adapter@0.2.2-rc.3.1`.
 
-Confirm the installation when prompted. Alternatively, open **Plugins → Add plugin**, paste `@zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1`, and install it. If prompted, select **Enable now**.
+Confirm the installation when prompted. Alternatively, open **Plugins → Add plugin**, paste `@zaimokuza/dsh-acp-adapter@0.2.2-rc.3.1`, and install it. If prompted, select **Enable now**.
 
 <details>
 <summary>Other installation methods: CLI, Git, and archive</summary>
@@ -23,18 +23,18 @@ Before using the Desktop CLI, fully quit the app; reopen it after the command co
 
 ```bash
 # Desktop
-dsh plugin --profile desktop add @zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1
+dsh plugin --profile desktop add @zaimokuza/dsh-acp-adapter@0.2.2-rc.3.1
 
 # Web
-npx @deepseek-ai/dsh@0.2.2-rc.2 plugin --profile web add @zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1
+npx @deepseek-ai/dsh@0.2.2-rc.3 plugin --profile web add @zaimokuza/dsh-acp-adapter@0.2.2-rc.3.1
 ```
 
 To install from Git or an archive, paste the Git address or .tgz download URL into the plugin manager.
 
 | Source                         | Example                                                                                                                                                    |
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Git                            | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.2-rc.2.1`                                                                             |
-| Prebuilt plugin archive (.tgz) | [Download 0.2.2-rc.2.1](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.2-rc.2.1/zaimokuza-dsh-acp-adapter-0.2.2-rc.2.1.tgz) |
+| Git                            | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.2-rc.3.1`                                                                             |
+| Prebuilt plugin archive (.tgz) | [Download 0.2.2-rc.3.1](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.2-rc.3.1/zaimokuza-dsh-acp-adapter-0.2.2-rc.3.1.tgz) |
 
 This archive includes compiled output and matches the npm package. GitHub's automatically generated Source code ZIP/TAR.GZ files are source archives, not built plugin packages. Uncached dependencies still require network access.
 
@@ -99,4 +99,4 @@ Choose the optional **ACP** mode to let the Agent manage conversation context. T
 
 Export the safe summary JSON from **ACP Diagnostics**; it excludes message text, commands, paths, raw session IDs, and ACP credentials. DSH's native session-log ZIP may contain prompts, tool arguments, file paths, and attachments; inspect and redact it before sharing.
 
-For help, open an [issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) with the error reference, DSH/plugin versions, and redacted log excerpts. See the [native reuse boundaries](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.2.1/docs/native-reuse.en.md).
+For help, open an [issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) with the error reference, DSH/plugin versions, and redacted log excerpts. See the [native reuse boundaries](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.3.1/docs/native-reuse.en.md).
