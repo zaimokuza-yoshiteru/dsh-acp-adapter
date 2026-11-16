@@ -46,7 +46,9 @@ export function createMemberModels(ctx: Context, { sidecar, adapterFor }: Member
     await install(agent)
     return undefined
   })
-  for (const agent of ctx.get('agents', false)?.list() ?? []) void install(agent)
+  // The sweep has no caller to report to; a failed read leaves the member on
+  // its constructor model instead of raising an unhandled rejection.
+  for (const agent of ctx.get('agents', false)?.list() ?? []) void install(agent).catch(() => undefined)
 
   const facts = async (id: string, provider: string) => {
     const child = ctx.get('agents', false)?.get(id as never)
@@ -95,8 +97,9 @@ export function createMemberModels(ctx: Context, { sidecar, adapterFor }: Member
       // Recheck at the synchronous SQLite write boundary, not just on entry.
       authorize()
       await sidecar.writeMemberModelSelection(id as never, { bindingKey: modeIntentBindingKey(binding.binding), model })
-      // The host projection can advertise next-request intent for a live
-      // member. Dormant members receive the same selection through hydration.
+      // The saved selection is the durable next-request intent. A live but idle
+      // member applies it now through its native model API; a running member
+      // keeps its current request and records the saved selection on creation.
       const child = ctx.get('agents', false)?.get(id as never)
       if (child !== undefined && child.status !== 'running') child.model.select({ provider, model })
     },
