@@ -315,7 +315,7 @@ describe('cross-backend coordinator', () => {
     stop()
   })
 
-  it('retains the selected child if its events grant is revoked before opening', async () => {
+  it('retains the selected child if its follow grant is revoked before opening', async () => {
     const f = fixture({
       projection: { lastUsed: { provider: 'native', model: 'old' }, next: { provider: 'acp-codex', model: 'new' } },
     })

@@ -120,6 +120,23 @@ it('adds an optional ACP preset without replacing defaults or native composition
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
     await page.getByText('E2E_RECOVERY_FOLLOWUP_DONE', { exact: true }).waitFor()
     expect(await nextTurn).toBe(sessionId)
+    await page.getByRole('button', { name: /^Select model, current Mock Model A/ }).click()
+    await page.getByRole('menuitem', { name: /^Model/ }).click()
+    await page.getByRole('menuitemradio', { name: 'Mock Model B', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Existing ACP sessions cannot switch models yet' })
+    const [created] = await Promise.all([
+      page.waitForResponse('**/api/session/create'),
+      dialog.getByRole('button', { name: 'Create an independent session with this model' }).click(),
+    ])
+    const child = (await created.json()).result.value as { sessionId: string; agentPreset: string }
+    expect(child.agentPreset).toBe('acp-adapter')
+    expect(child.sessionId).not.toBe(sessionId)
+    await page
+      .locator(`[data-conversation-session="${child.sessionId}"]`)
+      .getByRole('button', { name: /^Select model, current Mock Model B/ })
+      .waitFor()
+    expect(agent.session.requestHeader()?.config.model).toBe('mock-model-a')
+    expect(host.ctx.agentPresets.defaultId).toBe('standard')
     expect(errors).toEqual([])
   } finally {
     await browser?.close()
