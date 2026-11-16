@@ -23,16 +23,25 @@ declare module '@deepseek-ai/cordis' {
 
 const externalRecordView: AcpExecutionView = { externalSubagent: true }
 const ordinarySessionView: AcpExecutionView = { externalSubagent: false }
+const unroutedHistoryView: AcpExecutionView = { externalSubagent: false, completedWithoutModel: true }
 
 const acpExecutionProjection = {
   key: 'acpExecution',
-  stateVersion: 4,
+  stateVersion: 5,
   stateSchema: sessionFactsSchema,
   init: (_header, inheritedEventCount) => initialSessionFacts(inheritedEventCount),
   apply: applySessionFact,
   wire: {
-    viewSchema: z.object({ externalSubagent: z.boolean() }),
-    view: (state) => (state.externalSubagent ? externalRecordView : ordinarySessionView),
+    viewSchema: z.object({ externalSubagent: z.boolean(), completedWithoutModel: z.literal(true).optional() }),
+    view(state) {
+      if (state.externalSubagent) return externalRecordView
+      return state.completedWithoutModel &&
+        state.soleRequestProvider === null &&
+        !state.turnOpen &&
+        !state.acpReplaySeen
+        ? unroutedHistoryView
+        : ordinarySessionView
+    },
   },
 } satisfies ProjectionDefinition<'acpExecution', SessionFacts>
 

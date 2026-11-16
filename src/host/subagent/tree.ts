@@ -1,6 +1,7 @@
 import { symbols, type Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
+import { SessionQueryError } from '@deepseek-ai/dsh-session-query'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { SubagentDescendantListEntry } from '@deepseek-ai/dsh-subagent'
 import type {} from '../../contract/external-subagent.ts'
@@ -60,22 +61,66 @@ export function captureSubagentTree(ctx: Context, agent: Agent) {
   }
 }
 
-/** Catalog paths supply display and resource addresses, never runtime authority. */
-export function subagentPath(
-  root: SessionId,
-  id: SessionId,
-  rows: readonly SubagentDescendantListEntry[],
-): readonly { sessionId: string; name: string }[] | undefined {
-  const byId = new Map(rows.map((row) => [row.id, row]))
-  const path: { sessionId: string; name: string }[] = []
-  const seen = new Set<SessionId>()
-  for (let current = id; current !== root;) {
-    if (seen.has(current)) return undefined
-    seen.add(current)
-    const row = byId.get(current)
-    if (row === undefined || row.kind !== 'child' || row.mode === 'external') return undefined
-    path.unshift({ sessionId: row.id, name: ('name' in row ? row.name : undefined) ?? row.label ?? row.id })
-    current = row.parentId
+/** A retained native observation can identify a dormant root without activating it. */
+export async function observeDormantSubagentRoot(ctx: Context, id: SessionId) {
+  const agents = ctx.get('agents', false)
+  const subagents = ctx.get('subagents', false)
+  const query = ctx.get('sessionQuery', false)
+  if (agents === undefined || subagents === undefined || query === undefined)
+    throw new Error('ACP_TEAM_LEAD_UNAVAILABLE')
+  const current = () =>
+    serviceIdentity(ctx.get('agents', false)) === serviceIdentity(agents) &&
+    serviceIdentity(ctx.get('subagents', false)) === serviceIdentity(subagents) &&
+    serviceIdentity(ctx.get('sessionQuery', false)) === serviceIdentity(query) &&
+    agents.get(id) === undefined
+  const assertCurrent = () => {
+    if (!current())
+      throw new HarnessError('The subagent tree changed while loading its members.', 'ACP_SUBAGENT_OWNER_CHANGED')
   }
-  return path.length === 0 ? undefined : path
+  try {
+    using observation = await query.observeSession(id)
+    assertCurrent()
+    const values = observation.projections?.values
+    if (values?.subagent === undefined || values.subagentCatalog === undefined)
+      throw new Error('ACP_TEAM_LEAD_UNAVAILABLE')
+    const identity = values.subagent
+    if (
+      observation.header.id !== id ||
+      observation.header.origin === 'subagent' ||
+      (identity !== null && identity.seq >= observation.inheritedEventCount && identity.seq <= observation.cursor) ||
+      values.acpExecution?.externalSubagent === true ||
+      values.subagentCatalog.length === 0
+    )
+      return undefined
+  } catch (error) {
+    if (error instanceof SessionQueryError && error.code === 'SESSION_QUERY_SESSION_NOT_FOUND') return undefined
+    throw error
+  }
+  return {
+    root: undefined,
+    current,
+    async descendants() {
+      const rows = await subagents.listDescendants(id)
+      assertCurrent()
+      return rows
+    },
+  }
+}
+
+/** Index one native catalog cut. Its paths supply addresses, never runtime authority. */
+export function subagentPaths(root: SessionId, rows: readonly SubagentDescendantListEntry[]) {
+  const byId = new Map(rows.map((row) => [row.id, row]))
+  return (id: SessionId): readonly { sessionId: string; name: string }[] | undefined => {
+    const path: { sessionId: string; name: string }[] = []
+    const seen = new Set<SessionId>()
+    for (let current = id; current !== root;) {
+      if (seen.has(current)) return undefined
+      seen.add(current)
+      const row = byId.get(current)
+      if (row === undefined || row.kind !== 'child' || row.mode === 'external') return undefined
+      path.unshift({ sessionId: row.id, name: ('name' in row ? row.name : undefined) ?? row.label ?? row.id })
+      current = row.parentId
+    }
+    return path.length === 0 ? undefined : path
+  }
 }

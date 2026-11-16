@@ -17,6 +17,7 @@ type ToolExecutor = 'native' | 'ptc'
 export type OptionalBundle =
   | 'voice-input-bundle'
   | 'auto-review'
+  | 'deepseek-chat-import'
   | 'inspector-profile'
   | 'tool-worktree'
   | 'cot-translation-bundle'
@@ -29,7 +30,11 @@ export type OptionalBundle =
 function optionalBundleDirectory(bundle: OptionalBundle): string {
   const requireAdapter = createRequire(join(root, 'package.json'))
   const requireHost = createRequire(requireAdapter.resolve('@deepseek-ai/dsh/package.json'))
-  const manifestPath = requireHost.resolve(`@deepseek-ai/dsh-experimental-${bundle}/package.json`)
+  const packageName =
+    bundle === 'deepseek-chat-import'
+      ? '@deepseek-ai/dsh-deepseek-chat-import'
+      : `@deepseek-ai/dsh-experimental-${bundle}`
+  const manifestPath = requireHost.resolve(`${packageName}/package.json`)
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
     version: string
     dsh?: { bundle?: { patch?: unknown } }

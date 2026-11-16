@@ -421,6 +421,10 @@ export class LocalSettlementOwner {
     this.sessions.delete(sessionId)
   }
 
+  hasTask(sessionId: string, profileId: string, key: string): boolean {
+    return this.sessions.get(sessionId)?.tasks.get(key)?.profileId === profileId
+  }
+
   status(sessionId: string): AcpLocalSettlementStatus | undefined {
     const state = this.sessionState(sessionId, false)
     if (state === undefined || state.order.length === 0) return undefined

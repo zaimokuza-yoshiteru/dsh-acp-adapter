@@ -19,6 +19,7 @@ import { normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
 import { applyTeamMode, teamModeChoices, teamSessionMenuGroups, type TeamModeResult } from './team-mode-controls.ts'
 import { teamModeLabel } from '../../contract/session-modes.ts'
 import { TeamMemberModelControl } from './TeamMemberModelControl.ts'
+import { isStableTeamMemberReadError } from './team-approval-actions.ts'
 import { interruptTeam } from './team-interrupt.ts'
 import { projectionRevision } from './team-projection.ts'
 import css from './AcpTeamManagement.module.css'
@@ -67,9 +68,8 @@ export function AcpTeamManagementAction({
       (members) => {
         if (!cancelled) setAvailable({ sessionId, visible: members.length > 0 })
       },
-      () => {
-        // Keep a retry route when the native catalog exists but ACP metadata fails.
-        if (!cancelled) setAvailable({ sessionId, visible: true })
+      (error: unknown) => {
+        if (!cancelled) setAvailable({ sessionId, visible: !isStableTeamMemberReadError(error) })
       },
     )
     return () => {

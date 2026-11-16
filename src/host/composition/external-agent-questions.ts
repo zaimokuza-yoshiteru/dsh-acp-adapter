@@ -4,7 +4,7 @@ import type {} from '@deepseek-ai/dsh-subagent'
 import type {} from '../../contract/external-subagent.ts'
 import type { AcpNativeUserQuestionService, AcpPermissionQuestionService } from '../../domain/policy/elicitation.ts'
 
-import { captureSubagentTree, localSubagentIdentity, subagentPath } from '../subagent/tree.ts'
+import { captureSubagentTree, localSubagentIdentity, subagentPaths } from '../subagent/tree.ts'
 
 type QuestionRequest = Parameters<AcpNativeUserQuestionService['ask']>[0]
 
@@ -57,7 +57,7 @@ export function externalAgentPermissionQuestions(
       if (localSubagentIdentity(ctx, child) === undefined) throw new ExternalPermissionQuestionError('DELEGATED_CALLER')
       const root = tree.root
       const rows = await tree.descendants(request.signal)
-      const path = subagentPath(root.id, child.id, rows)
+      const path = subagentPaths(root.id, rows)(child.id)
       if (path === undefined) throw new ExternalPermissionQuestionError('DELEGATED_CALLER')
       const zh = locale?.toLowerCase().startsWith('zh') === true
       // Creators may be dormant. Only the native runtime root and this caller

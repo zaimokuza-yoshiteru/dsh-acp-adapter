@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { SessionQueryError } from '@deepseek-ai/dsh-session-query'
 import type { Context } from '@deepseek-ai/cordis'
 import { createTeamManagement } from '../../../src/host/teams/management.ts'
 
@@ -40,12 +41,24 @@ function fixture(rootProvider = 'acp-devin') {
     live.set('lead', lead)
     return { agent: lead }
   })
+  const release = vi.fn()
+  const observeSession = vi.fn(async (id: string) => {
+    if (id === 'missing') throw new SessionQueryError('missing', 'SESSION_QUERY_SESSION_NOT_FOUND')
+    return {
+      header: { id, origin: id === 'child' ? 'subagent' : 'user' },
+      cursor: 3,
+      inheritedEventCount: 2,
+      projections: { values: { subagent: null as null | { seq: number }, subagentCatalog: rows } },
+      [Symbol.dispose]: release,
+    }
+  })
   const services: Record<string, unknown> = {
     agents,
     subagents,
     agentTeams: { isEnabled: () => false },
     sessions: { get: () => undefined },
     sessionController: { resolveAgent },
+    sessionQuery: { observeSession },
     sessionProjections: {
       snapshot: () => ({
         values: { subagent: { seq: 0, mode: 'continuable' }, acpExecution: { externalSubagent: false } },
@@ -63,6 +76,8 @@ function fixture(rootProvider = 'acp-devin') {
     rows,
     resolveAgent,
     binding,
+    release,
+    observeSession,
   }
 }
 
@@ -89,20 +104,63 @@ describe('native tree ACP member management', () => {
     expect(await h.service.members('lead')).toMatchObject([{ sessionId: 'cold', profileId: 'devin' }])
   })
 
-  it('rejects a child presented as the root and does not activate an unbound root', async () => {
+  it('treats a live child, a dormant child and a missing root as ineligible without activation', async () => {
     const h = fixture()
-    await expect(h.service.members('child')).rejects.toThrow('LEAD_UNAVAILABLE')
-    await expect(h.service.members('missing')).rejects.toThrow('LEAD_REQUIRED')
+    expect(await h.service.members('child')).toEqual([])
+    h.live.delete('child')
+    expect(await h.service.members('child')).toEqual([])
+    expect(await h.service.members('missing')).toEqual([])
+    expect(h.resolveAgent).not.toHaveBeenCalled()
+    expect(h.subagents.listDescendants).not.toHaveBeenCalled()
+    expect(h.release).toHaveBeenCalledOnce()
+  })
+
+  it.each(['native', 'acp-devin'])(
+    'reads a dormant %s root and its local ACP descendants without activation',
+    async (provider) => {
+      const h = fixture(provider)
+      h.live.clear()
+      h.binding.mockImplementation(async (id) => (id === 'cold' ? 'acp-devin' : undefined))
+      expect(await h.service.members('lead')).toMatchObject([
+        { resourcePath: ['lead', 'child', 'cold'], profileId: 'devin' },
+      ])
+      expect(h.binding).not.toHaveBeenCalledWith('lead')
+      expect(h.resolveAgent).not.toHaveBeenCalled()
+      expect(h.release).toHaveBeenCalledOnce()
+      h.binding.mockClear()
+      expect(await h.service.members('lead', (id) => id !== 'child')).toEqual([])
+      expect(h.binding).not.toHaveBeenCalled()
+    },
+  )
+
+  it('checks owned legacy descriptors and accepts inherited descriptors on independent forks', async () => {
+    const h = fixture()
+    h.live.clear()
+    const observation = await h.observeSession('lead')
+    for (const [seq, expected] of [
+      [2, 0],
+      [1, 2],
+    ] as const) {
+      h.observeSession.mockResolvedValueOnce({
+        ...observation,
+        projections: { values: { subagent: { seq }, subagentCatalog: h.rows } },
+      })
+      expect(await h.service.members('lead')).toHaveLength(expected)
+    }
     expect(h.resolveAgent).not.toHaveBeenCalled()
   })
 
-  it('activates only a bound dormant root through the Host without prompting', async () => {
+  it('propagates a cold catalog read failure and rejects activation during a dormant directory read', async () => {
     const h = fixture()
-    h.live.delete('lead')
-    expect(await h.service.members('lead')).toHaveLength(2)
-    expect(h.resolveAgent).toHaveBeenCalledExactlyOnceWith('lead')
-    await h.service.members('lead')
-    expect(h.resolveAgent).toHaveBeenCalledTimes(1)
+    h.live.clear()
+    h.observeSession.mockRejectedValueOnce(new Error('disk unavailable'))
+    await expect(h.service.members('lead')).rejects.toThrow('disk unavailable')
+    h.subagents.listDescendants.mockImplementationOnce(async () => {
+      h.live.set('lead', h.lead)
+      return h.rows
+    })
+    await expect(h.service.members('lead')).rejects.toMatchObject({ code: 'ACP_SUBAGENT_OWNER_CHANGED' })
+    expect(h.release).toHaveBeenCalledOnce()
   })
 
   it('rejects root replacement across an awaited directory read', async () => {
@@ -114,9 +172,41 @@ describe('native tree ACP member management', () => {
     await expect(h.service.members('lead')).rejects.toMatchObject({ code: 'ACP_SUBAGENT_OWNER_CHANGED' })
   })
 
+  it('indexes each wide catalog cut once and reflects the next catalog immediately', async () => {
+    const h = fixture()
+    h.rows.length = 0
+    let idReads = 0
+    for (let index = 0; index < 128; index++) {
+      const id = `worker-${index}`
+      h.rows.push({
+        kind: 'child',
+        get id() {
+          idReads++
+          return id
+        },
+        parentId: 'lead',
+        mode: 'continuable',
+        path: id,
+        label: id,
+      })
+    }
+    const members = await h.service.members('lead')
+    expect(members.map((member) => member.resourcePath)).toEqual(
+      Array.from({ length: 128 }, (_, index) => ['lead', `worker-${index}`]),
+    )
+    // Re-indexing all 128 rows for each path would read each id at least 128 times.
+    expect(idReads).toBeLessThan(16 * h.rows.length)
+    h.rows.splice(1)
+    expect(await h.service.members('lead')).toHaveLength(1)
+  })
+
   it('does not turn a diagnostic or external execution into a controllable member', async () => {
     const h = fixture()
+    h.rows[0]!.parentId = 'cold'
+    expect(await h.service.members('lead')).toEqual([])
+    h.rows[0]!.parentId = 'lead'
     h.rows[0]!.mode = 'external'
+    expect(await h.service.members('lead')).toEqual([])
     Object.assign(h.rows[1]!, { kind: 'diagnostic', reason: 'unavailable' })
     expect(await h.service.members('lead')).toEqual([])
   })

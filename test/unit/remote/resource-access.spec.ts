@@ -1,3 +1,6 @@
+import { mkdtempDisposableSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -6,7 +9,9 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import type { PeerScope } from '@deepseek-ai/dsh-typert-protocol'
 import type { RemoteAccessAction, RemoteAccessBinding } from '@deepseek-ai/dsh-api-remote-access'
 import type {} from '@deepseek-ai/dsh-api-gateway'
-import { AcpRemoteService } from '../../../src/remote/service.ts'
+import { createTeamManagement } from '../../../src/host/teams/management.ts'
+import { createAcpSidecar } from '../../../src/persistence/sidecar.ts'
+import { AcpRemoteService, type AcpRemoteServiceDeps } from '../../../src/remote/service.ts'
 import type { AcpApprovalChildView, AcpTeamMemberView } from '../../../src/contract/remote.ts'
 import { AcpNativeForkError } from '../../../src/domain/session/native-fork-error.ts'
 import { ACP_CONFIG_IDENTIFIER_MAX } from '../../../src/contract/config-options.ts'
@@ -52,7 +57,12 @@ const member: AcpTeamMemberView = {
   description: null,
 }
 
-async function fixture() {
+async function fixture(
+  options: {
+    ownedSessionReadGate?: AcpRemoteServiceDeps['ownedSessionReadGate']
+    management?: (ctx: Context) => NonNullable<AcpRemoteServiceDeps['teamManagement']>
+  } = {},
+) {
   const ctx = new Context()
   contexts.push(ctx)
   await ctx.plugin(Registry.default)
@@ -98,8 +108,8 @@ async function fixture() {
     nativeForkScope,
     checkExecutable: async () => true,
     queryVersion: async () => null,
-    ownedSessionReadGate: async () => true,
-    teamManagement: { members, models, selectModel },
+    ownedSessionReadGate: options.ownedSessionReadGate ?? (async () => true),
+    teamManagement: options.management?.(ctx) ?? { members, models, selectModel },
     approvalChildren,
     projectedSubagentIds: async () => ['lead', 'member', 'other'],
     listLiveSessions: () =>
@@ -147,6 +157,92 @@ async function fixture() {
 }
 
 describe('ACP resources through the published Gateway and Peer', () => {
+  it('discovers a bound ACP grandchild of a cold native lead through the Gateway and SQLite owner gate', async () => {
+    using dir = mkdtempDisposableSync(join(tmpdir(), 'acp-mixed-team-'))
+    const sidecar = createAcpSidecar({ root: dir.path })
+    try {
+      await sidecar.append(SessionId('member'), {
+        kind: 'binding',
+        time: 1,
+        data: {
+          provider: 'acp-test',
+          agentSessionId: 'agent-1',
+          profileId: 'test',
+          canonicalCwd: dir.path,
+          launchFingerprint: { command: 'test-agent', args: [], envKeys: [] },
+          agent: { name: 'test', version: '1' },
+          protocolVersion: 1,
+          capabilityHash: 'cap',
+          configHash: 'config',
+          generation: 1,
+          bindingEpoch: 1,
+          committedPromptOrdinal: 0,
+          historyBaseSeq: 0,
+          establishedAt: 1,
+          dshCommittedSeq: 0,
+        },
+      })
+      const gate = (id: string) => sidecar.hasDurableActivityOwner(SessionId(id))
+      expect(await gate('lead')).toBe(false)
+      expect(await gate('member')).toBe(true)
+      const rows = [
+        { id: 'middle', parentId: 'lead', kind: 'child', mode: 'continuable' },
+        { id: 'member', parentId: 'middle', kind: 'child', mode: 'continuable' },
+      ]
+      const readBinding = vi.fn(async (id: string) => {
+        const record = await sidecar.readLatestBinding(SessionId(id))
+        return record?.status === 'ok' ? record.binding.provider : undefined
+      })
+      const h = await fixture({
+        ownedSessionReadGate: gate,
+        management(ctx) {
+          ctx.provide('agents', { get: () => undefined } as never)
+          ctx.provide('subagents', { listDescendants: async () => rows } as never)
+          ctx.provide('sessionQuery', {
+            observeSession: async (id: string) => ({
+              header: { id },
+              inheritedEventCount: 0,
+              cursor: 2,
+              projections: { values: { subagent: null, subagentCatalog: rows } },
+              [Symbol.dispose]() {},
+            }),
+          } as never)
+          return createTeamManagement(ctx, (provider) => provider === 'acp-test', readBinding)
+        },
+      })
+      h.hold(['lead', 'member'])
+      await expect(h.call(h.restricted, 'teamMembers', { lead: 'lead' })).resolves.toEqual([])
+      expect(readBinding).not.toHaveBeenCalled()
+      h.hold(['lead', 'middle', 'member'])
+      for (const peer of [h.restricted, h.owner]) {
+        await expect(h.call(peer, 'teamMembers', { lead: 'lead' })).resolves.toMatchObject([
+          { sessionId: 'member', profileId: 'test' },
+        ])
+      }
+    } finally {
+      await sidecar.dispose()
+    }
+  })
+
+  it('requires ownership of the ACP member for direct controls on a native team', async () => {
+    const gate = vi.fn(async (id: string) => id === 'member')
+    const h = await fixture({ ownedSessionReadGate: gate })
+    h.hold(['lead', 'member'])
+    await expect(
+      h.call(h.restricted, 'teamMemberModels', { lead: 'lead', sessionId: 'member' }),
+    ).resolves.toMatchObject({
+      currentModel: 'test-model',
+    })
+    expect(gate).toHaveBeenCalledExactlyOnceWith('member')
+    gate.mockResolvedValue(false)
+    await expect(
+      h.call(h.owner, 'setTeamMemberModel', { lead: 'lead', sessionId: 'member', model: 'test-model' }),
+    ).rejects.toMatchObject({
+      code: 'dsh-acp/user-rejected',
+    })
+    expect(h.selectModel).not.toHaveBeenCalled()
+  })
+
   it('accepts a framed maximum-length member model while rejecting oversized Agent values', async () => {
     const h = await fixture()
     h.hold(['lead', 'member'])

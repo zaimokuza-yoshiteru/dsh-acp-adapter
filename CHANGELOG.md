@@ -4,6 +4,22 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 未发布 / Unreleased — DSH RC.3
+
+### 中文
+
+- 兼容 DSH `0.2.2-rc.3`。
+- 切换工作目录时，若 Agent 已成功分叉但本地保存中断，重试会保存同一个子会话，避免会话误锁或重复分叉。
+- 原生主会话可以管理有访问权限的 ACP 子成员。纯原生团队隐藏 ACP 成员设置。
+- 打开没有已选模型的导入对话时，若默认模型为 ACP，输入区会按当前权限与可用模型，提示如何继续原对话或另开独立 ACP 会话。
+
+### English
+
+- Support DSH `0.2.2-rc.3`.
+- If an Agent forks successfully during a working directory change but saving the result fails, retrying saves the same child session.
+- Native lead sessions can manage their accessible ACP members. Teams with only native members hide ACP member settings.
+- When the default model is ACP, an imported conversation without a selected model offers the available choices for continuing with a native model or starting an independent ACP session.
+
 ## 0.2.2-rc.2.1
 
 ### 中文

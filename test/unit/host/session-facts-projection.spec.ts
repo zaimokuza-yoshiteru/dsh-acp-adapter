@@ -140,6 +140,30 @@ describe('ACP execution SessionProjection integration', () => {
     expect(ctx.sessionProjections.snapshot(session).values).toEqual({ acpExecution: { externalSubagent: false } })
   })
 
+  it('offers the model choice only after an unrouted history completes', async () => {
+    const ctx = await harness()
+    const session = ctx.sessions.create(SessionId('imported-history'))
+    const offered = () => ctx.sessionProjections.snapshot(session).values.acpExecution?.completedWithoutModel
+    expect(offered()).toBeUndefined()
+    appendUserStep(session, 1, 0, 'first attempt')
+    expect(offered()).toBeUndefined()
+    session.append('step/end', { turn: 1, step: 0 })
+    session.append('turn/end', { turn: 1, reason: { kind: 'error', error: { code: 'OFFLINE', message: 'offline' } } })
+    expect(offered()).toBeUndefined()
+    appendUserStep(session, 2, 0, 'a completed imported turn')
+    expect(offered()).toBeUndefined()
+    closeStep(session, 2, 0)
+    expect(offered()).toBe(true)
+    appendUserStep(session, 3, 0, 'continue')
+    expect(offered()).toBeUndefined()
+    session.append('request/header', {
+      header: { config: { provider: 'native', model: 'm' } },
+      reason: 'initial',
+    })
+    closeStep(session, 3, 0)
+    expect(offered()).toBeUndefined()
+  })
+
   it('reads the live directory service without rewriting or falling back to the project header', async () => {
     const ctx = await harness()
     const session = ctx.sessions.create(SessionId('facts-directory'), { meta: { cwd: '/project-origin' } })

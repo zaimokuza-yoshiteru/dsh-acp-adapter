@@ -676,9 +676,38 @@ describe(' binding 语义门槛（readLatestBinding 三态）', () => {
     ])
       await expect(store.commitDirectoryFork(id, BINDING_A, invalid)).rejects.toThrow('parent continuity')
     expect(await store.list(id)).toHaveLength(1)
+    for (const failurePoint of [
+      "audit WHEN NEW.kind = 'session-fork'",
+      "recovery_states WHEN json_extract(NEW.payload, '$.kind') = 'healthy'",
+    ]) {
+      const db = rawDb()
+      try {
+        db.exec(
+          `CREATE TRIGGER fail_fork BEFORE INSERT ON ${failurePoint} BEGIN SELECT RAISE(ABORT, 'fork write failed'); END`,
+        )
+        await expect(store.commitDirectoryFork(id, BINDING_A, next)).rejects.toThrow('fork write failed')
+        // A new reader sees the complete parent generation if either of the later writes failed.
+        const reader = createAcpSidecar({ root })
+        extraStores.push(reader)
+        expect(await reader.readLatestBinding(id)).toMatchObject({ status: 'ok', binding: BINDING_A })
+        expect(await reader.readRecoveryState(id)).toMatchObject({
+          cause: 'fork-intent',
+          acpSessionId: BINDING_A.agentSessionId,
+        })
+        expect((await reader.list(id)).map((entry) => entry.kind)).toEqual(['binding'])
+        db.exec('DROP TRIGGER fail_fork')
+      } finally {
+        db.close()
+      }
+    }
     await store.commitDirectoryFork(id, BINDING_A, next)
     expect(await latestBinding(id)).toMatchObject(next)
-    expect(await store.list(id)).toHaveLength(2)
+    expect(await store.readRecoveryState(id)).toMatchObject({
+      kind: 'healthy',
+      acpSessionId: next.agentSessionId,
+      generation: 2,
+    })
+    expect((await store.list(id)).map((entry) => entry.kind)).toEqual(['binding', 'binding', 'session-fork'])
     await expect(store.commitDirectoryFork(id, BINDING_A, next)).rejects.toThrow('parent changed')
   })
 

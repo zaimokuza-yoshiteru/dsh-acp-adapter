@@ -2,7 +2,7 @@
 
 本目录验证 DSH 与 ACP 的集成行为。浏览器场景启动目标版本的 Loader、真实 ACP 子进程和浏览器，并加载构建后的插件与 DSH UI；源码／jsdom 场景和仅 Host 场景的范围在下文分别说明。协议夹具提供可控 ACP 输入，覆盖 UI 与宿主集成；真实 Agent 行为另由 opt-in 检查验证。Web scaffold 或 Electron 窗口中的适配器检查不等于完整桌面产品的打包、preload、升级或跨平台验收。运行真实 Agent 会使用本机登录和模型额度。
 
-`0.2.2-alpha` 分支当前锁定 DSH RC.2，迁移范围、保留限制与本次验证记录见 [RC.2 评估](../../docs/assessments/dsh-0.2.2-rc.2.md)。[RC.1 实施记录](../../docs/assessments/dsh-0.2.2-rc.1.md)与[上游方案](../../docs/assessments/dsh-0.2.2-rc.1-upstream.md)保留原版本结论，不作为当前验证结果。已有会话切模仍受原生 compaction 容量检查限制；当前插件在选择时提供保留原模型／独立新会话，并在 Host 准入处保护。`native-model-picker` 与 `team-model-selection` 的验收目标已相应改为此保护、当前模型恢复和新会话首选，而不是宣称原生压缩已兼容；实际运行结果以实施记录为准。
+`0.2.2-alpha` 分支当前锁定 DSH RC.3，迁移范围、保留限制与本次验证记录见 [RC.3 实施与评估](../../docs/assessments/dsh-0.2.2-rc.3.md)。[RC.2 评估](../../docs/assessments/dsh-0.2.2-rc.2.md)、[RC.1 实施记录](../../docs/assessments/dsh-0.2.2-rc.1.md)与[上游方案](../../docs/assessments/dsh-0.2.2-rc.1-upstream.md)保留原版本结论，不作为当前验证结果。已有会话切模仍受原生 compaction 容量检查限制；当前插件在选择时提供保留原模型／独立新会话，并在 Host 准入处保护。`native-model-picker` 与 `team-model-selection` 的验收目标已相应改为此保护、当前模型恢复和新会话首选，而不是宣称原生压缩已兼容；实际运行结果以实施记录为准。
 
 `generic-agent.e2e.ts` 使用三个无密钥 ACP 子进程变体：无 `configOptions`、ID 为 `model` 但无 `category`、未知 `category`。它要求原生选择器能选“Agent current configuration”并完成首次 prompt；有普通配置的两个变体验证会话菜单修改后下一轮保持实际值、宿主路由不变，且从未把占位路由提交为 Agent 模型。对应夹具开关为 `MOCK_NO_CONFIG_OPTIONS=1`、`MOCK_MODEL_OPTION_CATEGORY=absent` 和 `MOCK_MODEL_OPTION_CATEGORY=vendor-choice`。运行 `pnpm test:e2e test/e2e/generic-agent.e2e.ts`；截图写入 `${DSH_E2E_EVIDENCE_DIR}/generic-agent/`，未设置时为 `.local/e2e-evidence/generic-agent/`。此用例不读取认证或调用真实模型；新增用例本身不构成通过记录。
 

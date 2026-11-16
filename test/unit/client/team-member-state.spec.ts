@@ -229,6 +229,27 @@ it('offers settings for ACP descendants under a native root without a Team enabl
   expect(loadMembers).toHaveBeenCalledExactlyOnceWith('native-root')
 })
 
+it.each([
+  ['native-only', undefined, false],
+  ['restricted', 'remote-access/denied', false],
+  ['catalog unavailable', 'gateway/internal-error', true],
+] as const)('offers a catalog retry only for a recoverable read: %s', async (_label, code, visible) => {
+  hooks.active = true
+  AcpTeamManagementAction({
+    sessionId: 'lead',
+    useSessions: (select: (value: unknown) => unknown) => select({ projectionsBySession: {} }),
+    status: { subscribe: () => () => {}, getSnapshot: () => new Map() },
+    loadMembers: async () => {
+      if (code !== undefined) throw Object.assign(new Error('read failed'), { code })
+      return []
+    },
+    openManagement: vi.fn(),
+    t: (key: string) => key,
+  } as never)
+  hooks.effects.shift()!()
+  await vi.waitFor(() => expect(hooks.values[0]).toEqual({ sessionId: 'lead', visible }))
+})
+
 it('does not publish an action after its catalog contribution has unmounted', async () => {
   hooks.active = true
   let finish!: (members: AcpTeamMemberView[]) => void

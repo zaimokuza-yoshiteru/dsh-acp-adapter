@@ -99,7 +99,15 @@ describe('client contribution', () => {
     })
     const dispose = await apply(ctx as never)
     expect(lifecycle).toEqual(['mount'])
-    expect(uiInjects).toEqual([[...inject, 'remote.dshAcp'], ['remote.subagents', 'uiSession'], ['uiSession']])
+    expect(uiInjects).toEqual(
+      expect.arrayContaining([
+        [...inject, 'remote.dshAcp'],
+        ['modelDirectories'],
+        ['remote.subagents', 'uiSession'],
+        ['uiSession'],
+      ]),
+    )
+    expect(uiInjects).toHaveLength(4)
     expect(definitions).toHaveLength(4)
     expect(injections).toEqual(
       expect.arrayContaining([
@@ -107,6 +115,7 @@ describe('client contribution', () => {
         expect.objectContaining({ key: 'acp-activity' }),
         expect.objectContaining({ key: 'acp-inline-activity' }),
         expect.objectContaining({ id: 'dsh-acp-agent-control' }),
+        expect.objectContaining({ name: 'conversation.input.dock', id: 'dsh-acp-unrouted-history' }),
       ]),
     )
     expect(injections).not.toContainEqual(expect.objectContaining({ name: 'settings.section' }))

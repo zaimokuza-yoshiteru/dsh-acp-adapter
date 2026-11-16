@@ -26,6 +26,8 @@ export const sessionFactsSchema = z.object({
   turnSeen: z.boolean(),
   hasSemanticHistory: z.boolean(),
   priorSemanticHistory: z.boolean(),
+  /** A completed local turn carried history before any model request was recorded. */
+  completedWithoutModel: z.boolean(),
   openSteps: z.array(stepSchema),
   inheritedRemaining: z.number().int().nonnegative(),
   externalSubagent: z.boolean(),
@@ -43,6 +45,7 @@ export function initialSessionFacts(inheritedEventCount = 0): SessionFacts {
     turnSeen: false,
     hasSemanticHistory: false,
     priorSemanticHistory: false,
+    completedWithoutModel: false,
     openSteps: [],
     inheritedRemaining: inheritedEventCount,
     externalSubagent: false,
@@ -71,7 +74,19 @@ export function applySessionFact(previous: SessionFacts, event: SessionEventLike
   }
   if (event.type === 'turn/start')
     return { ...state, turnOpen: true, turnSeen: true, priorSemanticHistory: state.hasSemanticHistory }
-  if (event.type === 'turn/end') return { ...state, turnOpen: false }
+  if (event.type === 'turn/end') {
+    const reason = (event.data as { reason?: { kind?: string } } | null)?.reason
+    return {
+      ...state,
+      turnOpen: false,
+      completedWithoutModel:
+        state.completedWithoutModel ||
+        (previous.inheritedRemaining === 0 &&
+          state.hasSemanticHistory &&
+          state.soleRequestProvider === null &&
+          reason?.kind === 'completed'),
+    }
+  }
   const data = typeof event.data === 'object' && event.data !== null ? (event.data as Record<string, unknown>) : {}
   if (event.type === 'subagent/descriptor' && previous.inheritedRemaining === 0)
     return {

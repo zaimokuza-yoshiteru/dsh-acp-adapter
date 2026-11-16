@@ -16,12 +16,14 @@ vi.mock('react', () => ({
     return [index < hooks.values.length ? hooks.values[index] : initial, () => {}]
   },
   useEffect: () => {},
+  useLayoutEffect: () => {},
   useRef: (current: unknown) => ({ current }),
   useMemo: (factory: () => unknown) => factory(),
   useCallback: (callback: unknown) => callback,
   useSyncExternalStore: (_subscribe: unknown, getSnapshot: () => unknown) => getSnapshot(),
 }))
 
+import { UnroutedHistoryDock } from '../../../src/client/ui/UnroutedHistoryDock.ts'
 import { AcpAgentControl } from '../../../src/client/ui/AcpAgentControl.ts'
 import { AcpRecoveryDock } from '../../../src/client/ui/AcpRecoveryDock.ts'
 import { TeamMemberModelControl } from '../../../src/client/ui/TeamMemberModelControl.ts'
@@ -174,7 +176,30 @@ function setup(owner = false, workspace = true) {
     ])
     return AcpRecoveryDock({ ...common, createNewSession } as never)
   }
-  return { state, remote, control, model, recovery, createNewSession }
+  const imported = (nativeModels: string[] = ['m']) => {
+    seed([])
+    return UnroutedHistoryDock({
+      ...common,
+      useSessionRetainInfo: (select: (value: object) => unknown) => select({ retainedBy: { mainView: 1 } }),
+      useSession: (select: (value: object) => unknown) =>
+        select({ openState: 'open', blank: false, running: false, removed: false, subagent: null }),
+      useProjection: (id: string, select: (value: object) => unknown) =>
+        select(id === 'acpExecution' ? { completedWithoutModel: true } : { next: null, lastUsed: null }),
+      directory: {
+        subscribe: () => () => {},
+        getSnapshot: () => ({
+          current: { provider: 'acp-codex', model: 'm' },
+          status: 'ready',
+          groups: [
+            { id: 'acp-codex', models: ['m'] },
+            { id: 'native', models: nativeModels },
+          ],
+        }),
+      },
+      openIndependent: createNewSession,
+    } as never)
+  }
+  return { state, remote, control, model, recovery, imported, createNewSession }
 }
 function groups(tree: Tree): { choices: { disabled: boolean; write: { kind: string } }[] }[] {
   return tree.props.groups as never
@@ -336,4 +361,26 @@ it('uses the destination workspace or global create grant instead of the source 
     ;(allowed.props.onClick as () => void)()
     expect(h.createNewSession).toHaveBeenCalledExactlyOnceWith('lead')
   }
+})
+
+it('offers only available model and creation actions in an imported history', () => {
+  const h = setup()
+  const keys = (view: unknown) => nodes(view).flatMap((node) => node.props.children ?? [])
+  expect(h.imported()).toBeNull()
+  grants(h.state, 'lead', ['session/selectModel'])
+  expect(keys(h.imported())).toContain('unroutedHistoryHint')
+  expect(keys(h.imported())).not.toContain('crossBackendContinue')
+  expect(h.imported([])).toBeNull()
+  h.state.update({
+    type: 'upsert',
+    grant: {
+      resource: { kind: 'workspace', id: 'workspace' as never },
+      actions: ['session/create'],
+    },
+  })
+  expect(keys(h.imported())).toContain('crossBackendContinue')
+  expect(keys(h.imported([]))).toContain('unroutedHistoryCreateOnly')
+  grants(h.state, 'lead', [])
+  expect(keys(h.imported())).toContain('unroutedHistoryCreateOnly')
+  expect(keys(h.imported())).toContain('crossBackendContinue')
 })

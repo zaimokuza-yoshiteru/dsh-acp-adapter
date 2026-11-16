@@ -13,7 +13,11 @@ import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type { ClientRemoteAccess } from '@deepseek-ai/dsh-api-remote-access/client'
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
-import { isMainSession, openSubagentAside } from './coordinator/native-session-navigation.ts'
+import {
+  independentHistoryNavigation,
+  isMainSession,
+  openSubagentAside,
+} from './coordinator/native-session-navigation.ts'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import { AcpActivityNode } from './ui/AcpActivityNode.ts'
@@ -27,6 +31,8 @@ import { installNativeToolRenderer } from './ui/native-tool-renderer.ts'
 import { installAcpAssistantStream } from './ui/AcpAssistantStream.ts'
 import { AcpActivityJournalHub } from './data/activity-journal.ts'
 import { AcpUiFeedback, followAcpQuestionLimitations, type AcpUiOutcome } from './data/feedback.ts'
+import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
+import { UnroutedHistoryDock } from './ui/UnroutedHistoryDock.ts'
 import { CrossBackendCoordinator } from './coordinator/cross-backend-coordinator.ts'
 import { AcpNativeForkCoordinator, type NativeForkFailure } from './coordinator/native-fork.ts'
 import { createNativeForkJournal } from './coordinator/native-fork-journal.ts'
@@ -413,6 +419,47 @@ async function registerUi(ctx: ClientContext): Promise<void> {
       ),
     )
   })
+  const openHistorySession = independentHistoryNavigation(
+    sessions,
+    (source) =>
+      resolveCrossBackendLocation(
+        source,
+        workspaces.list.getSnapshot().items,
+        sessions.list.getSnapshot().byId[source]?.cwd,
+      ),
+    (child) => ctx.uiWorkspace.openSession(child),
+    async (child, location) => {
+      await sessions.refresh()
+      const list = sessions.list.getSnapshot()
+      if (list.phase !== 'ready') throw new Error('Session list unavailable')
+      if (list.byId[child] === undefined) return 'missing'
+      return location.workspaceId !== undefined &&
+        !workspaces.list
+          .getSnapshot()
+          .items.some((row) => row.workspaceId === location.workspaceId && row.sessionIds.includes(child))
+        ? 'ungrouped'
+        : 'created'
+    },
+  )
+  ctx.inject(['modelDirectories'], (scope) =>
+    scope.slots.inject('conversation.input.dock', () =>
+      scope.slots.register(
+        {
+          name: 'conversation.input.dock',
+          id: 'dsh-acp-unrouted-history',
+          order: 85,
+          locale: 'acpActivity',
+          inject: (sessionId) => ({
+            directory: scope.modelDirectories.directoryFor(sessionId).store,
+            ownsRoute: managedRoutes.owns,
+            openIndependent: (current: () => boolean, openUngrouped: boolean) =>
+              openHistorySession(sessionId, () => current() && isMainSession(sessions, sessionId), openUngrouped),
+          }),
+        },
+        UnroutedHistoryDock,
+      ),
+    ),
+  )
   ctx.effect(() => coordinator.start(), 'dsh-acp: model transition coordinator')
   const transitionModelLabels = {
     loadModelCatalog: async () => {

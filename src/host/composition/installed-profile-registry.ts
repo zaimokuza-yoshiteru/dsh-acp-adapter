@@ -628,11 +628,15 @@ export async function installInstalledProfileRegistry(
           // An in-memory gate exists only when durable recovery persistence
           // failed, so it must outrank any older healthy sidecar record.
           let visibleState = fallback ?? (await sidecar.readRecoveryState(sessionId as never))
-          if (fallback === undefined && visibleState?.kind === 'reconnect-required') {
+          if (fallback === undefined && visibleState !== undefined) {
             const profileId =
               visibleState.provider === undefined ? undefined : acpAgentIdFromRoute(visibleState.provider)
             const adapter = profileId === undefined ? undefined : profileAdapters.get(profileId)
-            if (await adapter?.isAutomaticDirectoryHandoff(sessionId, visibleState))
+            if (adapter?.isSavingDirectoryFork(sessionId, visibleState)) visibleState = undefined
+            else if (
+              visibleState.kind === 'reconnect-required' &&
+              (await adapter?.isAutomaticDirectoryHandoff(sessionId, visibleState))
+            )
               visibleState = { ...visibleState, kind: 'healthy' }
           }
           // A real recovery outcome (especially outcome-unknown) always wins.

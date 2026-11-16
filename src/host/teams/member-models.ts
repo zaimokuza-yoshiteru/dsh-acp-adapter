@@ -5,7 +5,7 @@ import { modeIntentBindingKey } from '../../persistence/sidecar.ts'
 import type { AcpProfileAdapter } from '../composition/profile-adapter.ts'
 import { normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
 import { ACP_CURRENT_CONFIG_MODEL_ID, acpDeclaredModelRoute } from '../../contract/model-selection.ts'
-import { readMemberRequestModel } from './member-model-facts.ts'
+import type {} from '@deepseek-ai/dsh-session-query'
 import { localSubagentIdentity } from '../subagent/tree.ts'
 import { requiresAcpModelSwitchExit } from '../../contract/model-transition.ts'
 import { LlmError } from '@deepseek-ai/dsh-llm'
@@ -151,9 +151,9 @@ export function createMemberModels(ctx: Context, { sidecar, adapterFor }: Member
         : reported?.type === 'select'
           ? acpDeclaredModelRoute(reported.currentValue)
           : ACP_CURRENT_CONFIG_MODEL_ID
-    const currentModel = (await readMemberRequestModel(ctx, id, provider).catch(() => undefined)) ?? reportedModel
     const selected = await selectionFor(id, provider)
     const cut = await currentCut(id)
+    const currentModel = (cut.lastUsed?.provider === provider ? cut.lastUsed.model : undefined) ?? reportedModel
     const next =
       selected !== undefined && (await canApply(id, selected, cut))
         ? selected.model

@@ -142,7 +142,12 @@ interface BindingSettlementCommit extends BindingSettlementTarget {
   readonly dshCommittedSeq: number
 }
 
+function directoryForkSettlementKey(agentSessionId: string, generation: number): string {
+  return JSON.stringify(['directory-fork', agentSessionId, generation])
+}
+
 interface AcpLocalSettlementSink {
+  commitDirectoryFork(sessionId: string, parent: AcpBindingData, replacement: AcpBindingData): Promise<void>
   settleDispatch(sessionId: string, key: string): Promise<void>
   clearUndispatchedDispatch(sessionId: string, key: string): Promise<void>
   readDispatch(sessionId: string, key: string): ReturnType<DispatchLedger['read']>
@@ -943,6 +948,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     this.runtimes.set(runtimeKey, next)
     this.runtimeOwners.set(next, session.identity ?? session)
     let forkDispatched = false
+    let childId: string
     try {
       if (next.fork === undefined) throw new AcpForkPreDispatchError('ACP_FORK_UNSUPPORTED')
       await next.fork(
@@ -968,55 +974,71 @@ export class AcpProfileAdapter extends LlmAdapter {
           })
           forkDispatched = true
         },
+        () => {
+          if (signal.aborted || this.canonicalCwd(session.workingDirectory) !== cwd)
+            throw new AcpForkPreDispatchError('ACP_FORK_PRECONDITION_FAILED')
+        },
       )
-      signal.throwIfAborted()
       if (next.acpSessionId === undefined || next.acpSessionId === binding.agentSessionId)
         throw new Error('ACP fork did not return a new session identity')
-      if (this.canonicalCwd(session.workingDirectory) !== cwd) throw new Error('ACP directory changed during fork')
-      const replacement: AcpBindingData = {
-        ...binding,
-        agentSessionId: next.acpSessionId,
-        canonicalCwd: cwd,
-        generation: binding.generation + 1,
-        bindingEpoch: binding.bindingEpoch + 1,
-        establishedAt: Date.now(),
-        capabilityHash: acpCanonicalHash16(next.agentCapabilities ?? {}),
-      }
-      await this.sidecar!.commitDirectoryFork(sessionKey as never, binding, replacement)
-      await this.sidecar!.append(sessionKey as never, {
-        kind: 'session-fork',
-        data: {
-          outcome: 'inherited',
-          reason: 'inherited',
-          parentSessionId: sessionKey,
-          parentAgentSessionId: binding.agentSessionId,
-          agentSessionId: replacement.agentSessionId,
-        },
-      })
-      await this.sidecar!.writeRecoveryState({
-        dshSessionId: sessionKey,
-        kind: 'healthy',
-        provider: binding.provider,
-        acpSessionId: replacement.agentSessionId,
-        generation: replacement.generation,
-        updatedAt: Date.now(),
-      })
-      this.sessionControls.advanceBinding(sessionKey, binding, replacement)
-      this.controlsChanged?.(sessionKey)
-      return replacement
+      childId = next.acpSessionId
     } catch (error) {
       await this.releaseRuntime(runtimeKey, next)
+      const outcomeUnknown = forkDispatched && !(error instanceof AcpForkPreDispatchError)
       return await this.blockRecovery(
         sessionKey,
         {
-          kind: forkDispatched ? 'outcome-unknown' : signal.aborted ? 'reconnect-required' : 'reconciliation-required',
-          cause: forkDispatched ? 'fork-intent' : signal.aborted ? 'cwd-handoff-pending' : 'cwd-changed',
-          ...(!forkDispatched && signal.aborted ? { targetCwd: cwd } : {}),
+          kind: outcomeUnknown ? 'outcome-unknown' : signal.aborted ? 'reconnect-required' : 'reconciliation-required',
+          cause: outcomeUnknown ? 'fork-intent' : signal.aborted ? 'cwd-handoff-pending' : 'cwd-changed',
+          ...(!outcomeUnknown && signal.aborted ? { targetCwd: cwd } : {}),
           detail: `ACP directory handoff did not complete; no blank session was started. ${error instanceof Error ? error.message : String(error)}`,
         },
         binding,
       )
     }
+    // A returned child identity is a confirmed remote outcome, even if Stop or
+    // another directory change arrived while the response was in flight.
+    const replacement: AcpBindingData = {
+      ...binding,
+      agentSessionId: childId,
+      canonicalCwd: cwd,
+      generation: binding.generation + 1,
+      bindingEpoch: binding.bindingEpoch + 1,
+      establishedAt: Date.now(),
+      capabilityHash: acpCanonicalHash16(next.agentCapabilities ?? {}),
+    }
+    try {
+      await this.continuity.settlements.settle(
+        sessionKey,
+        directoryForkSettlementKey(binding.agentSessionId, binding.generation),
+        (sink) => sink.commitDirectoryFork(sessionKey, binding, replacement),
+        this,
+        () => this.controlsChanged?.(sessionKey),
+        this.settlementSink,
+        this.profileId,
+      )
+    } catch (error) {
+      throw LlmError.fromFailure(
+        {
+          code: 'ACP_LOCAL_SETTLEMENT_FAILED',
+          message: 'The Agent fork completed. Saving its new session binding failed.',
+        },
+        { cause: error },
+      )
+    }
+    this.runtimeBindings.set(next, replacement)
+    signal.throwIfAborted()
+    if (this.canonicalCwd(session.workingDirectory) !== cwd)
+      return await this.blockRecovery(
+        sessionKey,
+        {
+          kind: 'reconciliation-required',
+          cause: 'cwd-changed',
+          detail: 'The working directory changed again during the ACP fork.',
+        },
+        replacement,
+      )
+    return replacement
   }
 
   override providerRetryPolicy(_provider: string): ResolvedRetryPolicy {
@@ -1192,6 +1214,23 @@ export class AcpProfileAdapter extends LlmAdapter {
       detail: 'ACP steering acceptance could not be confirmed; inspect the Agent session before retrying',
       updatedAt,
     }
+  }
+
+  /** A matching in-memory receipt distinguishes a confirmed child from an unanswered fork after restart. */
+  isSavingDirectoryFork(sessionId: string, state: AcpRecoveryState): boolean {
+    return (
+      state.dshSessionId === sessionId &&
+      state.kind === 'outcome-unknown' &&
+      state.cause === 'fork-intent' &&
+      state.provider === `acp-${this.profileId}` &&
+      state.acpSessionId !== undefined &&
+      state.generation !== undefined &&
+      this.continuity.settlements.hasTask(
+        sessionId,
+        this.profileId,
+        directoryForkSettlementKey(state.acpSessionId, state.generation),
+      )
+    )
   }
 
   /** Read-only UI state for local writes after a confirmed remote terminal. */
@@ -3953,6 +3992,27 @@ export class AcpProfileAdapter extends LlmAdapter {
 
   private localSettlementSink(): AcpLocalSettlementSink {
     return {
+      commitDirectoryFork: async (sessionId, parent, replacement) => {
+        if (this.sidecar === undefined) throw new Error('ACP sidecar is unavailable for directory fork persistence')
+        try {
+          await this.sidecar.commitDirectoryFork(sessionId as never, parent, replacement)
+        } catch (error) {
+          // An acknowledged local write can fail on its return path. Accept only the
+          // complete child generation and its matching healthy record; a parent intent is still pending.
+          const current = await this.sidecar.readLatestBinding(sessionId as never)
+          const recovery = await this.sidecar.readRecoveryState(sessionId as never)
+          if (
+            current?.status !== 'ok' ||
+            !isDeepStrictEqual({ ...current.binding, time: 0 }, { ...replacement, time: 0 }) ||
+            recovery?.kind !== 'healthy' ||
+            recovery.provider !== replacement.provider ||
+            recovery.acpSessionId !== replacement.agentSessionId ||
+            recovery.generation !== replacement.generation
+          )
+            throw error
+        }
+        this.sessionControls.advanceBinding(sessionId, parent, replacement)
+      },
       settleDispatch: (sessionId, key) => this.ledger.settle(sessionId, key),
       clearUndispatchedDispatch: async (sessionId, key) => {
         if (this.sidecar === undefined) throw new Error('ACP sidecar is unavailable for undispatched input settlement')
@@ -4027,6 +4087,11 @@ export class AcpProfileAdapter extends LlmAdapter {
     assertCurrent()
     this.pendingRecoveries.add(pending)
     try {
+      if (this.continuity.settlements.status(sessionId) !== undefined)
+        throw LlmError.fromFailure({
+          code: 'ACP_LOCAL_SETTLEMENT_FAILED',
+          message: 'Wait for the confirmed ACP result to finish saving before choosing recovery.',
+        })
       await operation(assertCurrent)
     } finally {
       this.pendingRecoveries.delete(pending)

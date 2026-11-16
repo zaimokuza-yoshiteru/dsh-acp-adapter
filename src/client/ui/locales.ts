@@ -426,6 +426,10 @@ const zh = {
   'subagent.unavailable': '该信息不可用。',
   'subagent.observedTiming': '目录耗时是 DSH 观察到的委派时间，不代表模型或 Agent 自报耗时。',
   crossBackendAgent: 'Agent',
+  unroutedHistoryCreateOnly: '默认 ACP 智能体需要独立会话。',
+  unroutedHistoryUngrouped: '独立会话已创建，但未能加入工作区。你可以直接打开它。',
+  unroutedHistoryOpen: '打开已创建的会话',
+  unroutedHistoryHint: '要继续这段对话，请在下方选择非 ACP 模型。默认 ACP 智能体需要独立会话。',
   crossBackendModelSwitchTitle: '已有 ACP 会话暂不支持切换模型',
   crossBackendModelSwitchDescription:
     '可保留原模型，或使用 {target} 新建独立会话。新会话不会继承当前 Agent 上下文；原会话的记录和草稿保持不变。',
@@ -903,6 +907,11 @@ const en: Record<AcpLocaleKey, string> = {
   'subagent.observedTiming':
     'Catalog duration is the delegation wall time observed by DSH, not model or Agent-reported time.',
   crossBackendAgent: 'Agent',
+  unroutedHistoryCreateOnly: 'The default ACP Agent needs a separate session.',
+  unroutedHistoryUngrouped: 'The new session was created outside the workspace. You can open it directly.',
+  unroutedHistoryOpen: 'Open the created session',
+  unroutedHistoryHint:
+    'To continue this conversation, choose a non-ACP model below. The default ACP Agent needs a separate session.',
   crossBackendModelSwitchTitle: 'Existing ACP sessions cannot switch models yet',
   crossBackendModelSwitchDescription:
     'Keep the original model, or create an independent session with {target}. The new session will not inherit the current Agent context. The original session history and draft stay unchanged.',

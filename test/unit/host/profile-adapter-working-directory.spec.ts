@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -14,6 +14,9 @@ async function fixture(
     forkFailure?: 'before' | 'after'
     stop?: boolean
     stopDuringFork?: boolean
+    stopAfterIntent?: boolean
+    afterFork?: 'stop' | 'change-cwd'
+    controlsChanged?: (sessionId: string) => void
     late?: boolean
   } = {},
 ) {
@@ -85,7 +88,7 @@ async function fixture(
         close: async () => {
           calls.push({ kind: 'close', cwd: launch.cwd })
         },
-        fork: async (parent, signal, _expected, beforeDispatch) => {
+        fork: async (parent, signal, _expected, beforeDispatch, validateBeforeDispatch) => {
           if (options.forkFailure === 'before') throw new Error('ACP_FORK_UNSUPPORTED')
           if (options.stopDuringFork && !stoppedDuringFork) {
             stoppedDuringFork = true
@@ -93,9 +96,16 @@ async function fixture(
             throw signal?.reason ?? controller.signal.reason
           }
           await beforeDispatch?.()
+          if (options.stopAfterIntent && !stoppedDuringFork) {
+            stoppedDuringFork = true
+            controller.abort(new Error('User Stop after intent, before dispatch'))
+          }
+          validateBeforeDispatch?.()
           calls.push({ kind: 'fork', cwd: launch.cwd, parent })
           if (options.forkFailure === 'after') throw new Error('transport ended after fork dispatch')
           id = 'forked-agent'
+          if (options.afterFork === 'stop') controller.abort(new Error('Stop after Agent reply'))
+          if (options.afterFork === 'change-cwd') cwd = original
           return { sessionId: id }
         },
         prompt: async (_content, onUpdate, signal, _report, _concluded, _success, promptOptions) => {
@@ -132,6 +142,14 @@ async function fixture(
       return runtime
     },
     sidecar,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    options.controlsChanged,
   )
   const request: GenerateOptions = markAgentLoopRequest({
     provider: 'acp-test',
@@ -216,6 +234,111 @@ describe('ACP working-directory handoff', () => {
         acpSessionId: 'forked-agent',
       })
       expect(world.session.header.cwd).toBe(world.original)
+    } finally {
+      await world.close()
+    }
+  })
+
+  it('retains a confirmed child for local-only retry and exposes unmatched intents as unknown', async () => {
+    const world = await fixture()
+    const commit = vi.spyOn(world.sidecar, 'commitDirectoryFork').mockRejectedValue(new Error('disk full'))
+    try {
+      await expect(drain(world.adapter.stream(world.request))).rejects.toMatchObject({
+        code: 'ACP_LOCAL_SETTLEMENT_FAILED',
+      })
+      const oldIntent = (await world.sidecar.readRecoveryState('s' as never))!
+      expect(oldIntent).toMatchObject({ cause: 'fork-intent', acpSessionId: 'original-agent', generation: 1 })
+      expect(world.adapter.isSavingDirectoryFork('s', oldIntent)).toBe(true)
+      expect(world.adapter.isSavingDirectoryFork('s', { ...oldIntent, generation: 2 })).toBe(false)
+      expect(world.adapter.isSavingDirectoryFork('s', { ...oldIntent, acpSessionId: 'another-parent' })).toBe(false)
+      expect(world.adapter.localSettlementStatus('s')).toBe('storage-error')
+      expect(world.calls.filter((call) => call.kind === 'prompt')).toHaveLength(1)
+      commit.mockRestore()
+      // Even if storage is healthy again, a stale recovery button must not rebind the known child.
+      await expect(world.adapter.rebindBlank('s')).rejects.toMatchObject({ code: 'ACP_LOCAL_SETTLEMENT_FAILED' })
+      const chunks = await drain(world.adapter.stream(world.continueRequest()))
+      expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+      expect(world.adapter.isSavingDirectoryFork('s', oldIntent)).toBe(false)
+      expect(world.calls.filter((call) => call.kind === 'new')).toHaveLength(1)
+      expect(world.calls.filter((call) => call.kind === 'fork')).toHaveLength(1)
+      expect(world.calls.filter((call) => call.kind === 'prompt').map((call) => call.cwd)).toEqual([
+        world.original,
+        world.target,
+      ])
+      expect(await world.sidecar.readLatestBinding('s' as never)).toMatchObject({
+        binding: { agentSessionId: 'forked-agent', generation: 2 },
+      })
+      expect(await world.sidecar.readRecoveryState('s' as never)).toMatchObject({
+        kind: 'healthy',
+        acpSessionId: 'forked-agent',
+        generation: 2,
+      })
+    } finally {
+      commit.mockRestore()
+      await world.close()
+    }
+  })
+
+  it('recognizes an already committed child when the write acknowledgment fails', async () => {
+    const world = await fixture()
+    const commit = world.sidecar.commitDirectoryFork.bind(world.sidecar)
+    const lostAck = vi.spyOn(world.sidecar, 'commitDirectoryFork').mockImplementation(async (...args) => {
+      await commit(...args)
+      throw new Error('write acknowledgment failed')
+    })
+    try {
+      expect((await drain(world.adapter.stream(world.request))).at(-1)).toMatchObject({ type: 'finish' })
+      expect(lostAck).toHaveBeenCalledTimes(1)
+      expect(world.adapter.localSettlementStatus('s')).toBeUndefined()
+      expect((await world.sidecar.list('s' as never)).filter((entry) => entry.kind === 'session-fork')).toHaveLength(1)
+      expect(world.calls.filter((call) => call.kind === 'fork')).toHaveLength(1)
+    } finally {
+      await world.close()
+    }
+  })
+
+  it('keeps a committed directory fork healthy if its presentation observer throws', async () => {
+    let committed = false
+    const observer = vi.fn(() => {
+      if (committed) {
+        committed = false
+        throw new Error('observer failed after commit')
+      }
+    })
+    const world = await fixture({ controlsChanged: observer })
+    const commit = world.sidecar.commitDirectoryFork.bind(world.sidecar)
+    vi.spyOn(world.sidecar, 'commitDirectoryFork').mockImplementation(async (...args) => {
+      await commit(...args)
+      committed = true
+    })
+    try {
+      expect((await drain(world.adapter.stream(world.request))).at(-1)).toMatchObject({ type: 'finish' })
+      expect(observer.mock.results.some((result) => result.type === 'throw')).toBe(true)
+      expect(await world.sidecar.readRecoveryState('s' as never)).toMatchObject({
+        kind: 'healthy',
+        acpSessionId: 'forked-agent',
+        generation: 2,
+      })
+      expect(world.calls.filter((call) => call.kind === 'fork')).toHaveLength(1)
+    } finally {
+      await world.close()
+    }
+  })
+
+  it.each(['stop', 'change-cwd'] as const)('preserves the confirmed child if %s races its reply', async (afterFork) => {
+    const world = await fixture({ afterFork })
+    try {
+      await expect(drain(world.adapter.stream(world.request))).rejects.toThrow()
+      expect(await world.sidecar.readLatestBinding('s' as never)).toMatchObject({
+        binding: { agentSessionId: 'forked-agent', canonicalCwd: world.target, generation: 2 },
+      })
+      expect(await world.sidecar.readRecoveryState('s' as never)).toMatchObject({
+        ...(afterFork === 'stop' ? { kind: 'healthy' } : { kind: 'reconciliation-required', cause: 'cwd-changed' }),
+        acpSessionId: 'forked-agent',
+        generation: 2,
+      })
+      expect(world.calls.filter((call) => call.kind === 'fork')).toHaveLength(1)
+      expect(world.calls.filter((call) => call.kind === 'prompt')).toHaveLength(1)
     } finally {
       await world.close()
     }
@@ -362,33 +485,36 @@ it('keeps changed profiles and mismatched pending binding facts visible as real 
   }
 })
 
-it('retries a known directory handoff after one Stop before fork dispatch without starting blank', async () => {
-  const world = await fixture({ stopDuringFork: true })
-  try {
-    await expect(drain(world.adapter.stream(world.request))).rejects.toThrow('directory handoff did not complete')
-    expect(world.calls.filter((call) => call.kind === 'fork')).toHaveLength(0)
-    expect(world.calls.filter((call) => call.kind === 'new')).toHaveLength(1)
-    expect(await world.sidecar.readRecoveryState('s' as never)).toMatchObject({
-      kind: 'reconnect-required',
-      cause: 'cwd-handoff-pending',
-      targetCwd: world.target,
-      provider: 'acp-test',
-      acpSessionId: 'original-agent',
-      generation: 1,
-    })
-    expect(await world.sidecar.readLatestBinding('s' as never)).toMatchObject({
-      status: 'ok',
-      binding: { agentSessionId: 'original-agent', canonicalCwd: world.original, generation: 1 },
-    })
-    const chunks = await drain(world.adapter.stream(world.continueRequest()))
-    expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
-    expect(world.calls.filter((call) => call.kind === 'fork')).toEqual([
-      { kind: 'fork', cwd: world.target, parent: 'original-agent' },
-    ])
-    expect(world.calls.filter((call) => call.kind === 'new')).toHaveLength(1)
-    expect(world.calls.filter((call) => call.kind === 'prompt').at(-1)?.cwd).toBe(world.target)
-    expect(await world.sidecar.readRecoveryState('s' as never)).toMatchObject({ kind: 'healthy' })
-  } finally {
-    await world.close()
-  }
-})
+it.each(['stopDuringFork', 'stopAfterIntent'] as const)(
+  'retries a known directory handoff after %s without starting blank',
+  async (stopPoint) => {
+    const world = await fixture({ [stopPoint]: true })
+    try {
+      await expect(drain(world.adapter.stream(world.request))).rejects.toThrow('directory handoff did not complete')
+      expect(world.calls.filter((call) => call.kind === 'fork')).toHaveLength(0)
+      expect(world.calls.filter((call) => call.kind === 'new')).toHaveLength(1)
+      expect(await world.sidecar.readRecoveryState('s' as never)).toMatchObject({
+        kind: 'reconnect-required',
+        cause: 'cwd-handoff-pending',
+        targetCwd: world.target,
+        provider: 'acp-test',
+        acpSessionId: 'original-agent',
+        generation: 1,
+      })
+      expect(await world.sidecar.readLatestBinding('s' as never)).toMatchObject({
+        status: 'ok',
+        binding: { agentSessionId: 'original-agent', canonicalCwd: world.original, generation: 1 },
+      })
+      const chunks = await drain(world.adapter.stream(world.continueRequest()))
+      expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+      expect(world.calls.filter((call) => call.kind === 'fork')).toEqual([
+        { kind: 'fork', cwd: world.target, parent: 'original-agent' },
+      ])
+      expect(world.calls.filter((call) => call.kind === 'new')).toHaveLength(1)
+      expect(world.calls.filter((call) => call.kind === 'prompt').at(-1)?.cwd).toBe(world.target)
+      expect(await world.sidecar.readRecoveryState('s' as never)).toMatchObject({ kind: 'healthy' })
+    } finally {
+      await world.close()
+    }
+  },
+)

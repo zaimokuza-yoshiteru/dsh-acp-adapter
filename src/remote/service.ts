@@ -287,7 +287,10 @@ export interface AcpRemoteServiceDeps {
   approvalChildren?: (parent: string) => readonly AcpApprovalChildView[] | Promise<readonly AcpApprovalChildView[]>
   teamManagement?: {
     /** Internal resource ancestry; Remote filters it before exposing each member. */
-    members(lead: string): Promise<readonly (AcpTeamMemberView & { readonly resourcePath: readonly string[] })[]>
+    members(
+      lead: string,
+      canRead?: (id: string) => boolean,
+    ): Promise<readonly (AcpTeamMemberView & { readonly resourcePath: readonly string[] })[]>
     models?(lead: string, member: string): Promise<AcpTeamMemberModelsView>
     selectModel?(lead: string, member: string, model: string): Promise<AcpTeamMemberModelsView>
   }
@@ -951,9 +954,9 @@ export class AcpRemoteService extends TypertRemoteService {
 
   @Remote({ resources: { session: (lead) => SessionId(lead) } })
   async teamMembers(lead: string): Promise<readonly AcpTeamMemberView[]> {
-    await this.requireOwnedSessionAccess(lead)
+    if (typeof lead !== 'string' || lead.length === 0 || lead.length > 256) throw badRequest('Invalid lead session id')
     if (this.resolved.teamManagement === undefined) throw badRequest('ACP Teams is unavailable')
-    return (await this.resolved.teamManagement.members(lead))
+    return (await this.resolved.teamManagement.members(lead, (id) => this.callerCanReadSession(id)))
       .filter(
         (member) =>
           member.resourcePath[0] === lead &&

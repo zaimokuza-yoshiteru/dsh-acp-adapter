@@ -167,3 +167,12 @@
     flex-direction: column;
   }
 }
+
+.historySurface {
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
+  flex-wrap: wrap;
+}
+
+.historySurface .summaryText {
+  flex-basis: 17em;
+}

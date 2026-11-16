@@ -136,6 +136,37 @@ async function harness(options: HarnessOptions = {}) {
 }
 
 describe('createMemberModels()', () => {
+  it('reads actual use and pending intent from one released cold observation per member', async () => {
+    const h = await harness({ deferCreation: true })
+    const dispose = vi.fn()
+    let provider = 'acp-demo'
+    const observeSession = vi.fn(async () => ({
+      cursor: 4,
+      projections: {
+        values: {
+          modelSelection: {
+            lastUsed: { provider, model: 'last-used' },
+            next: { provider: 'acp-demo', model: 'pending' },
+          },
+        },
+      },
+      [Symbol.dispose]: dispose,
+    }))
+    h.ctx.provide('sessionQuery', { observeSession } as never)
+    expect(await h.models.facts(h.agent.id, 'acp-demo')).toMatchObject({
+      currentModel: 'last-used',
+      pendingModel: 'pending',
+      unavailableReason: 'model-switch',
+    })
+    expect(observeSession).toHaveBeenCalledOnce()
+    expect(dispose).toHaveBeenCalledOnce()
+    provider = 'native'
+    const otherRoute = await h.models.facts(h.agent.id, 'acp-demo')
+    expect(otherRoute).toMatchObject({ currentModel: 'model-default', pendingModel: 'pending' })
+    expect(otherRoute.unavailableReason).toBeUndefined()
+    expect(dispose).toHaveBeenCalledTimes(2)
+  })
+
   it('restores the committed model after it disappears from discovery while refusing another model', async () => {
     const h = await harness({ requested: true })
     h.model.select({ provider: 'acp-demo', model: 'model-next' })

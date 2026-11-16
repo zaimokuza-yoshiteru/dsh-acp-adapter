@@ -2,10 +2,14 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { SubagentDescendantListEntry } from '@deepseek-ai/dsh-subagent'
-import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type { AcpRemoteServiceDeps } from '../../remote/service.ts'
 import { createMemberModels, type MemberModelDependencies } from './member-models.ts'
-import { captureSubagentTree, localSubagentIdentity, subagentPath } from '../subagent/tree.ts'
+import {
+  captureSubagentTree,
+  localSubagentIdentity,
+  observeDormantSubagentRoot,
+  subagentPaths,
+} from '../subagent/tree.ts'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 
 /** ACP controls supplement the native tree without owning a separate Team roster. */
@@ -17,31 +21,31 @@ export function createTeamManagement(
 ): NonNullable<AcpRemoteServiceDeps['teamManagement']> {
   const models = modelDependencies === undefined ? undefined : createMemberModels(ctx, modelDependencies)
   const resolveLead = async (id: string) => {
-    let agent = ctx.get('agents', false)?.get(id as SessionId)
-    if (agent === undefined) {
-      const provider = await readBindingProvider(id)
-      if (provider === undefined || !owns(provider)) throw new Error('ACP_TEAM_LEAD_REQUIRED')
-      const result = await ctx.get('sessionController', false)?.resolveAgent(id as SessionId)
-      if (result !== undefined && 'error' in result) throw result.error
-      agent = ctx.get('agents', false)?.get(id as SessionId)
-    }
-    const tree = agent === undefined ? undefined : captureSubagentTree(ctx, agent)
-    if (agent === undefined || tree?.root !== agent) throw new Error('ACP_TEAM_LEAD_UNAVAILABLE')
-    return tree
+    const agent = ctx.get('agents', false)?.get(id as SessionId)
+    if (agent === undefined) return observeDormantSubagentRoot(ctx, id as SessionId)
+    const tree = captureSubagentTree(ctx, agent)
+    if (tree === undefined) throw new Error('ACP_TEAM_LEAD_UNAVAILABLE')
+    return tree.root === agent ? tree : undefined
   }
-  const localMember = (root: Agent, row: SubagentDescendantListEntry) => {
+  const localMember = (root: Agent | undefined, row: SubagentDescendantListEntry) => {
     if (row.kind !== 'child' || row.mode !== 'continuable') return undefined
     const child = ctx.get('agents', false)?.get(row.id)
     if (
       child !== undefined &&
-      (localSubagentIdentity(ctx, child) === undefined || captureSubagentTree(ctx, child)?.root !== root)
+      (root === undefined ||
+        localSubagentIdentity(ctx, child) === undefined ||
+        captureSubagentTree(ctx, child)?.root !== root)
     )
       return undefined
     return { row, child }
   }
   const resolveMember = async (leadId: string, memberId: string) => {
     const tree = await resolveLead(leadId)
-    const row = (await tree.descendants()).find((entry) => entry.id === memberId)
+    if (tree === undefined) throw new Error('ACP_TEAM_MEMBER_REQUIRED')
+    const rows = await tree.descendants()
+    if (subagentPaths(leadId as SessionId, rows)(memberId as SessionId) === undefined)
+      throw new Error('ACP_TEAM_MEMBER_REQUIRED')
+    const row = rows.find((entry) => entry.id === memberId)
     const member = row === undefined ? undefined : localMember(tree.root, row)
     if (member === undefined) throw new Error('ACP_TEAM_MEMBER_REQUIRED')
     const provider = await readBindingProvider(memberId)
@@ -71,14 +75,19 @@ export function createTeamManagement(
     return { ...facts, models: choices, writable: facts.writable && owner.member.child?.status !== 'running' }
   }
   return {
-    async members(id) {
+    async members(id, canRead) {
       const tree = await resolveLead(id)
+      if (tree === undefined) return []
       const rows = await tree.descendants()
+      const pathFor = subagentPaths(id as SessionId, rows)
       const result = []
       for (const row of rows) {
+        const path = pathFor(row.id)
+        if (path === undefined) continue
+        const resourcePath = [id, ...path.map((entry) => entry.sessionId)]
+        if (canRead !== undefined && !resourcePath.every(canRead)) continue
         const member = localMember(tree.root, row)
-        const path = subagentPath(tree.root.id, row.id, rows)
-        if (member === undefined || path === undefined) continue
+        if (member === undefined) continue
         const { child } = member
         const session = child?.session ?? ctx.get('sessions', false)?.get(row.id)
         const provider =
@@ -91,7 +100,7 @@ export function createTeamManagement(
         if (!tree.current() || ctx.get('agents', false)?.get(row.id) !== child)
           throw new Error('ACP_TEAM_LEAD_UNAVAILABLE')
         result.push({
-          resourcePath: [tree.root.id, ...path.map((entry) => entry.sessionId)],
+          resourcePath,
           profileId: provider.slice(4),
           sessionId: row.id,
           name: row.path ?? row.id,

@@ -1420,73 +1420,52 @@ class SidecarStore implements AcpSidecar {
     return (row?.max_seq ?? 0) + 1
   }
 
-  /**
-   * 同步落库：序号、内容 ID 与 decided 去重都在数据库写锁内分配；binding
-   * 同时 upsert 最新索引表。
-   */
-  private insertSync(sessionId: string, entry: StampedEntry, directoryForkParent?: AcpBindingData): void {
+  private transaction(write: () => void): void {
     const db = this.ensureDb()
-    const ids = deriveAcpIds(entry.kind, entry.data)
-    const dedupeKey = decidedDedupeKeyOf(entry.kind, entry.data)
-    const payload = stableStringify(entry.data)
     db.exec('BEGIN IMMEDIATE')
-    let transactionOpen = true
     try {
-      if (entry.kind === 'permission' && dedupeKey !== undefined && this.stmtHasDedupe?.get(sessionId, dedupeKey)) {
-        db.exec('COMMIT')
-        transactionOpen = false
-        return
-      }
-      if (entry.kind === 'binding') {
-        if (directoryForkParent === undefined) this.assertBindingTransition(sessionId, entry)
-        else this.assertDirectoryForkTransition(sessionId, entry, directoryForkParent)
-      }
-      const identity = this.nextAuditIdentity(sessionId, entry)
-      const seq = identity.seq
-      const recordId = dedupeKey ?? identity.recordId
-      const result =
-        entry.kind === 'permission' && dedupeKey !== undefined
-          ? this.stmtInsertIgnore?.run(
-              recordId,
-              sessionId,
-              seq,
-              entry.time,
-              entry.kind,
-              ids.acpProviderId ?? null,
-              ids.acpSessionId ?? null,
-              dedupeKey,
-              payload,
-            )
-          : this.stmtInsert?.run(
-              recordId,
-              sessionId,
-              seq,
-              entry.time,
-              entry.kind,
-              ids.acpProviderId ?? null,
-              ids.acpSessionId ?? null,
-              null,
-              payload,
-            )
-      if (result !== undefined && Number(result.changes) === 0) {
-        db.exec('COMMIT')
-        transactionOpen = false
-        return
-      }
-      if (entry.kind === 'binding')
-        this.stmtUpsertBinding?.run(sessionId, entry.time, ids.acpProviderId ?? null, ids.acpSessionId ?? null, payload)
+      write()
       db.exec('COMMIT')
-      transactionOpen = false
-    } catch (error: unknown) {
-      if (transactionOpen) {
-        try {
-          db.exec('ROLLBACK')
-        } catch {
-          /* preserve original */
-        }
+    } catch (error) {
+      try {
+        db.exec('ROLLBACK')
+      } catch {
+        /* preserve original failure */
       }
       throw error
     }
+  }
+
+  private insertSync(sessionId: string, entry: StampedEntry): void {
+    this.transaction(() => this.insertInTransaction(sessionId, entry))
+  }
+
+  /** Allocate audit identities and update the binding index under the caller's SQLite write lock. */
+  private insertInTransaction(sessionId: string, entry: StampedEntry, directoryForkParent?: AcpBindingData): void {
+    const dedupeKey = decidedDedupeKeyOf(entry.kind, entry.data)
+    const deduplicate = entry.kind === 'permission' && dedupeKey !== undefined
+    if (deduplicate && this.stmtHasDedupe?.get(sessionId, dedupeKey)) return
+    if (entry.kind === 'binding') {
+      if (directoryForkParent === undefined) this.assertBindingTransition(sessionId, entry)
+      else this.assertDirectoryForkTransition(sessionId, entry, directoryForkParent)
+    }
+    const ids = deriveAcpIds(entry.kind, entry.data)
+    const payload = stableStringify(entry.data)
+    const { seq, recordId } = this.nextAuditIdentity(sessionId, entry)
+    const statement = deduplicate ? this.stmtInsertIgnore : this.stmtInsert
+    const result = statement!.run(
+      dedupeKey ?? recordId,
+      sessionId,
+      seq,
+      entry.time,
+      entry.kind,
+      ids.acpProviderId ?? null,
+      ids.acpSessionId ?? null,
+      deduplicate ? dedupeKey : null,
+      payload,
+    )
+    if (entry.kind === 'binding' && Number(result.changes) !== 0)
+      this.stmtUpsertBinding!.run(sessionId, entry.time, ids.acpProviderId ?? null, ids.acpSessionId ?? null, payload)
   }
 
   /** 为一条非去重审计分配 seq 与无碰撞 record id。 */
@@ -1749,7 +1728,29 @@ class SidecarStore implements AcpSidecar {
   async commitDirectoryFork(sessionId: SessionId, parent: AcpBindingData, replacement: AcpBindingData): Promise<void> {
     assertSafeSessionId(sessionId)
     this.drainQueue()
-    this.insertSync(sessionId, { kind: 'binding', time: this.now(), data: replacement }, parent)
+    const time = this.now()
+    this.transaction(() => {
+      this.insertInTransaction(sessionId, { kind: 'binding', time, data: replacement }, parent)
+      this.insertInTransaction(sessionId, {
+        kind: 'session-fork',
+        time,
+        data: {
+          outcome: 'inherited',
+          reason: 'inherited',
+          parentSessionId: sessionId,
+          parentAgentSessionId: parent.agentSessionId,
+          agentSessionId: replacement.agentSessionId,
+        },
+      })
+      this.upsertRecoveryState({
+        dshSessionId: sessionId,
+        kind: 'healthy',
+        provider: replacement.provider,
+        acpSessionId: replacement.agentSessionId,
+        generation: replacement.generation,
+        updatedAt: time,
+      })
+    })
   }
 
   async beginDispatch(record: AcpDispatchRecord): Promise<void> {
@@ -2352,30 +2353,24 @@ class SidecarStore implements AcpSidecar {
     )
       throw new TypeError('dsh-acp sidecar: dispatch can only be cleared with an explicit healthy recovery action')
     try {
-      const db = this.ensureDb()
-      db.exec('BEGIN IMMEDIATE')
-      try {
-        this.stmtUpsertRecoveryState?.run(
-          validated.dshSessionId,
-          validated.updatedAt,
-          validated.lastAttemptAt ?? null,
-          validated.lastUserAction ?? null,
-          stableStringify(validated),
-        )
+      this.transaction(() => {
+        this.upsertRecoveryState(validated)
         if (options?.clearDispatch === true) this.stmtDeleteDispatch?.run(validated.dshSessionId)
-        db.exec('COMMIT')
-      } catch (error: unknown) {
-        try {
-          db.exec('ROLLBACK')
-        } catch {
-          /* preserve original failure */
-        }
-        throw error
-      }
+      })
       return Promise.resolve()
     } catch (error: unknown) {
       return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
     }
+  }
+
+  private upsertRecoveryState(state: AcpRecoveryState): void {
+    this.stmtUpsertRecoveryState!.run(
+      state.dshSessionId,
+      state.updatedAt,
+      state.lastAttemptAt ?? null,
+      state.lastUserAction ?? null,
+      stableStringify(state),
+    )
   }
 
   listBindings(): Promise<readonly AcpBoundSessionBinding[]> {

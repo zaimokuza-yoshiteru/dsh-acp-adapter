@@ -1,4 +1,5 @@
-import { openNativeMembers } from './native-team-ui.ts'
+import type { AcpRemoteService } from '../../src/remote/service.ts'
+import { openMemberSettings, openNativeMembers } from './native-team-ui.ts'
 import { treeMember, treeMembers } from './subagent-tree.ts'
 import { acpPermissionAudit } from './acp-permission-audit.ts'
 import { teamBoundaryDiagnostics } from './team-boundary-diagnostics.ts'
@@ -493,6 +494,50 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
     await cleanup()
   }
 }, 120_000)
+
+it('shows ACP member settings for a mixed team only after a native lead gains a bound ACP child', async () => {
+  const { host, browser, page, send } = await setup(true, true)
+  try {
+    const ready = host.whenTurnSettled(30_000)
+    await send('Prepare the review team')
+    const lead = required(host.ctx.agents.get(await ready))
+    expect(lead.session.requestHeader()?.config.provider).toBe('native-control')
+    const service = host.ctx.get('dshAcp') as AcpRemoteService
+    const spawn = (name: string, provider: string, model: string) =>
+      host.ctx.subagents.startActivation({
+        parent: lead,
+        delivery: 'caller',
+        name,
+        label: name,
+        provider: 'spawn',
+        prompt: [{ type: 'text', text: 'E2E_MESSAGE' }],
+        agentOptions: { provider, model },
+        signal: new AbortController().signal,
+      })
+    const native = await spawn('native-reviewer', 'native-control', 'native-a')
+    expect((await native.result).stopReason).toBe('completed')
+    const catalog = await openNativeMembers(page)
+    await catalog.getByRole('treeitem').filter({ hasText: 'native-reviewer' }).first().waitFor()
+    expect(await service.teamMembers(lead.id)).toEqual([])
+    expect(await catalog.locator('[data-acp-team-management]').count()).toBe(0)
+
+    const acp = await spawn('acp-reviewer', 'acp-devin', 'mock-model-a')
+    expect((await acp.result).stopReason).toBe('completed')
+    await catalog.getByRole('treeitem').filter({ hasText: 'acp-reviewer' }).first().waitFor()
+    const dialog = await openMemberSettings(page)
+    const row = dialog.locator('[data-acp-managed-member="acp-reviewer"]')
+    await row.getByText('Mock Model A', { exact: true }).waitFor()
+    expect(await dialog.locator('[data-acp-managed-member]').count()).toBe(1)
+    expect(await service.teamMemberModels(lead.id, acp.childId)).toMatchObject({ currentModel: 'mock-model-a' })
+    expect(await service.backendOf(lead.id)).toEqual({ state: 'established', provider: 'native-control' })
+  } finally {
+    try {
+      await browser.close()
+    } finally {
+      await host.close()
+    }
+  }
+}, 90_000)
 
 it('preserves native Teams model inheritance and switching with the ACP plugin installed', async () => {
   const { host, browser, page, send } = await setup(true, true)
