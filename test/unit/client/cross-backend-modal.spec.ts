@@ -38,14 +38,17 @@ it('preserves real Agent model names even when a wire model collides with the cu
   ).toBe(`My Agent · ${actualName}`)
 })
 
-it('offers keeping the current model and explicitly creating an independent model-switch session', () => {
+it.each([
+  [null, 'crossBackendNewModelSession'],
+  ['ungrouped-destination', 'unroutedHistoryOpen'],
+] as const)('offers the correct destination action after %s', (phase, actionLabel) => {
   const cancel = vi.fn()
   const confirm = vi.fn()
   const coordinator = {
     getSnapshot: () => ({
       pending: {
         reason: 'model-switch',
-        failure: null,
+        failure: phase === null ? null : { phase, message: 'workspace offline' },
         confirmable: true,
         busy: false,
         ticket: { key: 'change', sourceSelection: selection, targetSelection: { ...selection, model: 'new-model' } },
@@ -73,10 +76,31 @@ it('offers keeping the current model and explicitly creating an independent mode
   expect(modal.props.description).not.toContain(selection.provider)
   const [keep, create] = modal.props.footer.props.children
   expect(keep!.props.children).toBe('crossBackendKeepModel')
-  expect(create!.props.children).toBe('crossBackendNewModelSession')
+  expect(create!.props.children).toBe(actionLabel)
   keep!.props.onClick()
   expect(cancel).toHaveBeenCalledOnce()
   expect(confirm).not.toHaveBeenCalled()
   create!.props.onClick()
   expect(confirm).toHaveBeenCalledOnce()
+})
+
+it('explains that the original Agent must be restored to continue a retired session', () => {
+  const modal = CrossBackendModal({
+    coordinator: {
+      getSnapshot: () => ({
+        pending: {
+          reason: 'backend-change',
+          confirmable: true,
+          busy: false,
+          failure: null,
+          ticket: { key: 'retired', sourceUnavailable: true, targetSelection: selection },
+        },
+      }),
+      subscribe: () => () => {},
+    },
+    loadModelCatalog: async () => catalog,
+    profileName: () => undefined,
+    t,
+  } as never) as { props: { description: string } }
+  expect(modal.props.description).toBe('crossBackendSourceUnavailable')
 })

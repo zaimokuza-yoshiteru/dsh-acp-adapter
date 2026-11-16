@@ -13,7 +13,7 @@ export function isMainSession(sessions: ISessions, sessionId: SessionId): boolea
 export type IndependentSessionOutcome = 'idle' | 'create-failed' | 'open-failed' | 'ungrouped' | 'ungrouped-open-failed'
 
 /** Keep the Host-published identity across a failed attachment, navigation or interrupted view. */
-export function independentHistoryNavigation(
+export function independentSessionNavigation(
   sessions: Pick<ISessions, 'create'>,
   locate: (source: SessionId) => CrossBackendLocation | undefined,
   open: (child: SessionId) => void,

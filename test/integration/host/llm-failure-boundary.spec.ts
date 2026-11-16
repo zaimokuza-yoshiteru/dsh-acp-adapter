@@ -20,7 +20,7 @@ afterEach(async () => {
 })
 
 describe('ACP failures through the published LLM and AgentLoop boundary', () => {
-  it.each(['ACP_TIMEOUT', 'ACP_LOCAL_SETTLEMENT_FAILED'] as const)(
+  it.each(['ACP_TIMEOUT', 'ACP_CRASH', 'ACP_LOCAL_SETTLEMENT_FAILED'] as const)(
     'retains %s in request recovery and the Session without redispatch',
     async (code) => {
       const root = mkdtempSync(join(tmpdir(), 'acp-llm-failure-'))
@@ -43,7 +43,11 @@ describe('ACP failures through the published LLM and AgentLoop boundary', () => 
       const failure =
         code === 'ACP_TIMEOUT'
           ? new AcpClientError('timeout', 'ACP prompt outcome is not confirmed')
-          : LlmError.fromFailure(providerFacts, { cause: new Error('local storage failed') })
+          : code === 'ACP_CRASH'
+            ? new AcpClientError('crash', 'The Agent disconnected. Check its connection in ACP settings.', {
+                cause: new Error('local startup diagnostic'),
+              })
+            : LlmError.fromFailure(providerFacts, { cause: new Error('local storage failed') })
       const prompt = vi.fn(async () => {
         throw failure
       })
@@ -69,7 +73,9 @@ describe('ACP failures through the published LLM and AgentLoop boundary', () => 
         () => ({
           acpSessionId: 'remote-fixture-session',
           initialize: async () => undefined,
-          start: async () => undefined,
+          start: async () => {
+            if (code === 'ACP_CRASH') throw failure
+          },
           prompt,
           close: async () => undefined,
         }),
@@ -96,7 +102,7 @@ describe('ACP failures through the published LLM and AgentLoop boundary', () => 
       )
       await agent.whenIdle()
 
-      const expected = code === 'ACP_TIMEOUT' ? { message: failure.message, code } : providerFacts
+      const expected = code === 'ACP_LOCAL_SETTLEMENT_FAILED' ? providerFacts : { message: failure.message, code }
       expect(observed).toEqual([expected])
       expect(Object.isFrozen(observed[0])).toBe(true)
       const events = agent.session.snapshotEvents()
@@ -106,9 +112,10 @@ describe('ACP failures through the published LLM and AgentLoop boundary', () => 
         data: { reason: { kind: 'error', error: expected } },
       })
       expect(events.filter((event) => event.type === 'llm/retry')).toEqual([])
-      expect(prompt).toHaveBeenCalledTimes(1)
+      expect(prompt).toHaveBeenCalledTimes(code === 'ACP_CRASH' ? 0 : 1)
       expect(adapter.providerRetryPolicy('acp-test')).toMatchObject({ maxRetries: 0, retryableCodes: [] })
-      expect(await sidecar.readRecoveryState(agent.session.id)).toMatchObject({ kind: 'outcome-unknown' })
+      if (code === 'ACP_CRASH') expect(await sidecar.readRecoveryState(agent.session.id)).toBeUndefined()
+      else expect(await sidecar.readRecoveryState(agent.session.id)).toMatchObject({ kind: 'outcome-unknown' })
     },
   )
 })

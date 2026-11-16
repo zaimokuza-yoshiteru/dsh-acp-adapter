@@ -66,7 +66,9 @@ async function fixture({ requested = true, provider = 'acp-demo' } = {}) {
     workingDirectoryChangeDenial,
   }))
   const readBinding = vi.fn(async (): Promise<unknown | undefined> => (requested ? { status: 'ok' } : undefined))
-  const guard = await ctx.plugin((scope) => installWorkingDirectoryGuard(scope, adapterFor, readBinding))
+  const guard = await ctx.plugin((scope) =>
+    installWorkingDirectoryGuard(scope, adapterFor, (route) => route === 'acp-thirdparty', readBinding),
+  )
   return {
     root,
     origin,
@@ -198,10 +200,12 @@ describe('native working-directory/access admission', () => {
       code: 'WORKING_DIRECTORY_NOT_FOUND',
     })
     expect(f.adapterFor).not.toHaveBeenCalled()
-    const native = await fixture({ provider: 'deepseek' })
-    await expect(native.ctx.workingDirectory.set(native.agent, native.target)).resolves.toBe(native.target)
-    expect(native.adapterFor).not.toHaveBeenCalled()
-    expect(native.readBinding).not.toHaveBeenCalled()
+    for (const provider of ['deepseek', 'acp-thirdparty']) {
+      const native = await fixture({ provider })
+      await expect(native.ctx.workingDirectory.set(native.agent, native.target)).resolves.toBe(native.target)
+      expect(native.adapterFor).not.toHaveBeenCalled()
+      expect(native.readBinding).not.toHaveBeenCalled()
+    }
   })
 
   it('does not mistake a saved binding or unavailable binding storage for a fresh Session', async () => {

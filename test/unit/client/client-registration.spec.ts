@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { SessionId } from '@deepseek-ai/dsh-session'
+import type { independentSessionNavigation } from '../../../src/client/coordinator/native-session-navigation.ts'
 import { apply, inject } from '../../../src/client/index.ts'
 
 describe('client contribution', () => {
@@ -30,13 +32,18 @@ describe('client contribution', () => {
       ['conversation.input.model', [{ name: 'conversation.input.model', priority: 0, id: 'native-model-selector' }]],
     ])
     const lifecycle: string[] = []
+    const child = Promise.withResolvers<SessionId>()
+    const openSession = vi.fn()
     const sessions = {
+      create: vi.fn(() => child.promise),
       list: {
         getSnapshot: () => ({ byId: {}, projectionsBySession: {} }),
         subscribe: () => () => {},
       },
     }
+    const workspaces = { list: { getSnapshot: () => ({ items: [{ workspaceId: 'w', sessionIds: ['source'] }] }) } }
     const ctx = {
+      on: () => () => {},
       remote: {
         $on: () => () => {},
         $mount: async () => {
@@ -47,7 +54,7 @@ describe('client contribution', () => {
         },
         settings: { mutate: async () => ({ ok: true, value: null }) },
         dshAcp: {
-          ownedProviderRoutes: async () => ({ ok: true, value: { providers: [] } }),
+          ownedProviderRoutes: async () => ({ ok: true, value: { providers: [], historicalProviders: [] } }),
         },
       },
       uiSession: { sessionStatus: { getSnapshot: () => new Map(), subscribe: () => () => {} } },
@@ -66,7 +73,8 @@ describe('client contribution', () => {
         }),
       },
       sessions,
-      workspaces: {},
+      workspaces,
+      uiWorkspace: { openSession },
       effect: (fn: () => unknown) => {
         void fn()
       },
@@ -82,7 +90,7 @@ describe('client contribution', () => {
         register: (value: unknown) => value,
         registerFactory: () => () => {},
       },
-      get: (name: string) => (name === 'sessions' ? sessions : {}),
+      get: (name: string) => (name === 'sessions' ? sessions : name === 'workspaces' ? workspaces : {}),
     }
     const uiInjects: string[][] = []
     Object.assign(ctx, {
@@ -132,12 +140,26 @@ describe('client contribution', () => {
     expect(slotEntries.get('conversation.input.model')).toEqual([
       { name: 'conversation.input.model', priority: 0, id: 'native-model-selector' },
     ])
+    const recovery = injections.find((entry) => (entry as { id?: string }).id === 'dsh-acp-recovery') as {
+      inject(): { createNewSession: ReturnType<typeof independentSessionNavigation> }
+    }
+    const { createNewSession } = recovery.inject()
+    let selected = true
+    const create = createNewSession(SessionId('source'), () => selected, false)
+    selected = false
+    child.resolve(SessionId('published'))
+    await create
+    expect(openSession).not.toHaveBeenCalled()
+    await createNewSession(SessionId('source'), () => true, false)
+    expect(openSession).toHaveBeenCalledExactlyOnceWith('published')
+    expect(sessions.create).toHaveBeenCalledOnce()
     await dispose()
     expect(lifecycle).toEqual(['mount', 'ui-dispose', 'dispose'])
   })
 
   it('does not register a partial contribution when Remote mounting fails', async () => {
     const ctx = {
+      on: () => () => {},
       remote: {
         $mount: async () => {
           throw new Error('mount failed')

@@ -19,7 +19,6 @@ import { createTeamManagement } from '../teams/management.ts'
 import { createToolApprovalPolicyReader } from '../subagent/tool-approval-policy.ts'
 import { createApprovalChildrenReader } from '../subagent/approval-children.ts'
 import { createAcpLogger } from '../../domain/observability/logging.ts'
-import { acpProbeConfigKey } from './llm-stub.ts'
 import { installExternalAgentContext } from './external-agent-context.ts'
 import { externalAgentApproval } from './external-agent-approval.ts'
 import { externalAgentPermissionQuestions } from './external-agent-questions.ts'
@@ -46,8 +45,6 @@ import { ExternalSubagentProjector } from '../subagent/external-projector.ts'
 import type { AcpRecoveryView } from '../../contract/remote.ts'
 import type { AcpRecoveryState } from '../../persistence/sidecar.ts'
 
-export { acpProbeConfigKey }
-
 export type ActivityReadStatus = 'owned' | 'binding-pending' | 'denied'
 
 /**
@@ -61,7 +58,7 @@ export async function activityReadStatusOf(input: {
   readonly sessionId: string
   readonly sidecar: Pick<AcpSidecar, 'hasDurableActivityOwner' | 'readLatestBinding'> | undefined
   readonly liveProvider: string | undefined
-  readonly ownedProviders: ReadonlySet<string>
+  readonly ownsProvider: (provider: string) => boolean
 }): Promise<ActivityReadStatus> {
   if (input.sidecar === undefined) return 'denied'
   if (await input.sidecar.hasDurableActivityOwner(input.sessionId as never)) return 'owned'
@@ -69,7 +66,7 @@ export async function activityReadStatusOf(input: {
   if (binding !== undefined) return 'denied'
   // Include an owner committed between the first owner check and binding read.
   if (await input.sidecar.hasDurableActivityOwner(input.sessionId as never)) return 'owned'
-  return input.liveProvider !== undefined && input.ownedProviders.has(input.liveProvider) ? 'binding-pending' : 'denied'
+  return input.liveProvider !== undefined && input.ownsProvider(input.liveProvider) ? 'binding-pending' : 'denied'
 }
 
 /** Compose volatile settlement context over the recovery fact without persisting it. */
@@ -253,7 +250,14 @@ export async function installInstalledProfileRegistry(
   const continuity = ensureHostContinuity(ctx)
   const executionFacts = await ctx.plugin(AcpSessionFacts)
   ctx.fiber.assertActive()
-  await installAcpForkTools(ctx)
+  const registrations = new Map<string, AdapterRegistrationHandle>()
+  const ownsProvider = (provider: string): boolean => {
+    const id = acpAgentIdFromRoute(provider)
+    return id !== undefined && registrations.has(id)
+  }
+  const isForeignProvider = (provider: string): boolean =>
+    !ownsProvider(provider) && ctx.llm.listProviders().some((row) => row.id === provider)
+  await installAcpForkTools(ctx, ownsProvider)
   ctx.fiber.assertActive()
   const readFacts = sessionFactsReader(ctx)
   const readToolAdmission = installStepToolAdmissions(ctx)
@@ -262,14 +266,7 @@ export async function installInstalledProfileRegistry(
   const log = createAcpLogger(ctx.logger)
   const sidecar = installAcpSidecar(ctx)
   const profileAdapters = new Map<string, AcpProfileAdapter>()
-  if (sidecar !== undefined)
-    installAcpBackendGuard(ctx, {
-      sidecar,
-      ownsProvider: (provider) => {
-        const id = acpAgentIdFromRoute(provider)
-        return id !== undefined && profileAdapters.has(id)
-      },
-    })
+  if (sidecar !== undefined) installAcpBackendGuard(ctx, { sidecar, ownsProvider })
   // The additive composition has no AgentLoop constructor to hand this seam
   // down. Resolve the host-owned service at the composition boundary instead;
   // keeping the explicit option is useful for isolated tests and embedders.
@@ -466,6 +463,7 @@ export async function installInstalledProfileRegistry(
   installWorkingDirectoryGuard(
     ctx,
     (profileId) => profileAdapters.get(profileId),
+    isForeignProvider,
     sidecar === undefined ? undefined : (sessionId) => sidecar.readLatestBinding(sessionId),
   )
   const controlSubscribers = new Map<string, Set<() => void>>()
@@ -477,7 +475,8 @@ export async function installInstalledProfileRegistry(
   const readToolApprovalPolicy = createToolApprovalPolicyReader(ctx, {
     sidecar,
     sessionOf: (id) => sessionStore?.get(id),
-    ownsProvider: (id) => profileAdapters.has(id),
+    ownsProvider,
+    isForeignProvider,
     defaultPolicy: () => config.toolApprovalDefault.get(),
   })
   const controlsChanged = (sessionId: string): void => {
@@ -505,7 +504,7 @@ export async function installInstalledProfileRegistry(
       sessionId,
       sidecar,
       liveProvider,
-      ownedProviders: new Set([...profileAdapters.keys()].map(acpRouteId)),
+      ownsProvider,
     })
   }
   const canRegisterRemote =
@@ -543,6 +542,7 @@ export async function installInstalledProfileRegistry(
         // as `acp-codex`. Keep those two namespaces separate; otherwise the
         // Settings panel's targeted check is always reported as unknown.
         agents: () => new Map(Object.entries(agents)),
+        registeredProviders: () => [...registrations.keys()].map(acpRouteId),
         // Health delegates to the exact adapter registered for the profile;
         // this keeps Settings and the stock ModelPicker on one cache/key and
         // one in-flight probe. There is deliberately no detached fallback.
@@ -556,12 +556,10 @@ export async function installInstalledProfileRegistry(
       // with executable=false/version=null in the Settings panel.
       subprocess,
       hostVersion: currentHostVersionMismatch,
-      approvalChildren: createApprovalChildrenReader(ctx, (provider) =>
-        [...profileAdapters.keys()].some((id) => acpRouteId(id) === provider),
-      ),
+      approvalChildren: createApprovalChildrenReader(ctx, ownsProvider),
       teamManagement: createTeamManagement(
         ctx,
-        (provider) => [...profileAdapters.keys()].some((id) => acpRouteId(id) === provider),
+        ownsProvider,
         async (id) => {
           const lookup = await sidecar.readLatestBinding(id as never)
           return lookup?.status === 'ok' ? lookup.binding.provider : undefined
@@ -588,10 +586,7 @@ export async function installInstalledProfileRegistry(
           const bindings = await sidecar.listBindings()
           return bindings.filter((entry) => entry.binding.provider === provider).length
         },
-        listBoundProviders: async () => {
-          const bindings = await sidecar.listBindings()
-          return [...new Set(bindings.map((entry) => entry.binding.provider))]
-        },
+        listBoundProviders: () => sidecar.listBoundProviders(),
       },
       auditTimeline: {
         list: async (sessionId, afterSeq, limit, throughSeq) => {
@@ -698,7 +693,6 @@ export async function installInstalledProfileRegistry(
 
   // Each registered profile adapter owns both its model-catalog probe and the
   // Settings health view of that probe. There is no detached fallback cache.
-  const registrations = new Map<string, AdapterRegistrationHandle>()
   const ready = Promise.withResolvers<void>()
   // A create/resume may already be waiting when the plugin is unloaded.  Do
   // not leave that caller suspended forever: resolving the barrier lets the
@@ -795,12 +789,12 @@ export async function installInstalledProfileRegistry(
             continuity,
           )
           profileAdapters.set(id, routeAdapter)
+          created.push(id)
         }
         const route = acpRouteId(id)
         const handle = registrations.get(id)
         if (handle === undefined) {
           registrations.set(id, ctx.llm.registerAdapter([route], routeAdapter))
-          created.push(id)
         } else {
           touched.push(id)
           handle.replace([route])
@@ -841,10 +835,7 @@ export async function installInstalledProfileRegistry(
     registeredKey = key
   }
 
-  installExternalAgentContext(ctx, (provider) => {
-    const profileId = acpAgentIdFromRoute(provider ?? '')
-    return profileId !== undefined && registrations.has(profileId)
-  })
+  installExternalAgentContext(ctx, (provider) => provider !== undefined && ownsProvider(provider))
 
   const onSettingsChange = (): void => {
     // llm-pi-ai precedent: a refused swap (route owned by another adapter

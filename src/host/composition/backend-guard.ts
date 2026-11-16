@@ -1,9 +1,3 @@
-/**
- * Pure classification for the stock DSH model-selection transition.
- *
- * Classification remains pure; the Host contribution below only observes the
- * final request and checks ACP continuity.
- */
 import type { Context } from '@deepseek-ai/cordis'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
@@ -12,49 +6,6 @@ import { readSessionFacts } from './session-facts.ts'
 import type { AcpSidecar, AcpBindingLookup } from '../../persistence/sidecar.ts'
 import { acpAgentIdFromRoute } from '../../domain/session/agent-config.ts'
 import { requiresAcpModelSwitchExit } from '../../contract/model-transition.ts'
-
-export interface ModelSelectionValue {
-  readonly provider: string
-  readonly model: string
-  readonly reasoningEffort?: string
-}
-
-export interface BackendTransitionInput {
-  /** The durable last-used selection, or null before the first selection. */
-  readonly lastUsed: ModelSelectionValue | null
-  /** The final selection produced by the stock DSH request waterfall. */
-  readonly next: ModelSelectionValue
-  /** True only when the DSH session has no semantic history to preserve. */
-  readonly blank: boolean
-  /** Defensive signal for a contradictory/legacy projection. */
-  readonly hasPriorSemanticHistory: boolean
-  /** ACP profile represented by the existing binding, when one is present. */
-  readonly bindingProfileId?: string
-}
-
-export type BackendTransition =
-  'allow-native' | 'allow-blank-acp' | 'allow-same-acp' | 'require-new-session' | 'recovery-conflict'
-
-/** Classify one model transition without performing the transition. */
-export function classifyBackendTransition(input: BackendTransitionInput): BackendTransition {
-  const nextProfile = acpAgentIdFromRoute(input.next.provider)
-  const previousProfile = acpAgentIdFromRoute(input.lastUsed?.provider ?? '')
-
-  if (nextProfile === undefined) {
-    // Native → native, including a model/provider change, never needs ACP
-    // continuity and therefore cannot be affected by stale ACP state.
-    if (input.lastUsed === null || previousProfile === undefined) return 'allow-native'
-    return 'require-new-session'
-  }
-
-  if (input.lastUsed === null) {
-    // An inconsistent projection must not let ACP adopt an existing transcript.
-    return input.blank && !input.hasPriorSemanticHistory ? 'allow-blank-acp' : 'require-new-session'
-  }
-
-  if (previousProfile === undefined || previousProfile !== nextProfile) return 'require-new-session'
-  return input.bindingProfileId === nextProfile ? 'allow-same-acp' : 'recovery-conflict'
-}
 
 export interface AcpBackendGuardOptions {
   readonly sidecar: AcpSidecar
@@ -106,9 +57,8 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
     projectionCtx.on('agent/request', async (payload, next): Promise<LlmCallConfig> => {
       const resolved = await next()
       const session = payload.agent.session
-      const targetProfile = acpAgentIdFromRoute(resolved.provider)
+      const targetProfile = options.ownsProvider(resolved.provider) ? acpAgentIdFromRoute(resolved.provider) : undefined
       const facts = readSessionFacts(projectionCtx, session)
-      const priorHistory = facts.priorSemanticHistory
       // A committed request identifies the backend that owns the transcript.
       // agent.model.current() is the future choice and must not stand in for it.
       const previous = session.requestHeader()?.config ?? null
@@ -117,30 +67,31 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
           'ACP_MODEL_SWITCH_UNAVAILABLE',
           'This ACP session cannot change models on this Host. Restore its previous model or start an independent session with the selected model; the existing Agent context is unchanged.',
         )
-      if (targetProfile === undefined && (previous === null || acpAgentIdFromRoute(previous.provider) === undefined))
-        return resolved
       const previousProfile = acpAgentIdFromRoute(previous?.provider ?? '')
-      const baseInput = {
-        lastUsed: previous,
-        next: resolved,
-        blank: !priorHistory,
-        hasPriorSemanticHistory: priorHistory,
-      }
-      // ACP sidecar is consulted only for a same-profile continuation. This
-      // keeps all native and cross-backend decisions independent of ACP I/O.
-      if (targetProfile === undefined || previousProfile === undefined || previousProfile !== targetProfile) {
-        const transition = classifyBackendTransition(baseInput)
-        if (transition === 'allow-native' || transition === 'allow-blank-acp') return resolved
-        if (transition === 'require-new-session')
+      if (previous !== null && previousProfile !== undefined && !options.ownsProvider(previous.provider)) {
+        // Route names can be reused by a different plugin after a profile is
+        // removed. Preserve the former ACP session without claiming other
+        // conversations that merely used the same provider string.
+        const stored = await options.sidecar.readLatestBinding(session.id)
+        if (
+          stored?.status === 'outdated' ||
+          (stored?.status === 'ok' && stored.binding.provider === previous.provider) ||
+          (facts.acpReplaySeen && facts.soleRequestProvider === previous.provider) ||
+          facts.forkReplay?.profileId === previousProfile
+        )
           throw transitionError(
             'ACP_BACKEND_NEW_SESSION_REQUIRED',
-            'This selection changes the execution backend; create a new DSH session to continue',
+            'This session used an ACP profile that is no longer registered. Restore that profile or start a new session.',
           )
-        throw transitionError(
-          'ACP_BACKEND_RECOVERY_REQUIRED',
-          'The DSH model-selection state conflicts with the ACP backend; restore the session or create a new DSH session',
-        )
       }
+      if (targetProfile === undefined && (previous === null || !options.ownsProvider(previous.provider)))
+        return resolved
+      if (previous === null && !facts.priorSemanticHistory) return resolved
+      if (targetProfile === undefined || previousProfile !== targetProfile || previous === null)
+        throw transitionError(
+          'ACP_BACKEND_NEW_SESSION_REQUIRED',
+          'This selection changes the execution backend; create a new DSH session to continue',
+        )
 
       const sessionId = String(session.id)
       let binding: AcpBindingLookup | undefined
@@ -160,7 +111,7 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
       // A native fork has no child ACP binding until its first dispatch. The
       // provider proves the inherited boundary before forking; a seeded child
       // that cannot preserve its history must fail instead of starting blank.
-      if (binding === undefined && previousProfile === targetProfile) {
+      if (binding === undefined) {
         // Real subagents and pre-alpha ordinary forks already have an explicit
         // persisted parent. New ordinary forks use the separately verified source.
         const recordedParent = session.header.parentSession !== undefined
@@ -197,11 +148,7 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
           }
         }
       }
-      const transition = classifyBackendTransition({
-        ...baseInput,
-        ...(binding?.status === 'ok' ? { bindingProfileId: binding.binding.profileId } : {}),
-      })
-      if (transition === 'allow-same-acp') return resolved
+      if (binding?.status === 'ok' && binding.binding.profileId === targetProfile) return resolved
       const cause =
         binding?.status === 'ok' && binding.binding.profileId !== targetProfile ? 'backend-conflict' : 'binding-missing'
       return await blockWithRecovery(

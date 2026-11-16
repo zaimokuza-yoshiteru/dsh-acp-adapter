@@ -5,13 +5,13 @@ import type { HostObservable, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { IndependentSessionOutcome } from '../coordinator/native-session-navigation.ts'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
-import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
+import { includesRoute, type UseRouteOwnership } from '../data/managed-routes.ts'
 import css from './AcpRecoveryDock.module.css'
 
 type Props = PropsRuntime<'conversation.input.dock'> &
   PropsLocale<'acpActivity'> & {
     readonly directory: HostObservable<ModelDirectoryState>
-    readonly ownsRoute: OwnsAcpRoute
+    readonly useRouteOwnership: UseRouteOwnership
     readonly openIndependent: (current: () => boolean, openUngrouped: boolean) => Promise<IndependentSessionOutcome>
   }
 
@@ -27,7 +27,7 @@ export function UnroutedHistoryDock({
   useWorkspaceAccess,
   useAccess,
   directory,
-  ownsRoute,
+  useRouteOwnership,
   openIndependent,
   t,
 }: Props): ReactNode {
@@ -36,16 +36,23 @@ export function UnroutedHistoryDock({
   const history = useProjection('acpExecution', (view) => view?.completedWithoutModel === true)
   const unselected = useProjection('modelSelection', (view) => view?.next === null && view.lastUsed === null)
   const snapshot = useSyncExternalStore(directory.subscribe, directory.getSnapshot)
+  const providers = useRouteOwnership((routes) => routes.providers)
   const currentDefault = snapshot.current
   const enabled =
-    main && idle && history && unselected && snapshot.status === 'ready' && ownsRoute(currentDefault?.provider)
+    main &&
+    idle &&
+    history &&
+    unselected &&
+    snapshot.status === 'ready' &&
+    includesRoute(providers, currentDefault?.provider)
   const workspace = useWorkspaces((s) => s.items.find((item) => item.sessionIds.includes(sessionId))?.workspaceId)
   const cwd = useSessions((s) => s.byId[sessionId]?.cwd)
   const mayCreate = useRemoteAccess('session/create')
   const mayCreateInWorkspace = useWorkspaceAccess((workspace ?? '') as WorkspaceId, 'session/create')
   const mayChoose = useAccess('session/selectModel')
   const canCreate = workspace === undefined ? Boolean(cwd) && mayCreate : mayCreateInWorkspace
-  const canChoose = mayChoose && snapshot.groups.some((group) => group.models.length > 0 && !ownsRoute(group.id))
+  const canChoose =
+    mayChoose && snapshot.groups.some((group) => group.models.length > 0 && !includesRoute(providers, group.id))
   const [action, setAction] = useState<IndependentSessionOutcome | 'busy'>('idle')
   const active = useRef<symbol | undefined>()
   useLayoutEffect(() => {

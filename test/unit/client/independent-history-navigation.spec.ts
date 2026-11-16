@@ -2,7 +2,7 @@ import { expect, it, vi } from 'vitest'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { SessionCreateError } from '@deepseek-ai/dsh-api-session-controller/client'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
-import { independentHistoryNavigation } from '../../../src/client/coordinator/native-session-navigation.ts'
+import { independentSessionNavigation } from '../../../src/client/coordinator/native-session-navigation.ts'
 
 const source = SessionId('history')
 const child = SessionId('created')
@@ -21,7 +21,7 @@ it('opens the known ungrouped child only on request after a workspace attachment
   const open = vi.fn().mockImplementationOnce(() => {
     throw new Error('offline')
   })
-  const start = independentHistoryNavigation(
+  const start = independentSessionNavigation(
     { create },
     () => ({ workspaceId: 'workspace' }),
     open,
@@ -40,7 +40,7 @@ it('retries opening the exact published destination without creating it again', 
   const open = vi.fn().mockImplementationOnce(() => {
     throw new Error('offline')
   })
-  const start = independentHistoryNavigation(
+  const start = independentSessionNavigation(
     { create },
     () => ({ cwd: '/work' }),
     open,
@@ -56,7 +56,7 @@ it('does not open a stale child and reuses it if the user returns and asks again
   const created = Promise.withResolvers<typeof child>()
   const create = vi.fn().mockReturnValue(created.promise)
   const open = vi.fn()
-  const start = independentHistoryNavigation(
+  const start = independentSessionNavigation(
     { create },
     () => ({ cwd: '/work' }),
     open,
@@ -79,7 +79,7 @@ it('reconciles the preallocated identity after a lost create response', async ()
   const create = vi.fn().mockRejectedValue(new Error('transport closed'))
   const reconcile = vi.fn().mockResolvedValue('created')
   const open = vi.fn()
-  const start = independentHistoryNavigation({ create }, () => ({ workspaceId: 'workspace' }), open, reconcile)
+  const start = independentSessionNavigation({ create }, () => ({ workspaceId: 'workspace' }), open, reconcile)
   expect(await start(source, current, false)).toBe('create-failed')
   const requested = create.mock.calls[0]![0].sessionId
   expect(await start(source, current, false)).toBe('idle')
@@ -91,7 +91,7 @@ it('reconciles the preallocated identity after a lost create response', async ()
 it('reuses the reserved identity when a fresh baseline confirms creation did not complete', async () => {
   const create = vi.fn().mockRejectedValueOnce(new Error('transport closed')).mockResolvedValueOnce(child)
   const open = vi.fn()
-  const start = independentHistoryNavigation(
+  const start = independentSessionNavigation(
     { create },
     () => ({ cwd: '/work' }),
     open,

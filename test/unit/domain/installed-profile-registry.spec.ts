@@ -23,6 +23,7 @@ import { withSessionFacts } from '../../support/session-facts.ts'
 //
 // 纯内存测试：不 spawn 进程（probe 行为在 llm-stub.spec.ts 用真 mock 覆盖）。
 
+import { AcpProfileAdapter } from '../../../src/host/composition/profile-adapter.ts'
 import { Config } from '../../../src/host/composition/config.ts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
@@ -30,6 +31,7 @@ import { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { AssembleContext, PromptPresentation } from '@deepseek-ai/dsh-system-prompt'
 import {
+  acpProbeConfigKey,
   acpAgentIdFromRoute,
   acpRouteId,
   acpVersionCompatibility,
@@ -37,7 +39,6 @@ import {
   type AcpAgentConfig,
 } from '../../../src/domain/session/agent-config.ts'
 import {
-  acpProbeConfigKey,
   acpRegistrationFacts,
   acpSettingsSchema,
   activityReadStatusOf,
@@ -137,11 +138,10 @@ class FakeSettingsProvider {
 }
 
 describe('ACP activity stream ownership status', () => {
-  const ownedProviders = new Set(['acp-codex'])
   const base = {
     sessionId: 'session-1',
     liveProvider: 'acp-codex',
-    ownedProviders,
+    ownsProvider: (provider: string) => provider === 'acp-codex',
   }
 
   it('recognizes only a live ACP session with no durable owner or binding as pending', async () => {
@@ -843,30 +843,18 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
   })
 
   it('新 profile 注册冲突时回滚新增项并保留旧 active route', async () => {
-    const { ctx, llm, settings } = fakeHarness({ failOnRoute: 'acp-foo' })
-    const registry = await installInstalledProfileRegistry(ctx, settings.config)
-    await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }])
-    llm.calls.length = 0
-    await settings
-      .mutate([
-        { op: 'set', path: ['agents', 'devin'], value: { ...devinAgent, name: 'Devin New' } },
-        { op: 'set', path: ['agents', 'foo'], value: { ...fooAgent } },
-      ])
-      .catch(() => undefined)
-    expect(registry.resolveRoute('acp-foo')).toBeUndefined()
-    expect(registry.resolveRoute('acp-devin')?.config.name).toBe('Devin')
-  })
-
-  it('rename 与冲突同批失败时恢复旧展示名称', async () => {
     const { ctx, settings } = fakeHarness({ failOnRoute: 'acp-foo' })
     const registry = await installInstalledProfileRegistry(ctx, settings.config)
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }])
+    const close = vi.spyOn(AcpProfileAdapter.prototype, 'close')
     await settings
       .mutate([
         { op: 'set', path: ['agents', 'devin'], value: { ...devinAgent, name: 'Devin New' } },
         { op: 'set', path: ['agents', 'foo'], value: { ...fooAgent } },
       ])
       .catch(() => undefined)
+    expect(close).toHaveBeenCalledOnce()
+    expect(registry.resolveRoute('acp-foo')).toBeUndefined()
     expect(registry.resolveRoute('acp-devin')?.config.name).toBe('Devin')
   })
 })

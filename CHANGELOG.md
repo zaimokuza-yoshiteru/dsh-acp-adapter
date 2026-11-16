@@ -1,8 +1,8 @@
 # 更新记录 / Changelog
 
-用户可见的变化与升级提示。发布时间、精确安装方式及校验值见 [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。历史条目根据对应标签的代码差异补录；不代表重新发布了 npm 包。
+安装命令、发布日期及安装包校验值见 [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
 
-User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
+Find installation commands, release dates, and package checksums on [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases).
 
 ## 未发布 / Unreleased — DSH RC.3
 

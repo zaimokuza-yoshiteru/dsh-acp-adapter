@@ -31,10 +31,12 @@ export interface CrossBackendTicket {
   /** The additive observer already compensated the stock picker's source
    * mutation before showing its confirmation UI. */
   readonly sourceAlreadyRestored?: true
+  /** The former Agent is no longer registered, so the Host cannot restore its model. */
+  readonly sourceUnavailable?: true
 }
 
 export type CrossBackendPhase =
-  'restore-source' | 'create-destination' | 'select-destination' | 'open-destination' | 'completed'
+  'restore-source' | 'create-destination' | 'ungrouped-destination' | 'select-destination' | 'open-destination'
 
 export interface CrossBackendFailure {
   readonly phase: CrossBackendPhase
@@ -46,11 +48,9 @@ export type CrossBackendResult =
   | { readonly ok: true; readonly destinationSessionId: string }
   | { readonly ok: false; readonly failure: CrossBackendFailure }
 
-export interface CrossBackendCreateResult {
-  /** The host published the session even when workspace attachment failed. */
-  readonly published: boolean
-  readonly message?: string
-}
+/** A confirmed creation carries the identity actually published by the Host. */
+type CrossBackendCreateResult =
+  { readonly sessionId: string; readonly attachmentError?: string } | { readonly message: string }
 
 export interface CrossBackendOperationResult {
   readonly ok: boolean
@@ -65,7 +65,7 @@ export interface CrossBackendOperations {
 }
 
 interface TransactionState {
-  readonly destinationSessionId: string
+  destinationSessionId: string
   sourceRestored: boolean
   destinationCreated: boolean
   destinationSelected: boolean
@@ -135,7 +135,7 @@ export class CrossBackendTransactionController {
     if (ticket.sourceSelection === undefined) state.sourceRestored = true
 
     if (!state.destinationCreated) {
-      let created: CrossBackendCreateResult = { published: false }
+      let created: CrossBackendCreateResult
       try {
         created = await operations.createDestination({
           sessionId: state.destinationSessionId,
@@ -151,7 +151,7 @@ export class CrossBackendTransactionController {
           },
         }
       }
-      if (!created.published) {
+      if (!('sessionId' in created)) {
         return {
           ok: false,
           failure: {
@@ -161,7 +161,18 @@ export class CrossBackendTransactionController {
           },
         }
       }
+      state.destinationSessionId = created.sessionId
       state.destinationCreated = true
+      if (created.attachmentError !== undefined) {
+        return {
+          ok: false,
+          failure: {
+            phase: 'ungrouped-destination',
+            message: created.attachmentError,
+            destinationSessionId: created.sessionId,
+          },
+        }
+      }
     }
 
     if (!state.destinationSelected) {

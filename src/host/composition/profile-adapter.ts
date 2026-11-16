@@ -3865,6 +3865,10 @@ export class AcpProfileAdapter extends LlmAdapter {
         // Agent. Existing classified failure paths may already have released it.
         if (!retainHealthyRuntimeAfterNotDispatched && !retainCancelledRuntimeForRefreshRetry)
           await self.releaseRuntime(runtimeKey, runtime)
+        // Setup may fail before the prompt's structured-error boundary. The
+        // native UNKNOWN fallback flattens the entire diagnostic cause chain.
+        if (error instanceof AcpClientError && error.kind === 'crash')
+          throw LlmError.fromFailure({ message: error.message, code: error.code }, { cause: error })
         throw error
       } finally {
         stopWatchingTerminalOutcomes?.()

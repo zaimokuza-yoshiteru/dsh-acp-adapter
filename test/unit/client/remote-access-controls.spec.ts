@@ -1,3 +1,4 @@
+import type { AcpOwnedRoutesView } from '../../../src/contract/remote.ts'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -26,12 +27,11 @@ vi.mock('react', () => ({
 import { UnroutedHistoryDock } from '../../../src/client/ui/UnroutedHistoryDock.ts'
 import { AcpAgentControl } from '../../../src/client/ui/AcpAgentControl.ts'
 import { AcpRecoveryDock } from '../../../src/client/ui/AcpRecoveryDock.ts'
+import type { IndependentSessionOutcome } from '../../../src/client/coordinator/native-session-navigation.ts'
 import { TeamMemberModelControl } from '../../../src/client/ui/TeamMemberModelControl.ts'
 import type { AcpAgentSessionSnapshotView } from '../../../src/contract/remote.ts'
 
-// Use the installed RC1 grant producer, not a hand-written boolean permission
-// stub. Element-tree tests inspect choices and handlers; browser E2E owns React
-// effects, native menus and the mounted owner experience.
+// Exercise selection handlers with the same grant updates used by a mounted DSH client.
 const require = createRequire(import.meta.url)
 type NativeAccess = {
   global(action: string): HostObservable<boolean>
@@ -85,7 +85,7 @@ function setup(owner = false, workspace = true) {
     retryOriginal: vi.fn(async () => ({ ok: true, value: undefined })),
     rebindRecoveryBlank: vi.fn(async () => ({ ok: true, value: undefined })),
   }
-  const createNewSession = vi.fn(async () => {})
+  const createNewSession = vi.fn(async () => 'idle' as const)
   const common = {
     sessionId: 'lead',
     remote,
@@ -100,7 +100,8 @@ function setup(owner = false, workspace = true) {
     useSession: (select: (value: object) => unknown) => select({ running: false, openState: 'ready' }),
     useProjection: () => ({ lastUsed: { provider: 'acp-codex' }, next: { provider: 'acp-codex' } }),
     t: (key: string) => key,
-    ownsRoute: (value: string) => value === 'acp-codex',
+    useRouteOwnership: (select: (value: AcpOwnedRoutesView) => unknown) =>
+      select({ providers: ['acp-codex'], historicalProviders: [] }),
   }
   const control = () => {
     seed([
@@ -161,7 +162,7 @@ function setup(owner = false, workspace = true) {
       onMenuOpen: () => {},
     } as never)
   }
-  const recovery = (confirmRebind = false) => {
+  const recovery = (confirmRebind = false, navigation: IndependentSessionOutcome = 'idle') => {
     seed([
       { dshSessionId: 'lead', kind: 'outcome-unknown', cause: null, detail: null },
       true,
@@ -173,6 +174,7 @@ function setup(owner = false, workspace = true) {
       false,
       0,
       confirmRebind,
+      navigation,
     ])
     return AcpRecoveryDock({ ...common, createNewSession } as never)
   }
@@ -359,8 +361,18 @@ it('uses the destination workspace or global create grant instead of the source 
     const allowed = recoveryButton(h.recovery(), 'recoveryNew')
     expect(allowed.props.disabled).toBe(false)
     ;(allowed.props.onClick as () => void)()
-    expect(h.createNewSession).toHaveBeenCalledExactlyOnceWith('lead')
+    expect(h.createNewSession).toHaveBeenCalledExactlyOnceWith('lead', expect.any(Function), false)
   }
+})
+
+it('offers opening the existing ungrouped session after a recovery attachment failure', () => {
+  const h = setup(true)
+  const view = h.recovery(false, 'ungrouped')
+  const labels = nodes(view).flatMap((node) => node.props.children ?? [])
+  expect(labels).toContain('unroutedHistoryUngrouped')
+  expect(labels).not.toContain('recoveryNew')
+  ;(recoveryButton(view, 'unroutedHistoryOpen').props.onClick as () => void)()
+  expect(h.createNewSession).toHaveBeenCalledExactlyOnceWith('lead', expect.any(Function), true)
 })
 
 it('offers only available model and creation actions in an imported history', () => {

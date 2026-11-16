@@ -28,11 +28,11 @@ CodeBuddy 是小模块实例：`codebuddy.ts` 根据实际握手名启用分模�
 
 进程所有权、超时取消、会话连续性、fork/recovery、pending settlement、DSH 工具目录代次、审批目标和持久化边界继续由现有 runtime/host/persistence owner 管理。Agent 模块不能直接注册 DSH 工具、改变审批策略、提交存储、重写历史绑定或持有 Host 服务。
 
-Qwen 的主动轮次/心跳和 Devin/Claude 的委派解析仍在原来的协议及领域 owner；本次只收拢已经明确的小型无状态策略，未声称完成全部 vendor 逻辑搬迁。后续应按一个行为的生产者与消费者迁移，并保留取消、停用、迟到通知和跨会话负例。
+Qwen 的主动轮次和心跳由协议层管理，Devin 和 Claude 的委派解析由领域层管理。迁移这些行为时，应一起迁移事件的生产者和消费者，并保留取消、停用、迟到通知和跨会话负例。
 
 ## 已移除的 Kimi 支持
 
-目录不再显示 Kimi，活动 runtime 与专有权限、推理别名、委派解析、测试矩阵均已移除。旧 `runtime: kimi` 和无 runtime 的旧 `id: kimi` 仅作为停用标记读取：配置及历史保留，相关路由不注册、不探测、不启动，也不自动降为 generic；设置页说明支持已移除。其他 Agent 的配置继续可用，用户可显式删除旧配置。
+目录不再显示 Kimi。旧 `runtime: kimi` 和无 runtime 的旧 `id: kimi` 仅作为停用标记读取：配置及历史保留，相关路由不注册、不探测、不启动，也不自动降为 generic；设置页说明支持已移除。其他 Agent 的配置继续可用，用户可显式删除旧配置。
 
 官方 Registry 快照原样保留，在目录合成时过滤退休条目。持久化 launch fingerprint 保留原有 `KIMI_CODE_HOME` 序列化槽及顺序，避免改变所有已有 Agent 的身份 hash；它不提供访问权限或启动环境覆盖。历史兼容只读，不放宽 binding 比较，也不迁写用户历史。
 

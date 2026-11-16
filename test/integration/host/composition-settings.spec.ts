@@ -12,7 +12,7 @@ import { acpSettingsSchema } from '../../../src/host/composition/installed-profi
 import type { AcpSettings } from '../../../src/host/composition/installed-profile-registry.ts'
 import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts'
 import { createAcpSidecar } from '../../../src/persistence/sidecar.ts'
-import type { AcpBindingData } from '../../../src/persistence/sidecar.ts'
+import type { AcpBindingData, AcpSidecar } from '../../../src/persistence/sidecar.ts'
 
 type Watcher = (next: AcpSettings, previous: AcpSettings) => void | Promise<void>
 
@@ -56,6 +56,27 @@ class SettingsDocument {
 
 function agent(name: string, command: string): AcpAgentConfig {
   return { name, command, args: ['acp'], env: {} }
+}
+
+async function seedCodexBinding(persisted: AcpSidecar, sessionId: string): Promise<void> {
+  const binding: AcpBindingData = {
+    provider: 'acp-codex',
+    agentSessionId: `agent-${sessionId}`,
+    profileId: 'codex',
+    canonicalCwd: '/tmp/work',
+    launchFingerprint: { command: 'codex-acp', args: ['acp'], envKeys: [] },
+    agent: { name: 'Codex', version: '1.6.2' },
+    protocolVersion: 1,
+    capabilityHash: 'a1b2c3d4e5f60708',
+    configHash: '0817f6e5d4c3b2a1',
+    generation: 1,
+    bindingEpoch: 1,
+    committedPromptOrdinal: 0,
+    historyBaseSeq: 0,
+    establishedAt: Date.now(),
+    dshCommittedSeq: 0,
+  }
+  await persisted.append(SessionId(sessionId), { kind: 'binding', data: binding })
 }
 
 describe('real Cordis ACP composition settings lifecycle', () => {
@@ -139,28 +160,8 @@ describe('real Cordis ACP composition settings lifecycle', () => {
         toolApprovalPolicy(sessionId: string): Promise<{ policy: 'auto' | 'ask'; source: string; editable: boolean }>
         setToolApprovalPolicy(sessionId: string, request: { policy: 'auto' | 'ask' }): Promise<unknown>
       }
-      const seedBinding = async (sessionId: string): Promise<void> => {
-        const binding: AcpBindingData = {
-          provider: 'acp-codex',
-          agentSessionId: `agent-${sessionId}`,
-          profileId: 'codex',
-          canonicalCwd: '/tmp/work',
-          launchFingerprint: { command: 'codex-acp', args: ['acp'], envKeys: [] },
-          agent: { name: 'Codex', version: '1.6.2' },
-          protocolVersion: 1,
-          capabilityHash: 'a1b2c3d4e5f60708',
-          configHash: '0817f6e5d4c3b2a1',
-          generation: 1,
-          bindingEpoch: 1,
-          committedPromptOrdinal: 0,
-          historyBaseSeq: 0,
-          establishedAt: Date.now(),
-          dshCommittedSeq: 0,
-        }
-        await persisted.append(sessionId as never, { kind: 'binding', data: binding })
-      }
-      await seedBinding(lead.id)
-      await seedBinding(childId)
+      await seedCodexBinding(persisted, lead.id)
+      await seedCodexBinding(persisted, childId)
       await remote.setToolApprovalPolicy(lead.id, { policy: 'ask' })
 
       const child = ctx.sessions.prepare(childId, { meta: { origin: 'subagent', parentSession: lead.id } })
@@ -197,7 +198,7 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       const detachFork = ctx.sessions.enter(fork)
       ctx.sessions.announce(fork)
       detachFork()
-      await seedBinding(forkId)
+      await seedCodexBinding(persisted, forkId)
       await expect(remote.toolApprovalPolicy(forkId)).resolves.toMatchObject({
         policy: 'ask',
         source: 'session',
@@ -240,7 +241,7 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       expect(ctx.sessions.get(nativeId)).toBeUndefined()
       await expectNoChildPolicy()
 
-      await seedBinding('evicted-policy-binding-only')
+      await seedCodexBinding(persisted, 'evicted-policy-binding-only')
       await expect(remote.toolApprovalPolicy('evicted-policy-binding-only')).rejects.toThrow(
         'ACP_TOOL_APPROVAL_SESSION_UNAVAILABLE',
       )
@@ -445,26 +446,6 @@ describe('real Cordis ACP composition settings lifecycle', () => {
     // arbitrary sessions without either live or durable ownership remain
     // denied by the composition's activityAccess gate.
     const persisted = createAcpSidecar({ root: path.join(home, 'dsh-acp') })
-    const seedAcpBinding = async (sessionId: string): Promise<void> => {
-      const binding: AcpBindingData = {
-        provider: 'acp-codex',
-        agentSessionId: `agent-${sessionId}`,
-        profileId: 'codex',
-        canonicalCwd: '/tmp/work',
-        launchFingerprint: { command: 'codex-acp', args: ['acp'], envKeys: [] },
-        agent: { name: 'Codex', version: '1.6.2' },
-        protocolVersion: 1,
-        capabilityHash: 'a1b2c3d4e5f60708',
-        configHash: '0817f6e5d4c3b2a1',
-        generation: 1,
-        bindingEpoch: 1,
-        committedPromptOrdinal: 0,
-        historyBaseSeq: 0,
-        establishedAt: Date.now(),
-        dshCommittedSeq: 0,
-      }
-      await persisted.append(sessionId as never, { kind: 'binding', data: binding })
-    }
     await persisted.upsertActivity({
       dshSessionId: 'cold-parent',
       ownerDshSessionId: 'cold-parent',
@@ -483,7 +464,7 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       activities: [{ activityId: 'cold-tool', presentation: 'Ran pwd' }],
     })
     await expect(remote.activitySnapshot('unrelated-session')).rejects.toThrow('not authorized')
-    await seedAcpBinding('policy-no-session')
+    await seedCodexBinding(persisted, 'policy-no-session')
     await expect(remote.toolApprovalPolicy('policy-no-session')).rejects.toThrow(
       'ACP_TOOL_APPROVAL_SESSION_UNAVAILABLE',
     )
@@ -507,7 +488,7 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       })
     }
     addSession('policy-root')
-    await seedAcpBinding('policy-root')
+    await seedCodexBinding(persisted, 'policy-root')
     await expect(remote.toolApprovalPolicy('policy-root')).resolves.toMatchObject({
       policy: 'auto',
       source: 'session',
@@ -537,7 +518,7 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       permissions: {},
       requestHeader: () => ({ config: { provider: 'acp-codex' } }),
     })
-    await seedAcpBinding(teammate.id)
+    await seedCodexBinding(persisted, teammate.id)
     const teamId = 'policy-team'
     memberships.set(lead, { id: teamId, role: 'lead', root: lead })
     memberships.set(teammate, { id: teamId, role: 'teammate', root: lead })

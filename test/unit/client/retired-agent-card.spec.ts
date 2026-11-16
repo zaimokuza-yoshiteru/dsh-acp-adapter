@@ -33,6 +33,19 @@ function text(value: unknown): string {
   if (Array.isArray(value)) return value.map(text).join(' ')
   return isNode(value) ? text(value.props.children) : ''
 }
+function renderPanel(snapshot: AcpPanelSnapshot, locale = en) {
+  const panel: AcpSectionWire = {
+    refreshHealth: vi.fn(),
+    refreshAgentHealth: vi.fn(),
+    saveAgent: vi.fn(),
+    deleteAgent: vi.fn(),
+    setToolApprovalDefault: vi.fn(),
+    countBoundSessions: vi.fn(),
+  }
+  const tree = expand(AcpSection({ t: (key) => locale[key], useStore: (selector) => selector(snapshot), panel }))
+  return { panel, tree }
+}
+
 it.each([zh, en])('shows a localized retired configuration and keeps explicit deletion available', (locale) => {
   const config = { name: 'Old saved profile', command: 'old-cli', args: [], env: {}, runtime: 'kimi' as const }
   const snapshot: AcpPanelSnapshot = {
@@ -59,15 +72,7 @@ it.each([zh, en])('shows a localized retired configuration and keeps explicit de
       agentErrors: {},
     },
   }
-  const panel: AcpSectionWire = {
-    refreshHealth: vi.fn(),
-    refreshAgentHealth: vi.fn(),
-    saveAgent: vi.fn(),
-    deleteAgent: vi.fn(),
-    setToolApprovalDefault: vi.fn(),
-    countBoundSessions: vi.fn(),
-  }
-  const tree = expand(AcpSection({ t: (key) => locale[key], useStore: (selector) => selector(snapshot), panel }))
+  const { tree } = renderPanel(snapshot, locale)
   expect(text(tree)).toContain(locale.agentConfiguration)
   expect(text(tree)).not.toContain(locale === en ? zh.agentConfiguration : en.agentConfiguration)
   expect(text(tree)).toContain(locale.agentRetired)
@@ -78,4 +83,22 @@ it.each([zh, en])('shows a localized retired configuration and keeps explicit de
   const remove = buttons.find((node) => text(node) === locale.remove)
   expect(remove).toBeDefined()
   expect(remove?.props.disabled).toBe(false)
+})
+
+it('recovers a failed Host health read even when the user has no configured Agent', () => {
+  const { tree, panel } = renderPanel({
+    settings: { status: 'ready', writable: true, agents: {}, toolApprovalDefault: 'auto', revision: 1 },
+    health: {
+      status: 'unreachable',
+      rows: [],
+      fetchedAt: undefined,
+      message: 'offline',
+      checkingAgentIds: [],
+      agentErrors: {},
+    },
+  })
+  const retry = nodes(tree).find((node) => node.type === 'button' && text(node).trim() === en['activity.detailRetry'])
+  expect(retry?.props.disabled).toBe(false)
+  ;(retry!.props.onClick as () => void)()
+  expect(panel.refreshHealth).toHaveBeenCalledExactlyOnceWith(false)
 })

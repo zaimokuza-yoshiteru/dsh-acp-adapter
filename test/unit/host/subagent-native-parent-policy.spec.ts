@@ -127,7 +127,8 @@ async function setup(residual: ResidualBinding) {
   const read = createToolApprovalPolicyReader(ctx, {
     sidecar,
     sessionOf: (id) => ctx.sessions.get(SessionId(id)),
-    ownsProvider: (id) => id === 'child' || (residual !== 'removed' && id === 'old'),
+    ownsProvider: (route) => route === 'acp-child' || (residual !== 'removed' && route === 'acp-old'),
+    isForeignProvider: (route) => route === 'deepseek' || (residual === 'removed' && route === 'acp-old'),
     defaultPolicy: () => 'ask',
   })
   const createChild = async () => {

@@ -14,7 +14,7 @@ import type { ClientRemoteAccess } from '@deepseek-ai/dsh-api-remote-access/clie
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import {
-  independentHistoryNavigation,
+  independentSessionNavigation,
   isMainSession,
   openSubagentAside,
 } from './coordinator/native-session-navigation.ts'
@@ -136,11 +136,22 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     })
   }
   const settingsScope = ctx.configForms.get<AcpSettings>(ACP_SETTINGS_NS)
-  const ownedRoutes = await acpRemote.ownedProviderRoutes().catch(() => undefined)
-  const managedRoutes = new ManagedAcpRouteCatalog(
-    settingsScope,
-    ownedRoutes?.ok === true ? ownedRoutes.value.providers : [],
-  )
+  const managedRoutes = new ManagedAcpRouteCatalog(async () => {
+    const result = await acpRemote.ownedProviderRoutes()
+    return result.ok ? result.value : undefined
+  })
+  ctx.effect(() => {
+    const updated = ctx.remote.$on('llm/adapters-updated', () => {
+      void managedRoutes.refresh()
+    })
+    const reset = ctx.on('connection/reset', () => managedRoutes.reset())
+    return () => {
+      updated()
+      reset()
+      managedRoutes.dispose()
+    }
+  }, 'dsh-acp: managed route catalogue')
+  await managedRoutes.refresh()
   const panelController = new AcpPanelController({
     scope: settingsScope,
     mutate: (ops, revision) => settingsScope.mutate(ops, revision),
@@ -226,12 +237,6 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     },
     'dsh-acp: settings controller',
   )
-  ctx.effect(
-    () => () => {
-      managedRoutes.dispose()
-    },
-    'dsh-acp: managed route catalogue',
-  )
   ctx.slots.inject('plugins.bundle.config', () =>
     ctx.slots.register(
       {
@@ -275,10 +280,10 @@ async function registerUi(ctx: ClientContext): Promise<void> {
         inject: (): {
           readonly remote: AcpRemoteLike
           readonly onVisibilityChange: typeof auditVisibility.setVisible
-          readonly ownsRoute: typeof managedRoutes.owns
+          readonly hooks: { routeOwnership: typeof managedRoutes.store }
         } => ({
           remote: acpRemote,
-          ownsRoute: managedRoutes.owns,
+          hooks: { routeOwnership: managedRoutes.store },
           onVisibilityChange: auditVisibility.setVisible,
         }),
       },
@@ -315,7 +320,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
       AcpActivityNode,
     ),
   )
-  const coordinator = new CrossBackendCoordinator(ctx, managedRoutes.owns)
+  const coordinator = new CrossBackendCoordinator(ctx, managedRoutes.store)
   // The native catalog owns discovery/navigation; ACP contributes only its settings action.
   ctx.inject(['remote.subagents', 'uiSession'], (teamCtx) => {
     const loadMembers = async (sessionId: SessionId) => {
@@ -419,7 +424,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
       ),
     )
   })
-  const openHistorySession = independentHistoryNavigation(
+  const openIndependentSession = independentSessionNavigation(
     sessions,
     (source) =>
       resolveCrossBackendLocation(
@@ -451,9 +456,9 @@ async function registerUi(ctx: ClientContext): Promise<void> {
           locale: 'acpActivity',
           inject: (sessionId) => ({
             directory: scope.modelDirectories.directoryFor(sessionId).store,
-            ownsRoute: managedRoutes.owns,
+            hooks: { routeOwnership: managedRoutes.store },
             openIndependent: (current: () => boolean, openUngrouped: boolean) =>
-              openHistorySession(sessionId, () => current() && isMainSession(sessions, sessionId), openUngrouped),
+              openIndependentSession(sessionId, () => current() && isMainSession(sessions, sessionId), openUngrouped),
           }),
         },
         UnroutedHistoryDock,
@@ -515,27 +520,12 @@ async function registerUi(ctx: ClientContext): Promise<void> {
         id: 'dsh-acp-recovery',
         order: 90,
         locale: 'acpActivity',
-        inject: (): {
-          readonly remote: AcpRemoteLike
-          readonly streamFactory: RemoteStreamFactory
-          readonly createNewSession: (sourceSessionId: string) => Promise<void>
-          readonly sessionAccessSource: SessionAccessSource
-          readonly ownsRoute: typeof managedRoutes.owns
-        } => ({
+        inject: () => ({
           remote: acpRemote,
           sessionAccessSource,
           streamFactory: ctx.remote,
-          ownsRoute: managedRoutes.owns,
-          createNewSession: async (sourceSessionId) => {
-            const row = sessions.list.getSnapshot().byId[sourceSessionId as never]
-            const location = resolveCrossBackendLocation(sourceSessionId, workspaces.list.getSnapshot().items, row?.cwd)
-            if (location === undefined) throw new Error('The original session workspace is unavailable')
-            const child = await sessions.create({
-              ...(location.cwd === undefined ? {} : { cwd: location.cwd }),
-              ...(location.workspaceId === undefined ? {} : { workspaceId: location.workspaceId as never }),
-            })
-            ctx.uiWorkspace.openSession(child)
-          },
+          hooks: { routeOwnership: managedRoutes.store },
+          createNewSession: openIndependentSession,
         }),
       },
       AcpRecoveryDock,
@@ -551,7 +541,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
         inject: (): {
           readonly remote: AcpRemoteLike
           readonly streamFactory: RemoteStreamFactory
-          readonly ownsRoute: typeof managedRoutes.owns
+          readonly hooks: { routeOwnership: typeof managedRoutes.store }
           readonly getDefaultProvider: () => Promise<string | undefined>
           readonly watchDefaultProvider: (changed: () => void) => () => void
           readonly feedback: Pick<AcpUiFeedback, 'report'>
@@ -560,7 +550,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
           remote: acpRemote,
           sessionAccessSource,
           streamFactory: ctx.remote,
-          ownsRoute: managedRoutes.owns,
+          hooks: { routeOwnership: managedRoutes.store },
           feedback,
           getDefaultProvider: async () => {
             const result = await ctx.remote.session.modelCatalog()

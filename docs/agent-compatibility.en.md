@@ -28,11 +28,11 @@ Only the previously supported Devin/Codex/Claude profile IDs retain the historic
 
 The existing runtime/host/persistence owners retain process ownership, timeout and cancellation, session continuity, fork/recovery, pending settlement, DSH tool directory generations, approval targets, and persistence boundaries. Agent modules must not directly register DSH tools, change approval policy, commit storage, rewrite historical bindings, or hold Host services.
 
-Qwen's active turns and heartbeats and Devin/Claude delegation parsing remain with their existing protocol and domain owners. This change only consolidates small, stateless policies whose boundaries are already clear; it does not claim to move all vendor logic. Further migrations should follow each behavior's producer and consumer together, preserving negative cases for cancellation, disablement, late notifications, and cross-session activity.
+The protocol layer manages Qwen’s active turns and heartbeats. The domain layer parses delegations from Devin and Claude. When moving either behavior, move its event producers and consumers together and retain negative cases for cancellation, disablement, late notifications, and cross-session activity.
 
 ## Removed Kimi support
 
-The catalog no longer displays Kimi. Its active runtime, proprietary permission handling, reasoning aliases, delegation parsing, and test matrix have been removed. Old `runtime: kimi` configurations and old `id: kimi` configurations without a runtime are read only as disabled markers: their configuration and history are retained, their routes are neither registered nor probed nor launched, and they do not automatically fall back to generic. Settings explains that support has been removed. Other Agent configurations remain usable, and users can explicitly delete the old configuration.
+The catalog no longer displays Kimi. Old `runtime: kimi` configurations and old `id: kimi` configurations without a runtime are read only as disabled markers: their configuration and history are retained, their routes are neither registered nor probed nor launched, and they do not automatically fall back to generic. Settings explains that support has been removed. Other Agent configurations remain usable, and users can explicitly delete the old configuration.
 
 The official Registry snapshot is retained unchanged; catalog composition filters out retired entries. The persisted launch fingerprint retains the original `KIMI_CODE_HOME` serialization position and ordering to avoid changing the identity hash of every existing Agent. It grants neither access nor a launch environment override. Historical compatibility is read-only: it neither relaxes binding comparisons nor rewrites user history.
 

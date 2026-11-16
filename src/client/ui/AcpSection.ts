@@ -1,20 +1,4 @@
-/**
- * The ACP plugin detail panel component tree.
- *
- * Thin presentation only: every decision (validation, parsing, health/login
- * derivation, CRUD semantics) lives in logic.ts, and every side effect
- * (settings writes, dshAcp Remote calls) in controller.ts. Components
- * receive the `t`/`useStore`/`panel` inject face and keep only interactive
- * state (open editor, staged draft text, delete confirmation, busy flags) —
- * the ModelsSection/CustomProviderCard precedent. : state rides the
- * entry's store seat (`useStore` over AcpPanelSnapshot; the PropsStore
- * `actions` share is the glue-only write set, unused here); the wire
- * callbacks arrive as the `panel` member so the reserved PropsStore `actions`
- * seat is never shadowed. Written with createElement because the frozen
- * tsconfig has no `jsx` option (see react.d.ts); classes come from
- * AcpSection.module.css ( CSS Modules).
- * @module @zaimokuza/dsh-acp-adapter/client/AcpSection
- */
+/** Agent configuration and connection health on the DSH plugin detail page. */
 
 import { createElement as h, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
@@ -53,7 +37,7 @@ export type UsePanelStore = <S>(selector: (snapshot: AcpPanelSnapshot) => S, equ
 
 /** The controller wire handed to the section (bound in apply; plain callbacks). */
 export interface AcpSectionWire {
-  /** recheck = true 即「重新检查」（收尾：丢弃 probe 缓存并重探）；省略 = 只读缓存视图。 */
+  /** Passing true probes the configured Agents. The default reads their saved health. */
   refreshHealth(recheck?: boolean): void
   refreshAgentHealth(agentId: string): void
   saveAgent(editingId: string | undefined, draft: AgentDraft): Promise<string | undefined>
@@ -77,15 +61,10 @@ export interface AcpSectionProps {
 /** Which editor card is open; the add flow carries its seed draft (empty or a one-click template). */
 type EditorState = { readonly key: number } & ({ mode: 'add'; seed: AgentDraft } | { mode: 'edit'; id: string })
 
-/** The change events our inputs care about (the attribute bag types handlers loosely; see react.d.ts). */
 interface InputEvent {
   target: { value: string }
 }
-/**
- * Render the ACP section content column.
- * @param props - slot-delivered inject face.
- * @returns the section, or null while the shell has not injected yet (ModelsSection precedent).
- */
+/** Wait for the native plugin detail slot to supply its configuration store and actions. */
 export function AcpSection(props: AcpSectionProps): ReactNode {
   const { t, useStore, panel } = props
   if (t === undefined || useStore === undefined || panel === undefined) return null
@@ -207,6 +186,8 @@ function Loaded({
   }
   const refreshing = snapshot.health.status === 'loading'
   const checkingAnyAgent = snapshot.health.checkingAgentIds.length > 0
+  const checkAll = ids.length > 1
+  const retryHealth = snapshot.health.status === 'unreachable' || snapshot.health.hostVersion !== undefined
 
   if (ids.length === 0 && editor?.mode !== 'add') {
     children.push(h('p', { key: 'empty', className: css.hint }, t('emptyAgents')))
@@ -231,6 +212,10 @@ function Loaded({
             agents,
             panel,
             editorKey: editor?.mode === 'edit' && editor.id === id ? editor.key : -1,
+            onCheck: () => {
+              if (checkAll) panel.refreshAgentHealth(id)
+              else panel.refreshHealth(true)
+            },
             onEdit: () => {
               openEdit(id)
             },
@@ -345,19 +330,21 @@ function Loaded({
           t('addAgent'),
         ),
       }),
-      h(
-        'button',
-        {
-          type: 'button',
-          className: css.addButton,
-          disabled: refreshing || checkingAnyAgent,
-          onClick: () => {
-            panel.refreshHealth(true)
-          },
-        },
-        h(IconRefreshOutlineMedium, { size: 14 }),
-        t(refreshing ? 'refreshing' : 'refresh'),
-      ),
+      checkAll || retryHealth
+        ? h(
+            'button',
+            {
+              type: 'button',
+              className: css.addButton,
+              disabled: refreshing || checkingAnyAgent,
+              onClick: () => {
+                panel.refreshHealth(checkAll)
+              },
+            },
+            h(IconRefreshOutlineMedium, { size: 14 }),
+            t(refreshing ? 'refreshing' : checkAll ? 'refreshAll' : 'activity.detailRetry'),
+          )
+        : null,
     ),
   )
 
@@ -417,6 +404,7 @@ function AgentCard(props: {
   agents: Record<string, AcpAgentConfig>
   panel: AcpSectionWire
   onEdit(): void
+  onCheck(): void
   onDeleted(id: string): void
   editorKey: number
   onCloseEditor(changed: boolean): void
@@ -494,9 +482,7 @@ function AgentCard(props: {
             variant: 'outline',
             size: 'sm',
             disabled: checking || retired,
-            onClick: () => {
-              panel.refreshAgentHealth(id)
-            },
+            onClick: props.onCheck,
           },
           t(checking ? 'refreshing' : 'refresh'),
         ),

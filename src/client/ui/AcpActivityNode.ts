@@ -520,7 +520,6 @@ export function activityRowElement({
                 : t('subagent.unavailable'),
             ),
           ),
-          h('p', { className: css.externalNote }, t('subagent.observedTiming')),
         ),
     projectedChildSessionId === undefined || onOpenProjectedChild === undefined
       ? null

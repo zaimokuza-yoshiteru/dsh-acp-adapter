@@ -516,6 +516,8 @@ function markProbePhase(error: unknown, probePhase: AcpProbePhase): AcpClientErr
   })
 }
 
+const disconnectedMessage = 'The Agent disconnected. Check its connection in ACP settings.'
+
 /**
  * 一条到 ACP agent 子进程的连接：组合 {@link AcpAgentProcess}（进程生命周期）
  * 与 v1 initialize 协商、typed 会话方法及 probe；构造即 spawn（错误经
@@ -646,7 +648,9 @@ export class AcpClientConnection {
     this.connectionFailure = Promise.race([
       this.process.failureArm,
       this.conn.closed.then((): never => {
-        throw new AcpClientError('crash', `ACP agent "${this.command}" connection closed`)
+        throw new AcpClientError('crash', disconnectedMessage, {
+          cause: new Error(`ACP agent "${this.command}" connection closed`),
+        })
       }),
     ])
     void this.connectionFailure.catch(() => undefined)
@@ -1629,12 +1633,14 @@ export class AcpClientConnection {
       const stderrTail = this.process.stderrLines().slice(-5)
       const message =
         error instanceof acp.MessageTooLargeError
-          ? `ACP agent "${this.command}" exceeded the incoming message limit (${String(error.maxMessageBytes)} bytes) during ${operation}; connection closed`
-          : this.crashMessage(operation, exit, stderrTail)
+          ? `The Agent response exceeded the incoming message limit (${String(error.maxMessageBytes)} bytes). The connection closed.`
+          : disconnectedMessage
+      // Host turns and recovery records persist Error.message. Keep subprocess
+      // diagnostics on the original error chain for explicit inspection.
       return new AcpClientError('crash', message, {
         exit,
         stderrTail,
-        cause: error,
+        cause: new Error(this.crashMessage(operation, exit, stderrTail), { cause: error }),
       })
     }
     const message = error instanceof Error ? error.message : String(error)
@@ -1654,7 +1660,7 @@ export class AcpClientConnection {
       exit === undefined
         ? 'exit status unknown'
         : `exit code ${String(exit.code ?? 'none')}, signal ${exit.signal ?? 'none'}`
-    const base = `ACP agent "${this.command}" died during ${operation} (${fact}); updates streamed so far were preserved`
+    const base = `ACP agent "${this.command}" disconnected during ${operation} (${fact})`
     return stderrTail.length === 0
       ? base
       : `${base}\nagent stderr (last ${String(stderrTail.length)} lines):\n${stderrTail.join('\n')}`

@@ -79,7 +79,7 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     await page.keyboard.press('Tab')
     expect(
       await detail
-        .getByRole('button', { name: 'Re-check', exact: true })
+        .getByRole('button', { name: 'Default DSH tool approval', exact: true })
         .evaluate((node) => node === document.activeElement),
     ).toBe(true)
     expect(await detail.getByRole('textbox').count()).toBe(0)

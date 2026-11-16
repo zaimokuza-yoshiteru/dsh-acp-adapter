@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
+import { SessionCreateError } from '@deepseek-ai/dsh-api-session-controller/client'
+import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import {
   CrossBackendCoordinator,
   shouldConfirmBackendTransition,
@@ -60,7 +62,17 @@ function fixture(
     create: vi.fn(async () => 'destination'),
     open: vi.fn(),
   }
+  const routes = observable({ providers: ['acp-codex', 'acp-devin'], historicalProviders: [] as string[] })
   const remote = {
+    dshAcp: {
+      ownedProviderRoutes: vi.fn(async () => ({ ok: true, value: routes.getSnapshot() })),
+      backendOf: vi.fn(
+        async (): Promise<{ ok: true; value: { state: 'established'; provider: string; acpBinding?: true } }> => ({
+          ok: true,
+          value: { state: 'established', provider: 'acp-retired', acpBinding: true },
+        }),
+      ),
+    },
     session: {
       selectModel: vi.fn(async (): Promise<{ ok: boolean; error?: { message: string }; value?: unknown }> => ({
         ok: true,
@@ -88,7 +100,8 @@ function fixture(
     bindings,
     list,
     projection,
-    coordinator: new CrossBackendCoordinator(ctx, owns),
+    routes,
+    coordinator: new CrossBackendCoordinator(ctx, routes),
   }
 }
 
@@ -109,6 +122,114 @@ describe('cross-backend coordinator', () => {
         owns,
       ),
     ).toBe(false)
+  })
+
+  it.each(['cancel', 'confirm'] as const)(
+    'can %s a verified historical handoff without selecting a removed model',
+    async (action) => {
+      const previous = { provider: 'acp-retired', model: 'old' }
+      const next = { provider: 'native', model: 'new' }
+      const f = fixture({ projection: { lastUsed: previous, next: previous } })
+      const history = { providers: [], historicalProviders: [previous.provider] }
+      f.routes.set(history)
+      const stop = f.coordinator.start()
+      f.projection.set({ lastUsed: previous, next })
+      await settle()
+      expect(f.coordinator.getSnapshot().pending?.ticket).toMatchObject({
+        sourceUnavailable: true,
+        targetSelection: next,
+      })
+      expect(f.remote.session.selectModel).not.toHaveBeenCalled()
+      await f.coordinator[action]()
+      if (action === 'confirm') {
+        expect(f.remote.session.selectModel).toHaveBeenCalledExactlyOnceWith({ sessionId: 'destination', ...next })
+        expect(f.sessions.open).toHaveBeenCalledOnce()
+      } else {
+        expect(f.sessions.create).not.toHaveBeenCalled()
+        expect(f.remote.session.selectModel).not.toHaveBeenCalled()
+      }
+      f.routes.set(history)
+      f.projection.set({ lastUsed: previous, next })
+      expect(f.coordinator.getSnapshot().pending).toBeNull()
+      stop()
+      const returned = fixture({ projection: { lastUsed: previous, next } })
+      returned.routes.set(history)
+      const leave = returned.coordinator.start()
+      await settle()
+      expect(returned.coordinator.getSnapshot().pending).toBeNull()
+      leave()
+    },
+  )
+
+  it('does not claim a foreign session with a historical provider name or a superseded historical choice', async () => {
+    const previous = { provider: 'acp-retired', model: 'old' }
+    const f = fixture({ projection: { lastUsed: previous, next: previous } })
+    f.routes.set({ providers: [], historicalProviders: [previous.provider] })
+    const stop = f.coordinator.start()
+    const proof = Promise.withResolvers<Awaited<ReturnType<typeof f.remote.dshAcp.backendOf>>>()
+    f.remote.dshAcp.backendOf.mockReturnValueOnce(proof.promise).mockResolvedValueOnce({
+      ok: true,
+      value: { state: 'established', provider: previous.provider },
+    })
+    f.projection.set({ lastUsed: previous, next: { provider: 'native', model: 'first' } })
+    f.projection.set({ lastUsed: previous, next: { provider: 'native', model: 'second' } })
+    proof.resolve({ ok: true, value: { state: 'established', provider: previous.provider, acpBinding: true } })
+    await settle()
+    expect(f.coordinator.getSnapshot().pending).toBeNull()
+    expect(f.remote.session.selectModel).not.toHaveBeenCalled()
+    expect(f.sessions.create).not.toHaveBeenCalled()
+    stop()
+  })
+
+  it.each(['before confirmation', 'while creating'] as const)(
+    'revokes a handoff when the target changes owners %s',
+    async (phase) => {
+      const f = fixture()
+      const stop = f.coordinator.start()
+      f.projection.set({
+        lastUsed: { provider: 'native', model: 'model-a' },
+        next: { provider: 'acp-devin', model: 'new' },
+      })
+      await settle()
+      expect(f.coordinator.getSnapshot().pending).not.toBeNull()
+      const retired = { providers: ['acp-codex'], historicalProviders: ['acp-devin'] }
+      const created = Promise.withResolvers<string>()
+      if (phase === 'while creating') f.sessions.create.mockReturnValueOnce(created.promise)
+      else f.remote.dshAcp.ownedProviderRoutes.mockResolvedValueOnce({ ok: true, value: retired })
+      const confirming = f.coordinator.confirm()
+      if (phase === 'while creating') {
+        await vi.waitFor(() => expect(f.sessions.create).toHaveBeenCalledOnce())
+        f.routes.set(retired)
+      }
+      created.resolve('destination')
+      await confirming
+      expect(f.coordinator.getSnapshot().pending).toBeNull()
+      expect(f.sessions.create).toHaveBeenCalledTimes(phase === 'while creating' ? 1 : 0)
+      expect(f.remote.session.selectModel).toHaveBeenCalledExactlyOnceWith({
+        sessionId: 'session-1',
+        provider: 'native',
+        model: 'model-a',
+      })
+      expect(f.sessions.open).not.toHaveBeenCalled()
+      stop()
+    },
+  )
+
+  it('does not display a stale decision after restoring the source', async () => {
+    const f = fixture()
+    const restored = Promise.withResolvers<{ ok: boolean }>()
+    f.remote.session.selectModel.mockReturnValueOnce(restored.promise)
+    const stop = f.coordinator.start()
+    f.projection.set({
+      lastUsed: { provider: 'native', model: 'model-a' },
+      next: { provider: 'acp-devin', model: 'new' },
+    })
+    f.routes.set({ providers: ['acp-codex'], historicalProviders: ['acp-devin'] })
+    restored.resolve({ ok: true })
+    await settle()
+    expect(f.coordinator.getSnapshot().pending).toBeNull()
+    expect(f.sessions.create).not.toHaveBeenCalled()
+    stop()
   })
 
   it('returns an identity-stable external snapshot', () => {
@@ -148,13 +269,42 @@ describe('cross-backend coordinator', () => {
 
     expect(f.sessions.create).toHaveBeenCalledTimes(1)
     expect(f.remote.session.selectModel).toHaveBeenCalledWith({
-      sessionId: expect.any(String),
+      sessionId: 'destination',
       provider: 'acp-codex',
       model: 'gpt',
     })
-    expect(f.sessions.open).toHaveBeenCalledTimes(1)
+    expect(f.sessions.open).toHaveBeenCalledExactlyOnceWith('destination')
     expect(f.coordinator.getSnapshot().pending).toBeNull()
     expect(transactionStatesOf(f.coordinator).has(pending!.ticket.key)).toBe(false)
+    stop()
+  })
+
+  it('offers to open the published child outside its workspace after attachment fails', async () => {
+    const f = fixture({ projection: { lastUsed: null, next: null } })
+    const stop = f.coordinator.start()
+    f.projection.set({ lastUsed: null, next: { provider: 'acp-codex', model: 'gpt' } })
+    await settle()
+    f.sessions.create.mockRejectedValueOnce(
+      new SessionCreateError(
+        new RemoteError('session/workspace-attach-failed', 'attachment failed', {
+          sessionId: 'ungrouped' as never,
+          workspaceId: 'workspace' as never,
+        }),
+        undefined,
+      ),
+    )
+    await f.coordinator.confirm()
+    expect(f.coordinator.getSnapshot().pending?.failure?.phase).toBe('ungrouped-destination')
+    expect(f.remote.session.selectModel).not.toHaveBeenCalled()
+    expect(f.sessions.open).not.toHaveBeenCalled()
+    await f.coordinator.confirm()
+    expect(f.sessions.create).toHaveBeenCalledOnce()
+    expect(f.remote.session.selectModel).toHaveBeenCalledExactlyOnceWith({
+      sessionId: 'ungrouped',
+      provider: 'acp-codex',
+      model: 'gpt',
+    })
+    expect(f.sessions.open).toHaveBeenCalledExactlyOnceWith('ungrouped')
     stop()
   })
 

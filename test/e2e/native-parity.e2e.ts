@@ -1823,6 +1823,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
         if (evidenceDirectory !== undefined) {
           await page.screenshot({
             path: join(evidenceDirectory, `recovery-${switchedToChinese ? 'zh' : 'en'}-short-${profile}.png`),
+            animations: 'disabled',
             fullPage: true,
           })
           recoveryLayoutEvidence.shortViewport = page.viewportSize()
@@ -1889,6 +1890,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
       if (evidenceDirectory !== undefined) {
         await page.screenshot({
           path: join(evidenceDirectory, `recovery-en-dark-short-${profile}.png`),
+          animations: 'disabled',
           fullPage: true,
         })
       }
@@ -1938,6 +1940,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
       if (evidenceDirectory !== undefined) {
         await page.screenshot({
           path: join(evidenceDirectory, `recovery-en-dark-short-scrolled-${profile}.png`),
+          animations: 'disabled',
           fullPage: true,
         })
         writeFileSync(

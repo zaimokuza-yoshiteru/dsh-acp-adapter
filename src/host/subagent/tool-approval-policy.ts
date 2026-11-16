@@ -12,11 +12,12 @@ export function createToolApprovalPolicyReader(
   dependencies: {
     readonly sidecar: AcpSidecar | undefined
     readonly sessionOf: (id: string) => Session | undefined
-    readonly ownsProvider: (profileId: string) => boolean
+    readonly ownsProvider: (provider: string) => boolean
+    readonly isForeignProvider: (provider: string) => boolean
     readonly defaultPolicy: () => 'auto' | 'ask'
   },
 ): (sessionId: string) => Promise<AcpToolApprovalPolicySnapshot> {
-  const { sidecar, sessionOf, ownsProvider, defaultPolicy } = dependencies
+  const { sidecar, sessionOf, ownsProvider, isForeignProvider, defaultPolicy } = dependencies
   const read = async (
     sessionId: string,
     ancestry = new Set<string>(),
@@ -28,16 +29,15 @@ export function createToolApprovalPolicyReader(
     const session = sessionOf(sessionId)
     const header = session?.header ?? (await ctx.get('sessionPersistence', false)?.stat(sessionId as never))?.header
     if (header === undefined) throw new Error('ACP_TOOL_APPROVAL_SESSION_UNAVAILABLE')
-    if (nativeParent && session !== undefined) {
-      const committedProvider = session.requestHeader()?.config.provider
-      // A native request may have completed while this plugin was disabled.
-      // Its old ACP binding and preference no longer govern a new child's
-      // initialization. Pending selection alone does not establish that switch.
-      if (committedProvider !== undefined && acpAgentIdFromRoute(committedProvider) === undefined)
-        return { sessionId, policy: defaultPolicy(), source: 'session', editable: false }
-    }
+    const committed = nativeParent ? session?.requestHeader()?.config.provider : undefined
+    // A native request may have completed while ACP was disabled. A pending
+    // model selection does not establish a switch away from the saved binding.
+    if (committed !== undefined && acpAgentIdFromRoute(committed) === undefined)
+      return { sessionId, policy: defaultPolicy(), source: 'session', editable: false }
     const binding = await sidecar.readLatestBinding(sessionId as never)
     if (binding?.status === 'outdated') throw new Error('ACP_TOOL_APPROVAL_POLICY_UNAVAILABLE')
+    if (committed !== undefined && isForeignProvider(committed) && binding?.binding.provider !== committed)
+      return { sessionId, policy: defaultPolicy(), source: 'session', editable: false }
     const agent = ctx.get('agents', false)?.get(sessionId as never)
     const provider =
       binding?.binding.provider ??
@@ -48,10 +48,14 @@ export function createToolApprovalPolicyReader(
         ? ctx.get('agentDefaultModel')?.currentSelection().provider
         : undefined)
     const profileId = provider === undefined ? undefined : acpAgentIdFromRoute(provider)
-    if (profileId === undefined || !ownsProvider(profileId)) {
+    if (provider === undefined || !ownsProvider(provider)) {
       // Only an explicitly native route authorizes initialization from the ACP
       // default. Missing metadata, failed reads and a removed ACP route do not.
-      if (nativeParent && provider !== undefined && profileId === undefined)
+      if (
+        nativeParent &&
+        provider !== undefined &&
+        (profileId === undefined || (binding === undefined && isForeignProvider(provider)))
+      )
         return { sessionId, policy: defaultPolicy(), source: 'session', editable: false }
       throw new Error('ACP_TOOL_APPROVAL_SESSION_NOT_ACP')
     }

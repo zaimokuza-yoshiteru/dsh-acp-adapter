@@ -239,10 +239,12 @@ export interface AcpHostVersionMismatchView {
   readonly running: string
 }
 
-/** Exact provider routes currently configured by this plugin or durably
- * referenced by one of its historical bindings. */
+/** Live registration ownership and candidate names for historical session lookup. */
 export interface AcpOwnedRoutesView {
+  /** Live routes registered by this plugin on the Host. */
   readonly providers: readonly string[]
+  /** Routes referenced by stored bindings. Only a session-specific record proves historical ownership. */
+  readonly historicalProviders: readonly string[]
 }
 
 export interface AcpProjectedSubagentsView {
@@ -405,22 +407,12 @@ export interface AcpHealthRequest {
   readonly agentId?: string
 }
 
-/**
- * `backendOf(sessionId)` 的应答（「backend 不可变」的 host 权威查询）。
- * - `'blank'`：尚无 ACP backend 承诺——无活体 ACP agent、无 sidecar binding、日志无
- *   request/header。若 DSH 已为该会话实例化 native wrapper，`current.provider` 会
- *   暴露该事实；当前 host 没有 live wrapper 替换 seam，跨到 ACP 会自动新建会话。
- * - `'draft'`：空白会话已启动 ACP wrapper、可读取会话级配置，但首条 prompt 尚未
- *   提交 ACP binding；同一 ACP profile 可原地选模型，跨 profile/native 会自动新建会话。
- * - `'established'`：backend 已锁定；`provider` 即路由 id（`acp-<id>` 前缀 =
- *   ACP profile，其余 = native）。executionBackend 的持久化真源：ACP 侧 =
- * sidecar binding（创建时即写）+ 日志 request/header（首 turn 落）；
- *   native 侧 = request/header。backend 创建后不可变，跨 backend 只能新建会话。
- */
+/** A committed ACP binding proves session ownership even after its registration
+ * disappears. A request header alone identifies the provider selected by DSH. */
 export type AcpBackendState =
   | { readonly state: 'blank' }
   | { readonly state: 'draft'; readonly provider: string; readonly model?: string }
-  | { readonly state: 'established'; readonly provider: string }
+  | { readonly state: 'established'; readonly provider: string; readonly acpBinding?: true }
 
 export type AcpRecoveryKind =
   | 'healthy'

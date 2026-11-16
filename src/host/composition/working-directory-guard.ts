@@ -16,11 +16,18 @@ export function installWorkingDirectoryGuard(
         workingDirectoryChangeDenial(sessionId: string, owner: object): string | undefined
       }
     | undefined,
+  isForeignProvider: (provider: string) => boolean,
   readBinding?: (sessionId: SessionId) => Promise<unknown | undefined>,
 ): void {
   const profileOf = (agent: Agent): string | undefined => {
     const provider = agent.session.requestHeader()?.config.provider ?? agent.options.provider
-    return provider === undefined ? undefined : acpAgentIdFromRoute(provider)
+    if (provider === undefined) return
+    const profileId = acpAgentIdFromRoute(provider)
+    if (profileId === undefined) return
+    // A missing route can still own a retained ACP transcript. A route that
+    // another adapter serves is native unless this session records ACP execution.
+    if (isForeignProvider(provider) && !ctx.get('acpSessionFacts')?.read(agent.session).acpReplaySeen) return
+    return profileId
   }
   // A seeded child can have its parent's header before its own first request.
   const beforeOwnRequest = (agent: Agent): boolean =>

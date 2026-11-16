@@ -39,7 +39,7 @@ function harness(denial: string | undefined = 'ACP_WORKING_DIRECTORY_UNSUPPORTED
   const adapterFor = vi.fn((): { workingDirectoryChangeDenial: typeof workingDirectoryChangeDenial } | undefined => ({
     workingDirectoryChangeDenial,
   }))
-  installWorkingDirectoryGuard(ctx, adapterFor)
+  installWorkingDirectoryGuard(ctx, adapterFor, (route) => route === 'acp-thirdparty')
   return {
     ctx,
     guards,
@@ -99,6 +99,7 @@ describe('installWorkingDirectoryGuard()', () => {
     await h.mount()
 
     expect(h.check(execution('create_worktree', {}, 'deepseek'))).toBeUndefined()
+    expect(h.check(execution('create_worktree', {}, 'acp-thirdparty'))).toBeUndefined()
     expect(h.check(execution('working_directory', { cd: '/target' }, 'deepseek'))).toBeUndefined()
     const { agent, ...withoutInitiator } = execution('create_worktree', {})
     expect(agent).toBeDefined()
@@ -110,13 +111,12 @@ describe('installWorkingDirectoryGuard()', () => {
     const h = harness()
     await h.mount()
 
-    for (const call of [execution('create_worktree', {})]) {
-      expect(h.check(call)).toEqual({
-        reason: 'ACP_WORKING_DIRECTORY_UNSUPPORTED: fork is unavailable',
-        info: { name: 'HarnessError', code: 'ACP_WORKING_DIRECTORY_UNSUPPORTED' },
-      })
-      expect(h.workingDirectoryChangeDenial).toHaveBeenLastCalledWith(call.agent!.id, call.agent!.session)
-    }
+    const call = execution('create_worktree', {})
+    expect(h.check(call)).toEqual({
+      reason: 'ACP_WORKING_DIRECTORY_UNSUPPORTED: fork is unavailable',
+      info: { name: 'HarnessError', code: 'ACP_WORKING_DIRECTORY_UNSUPPORTED' },
+    })
+    expect(h.workingDirectoryChangeDenial).toHaveBeenCalledWith(call.agent!.id, call.agent!.session)
     expect(h.adapterFor).toHaveBeenCalledTimes(1)
     expect(h.adapterFor).toHaveBeenLastCalledWith('demo')
   })

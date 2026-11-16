@@ -18,6 +18,7 @@ import type { TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AcpAuditSummaryCode, AcpAuditTimelineEntry } from '../data/acp-remote.ts'
 import type { AcpRemoteLike } from '../data/acp-remote.ts'
 import type { AcpLocaleKey } from './locales.ts'
+import { includesRoute, type UseRouteOwnership } from '../data/managed-routes.ts'
 import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
 import type { AcpDiagnosticView, AcpRecoveryView } from '../../contract/remote.ts'
 import { matchesDiagnosticView } from '../../contract/diagnostics.ts'
@@ -36,7 +37,7 @@ export interface AcpAuditVisibilityGateProps {
   useSessionRetainInfo: UseSessionRetainInfo
   useProjection: UseProjection
   remote?: AcpRemoteLike
-  ownsRoute: OwnsAcpRoute
+  useRouteOwnership: UseRouteOwnership
   onVisibilityChange(sessionId: string, visible: boolean, owner: object): void
 }
 
@@ -49,17 +50,17 @@ export interface AcpAuditViewProps extends ConvViewProps {
 type LoadedAcpAuditViewProps = Omit<AcpAuditViewProps, 't'> & { readonly t: Translate }
 
 export function auditHeaderVisible(
-  backend: { readonly state: string; readonly provider?: string } | null | undefined,
+  backend: { readonly state: string; readonly provider?: string; readonly acpBinding?: true } | null | undefined,
   ownsRoute: OwnsAcpRoute,
 ): boolean {
-  return backend?.state === 'established' && ownsRoute(backend.provider)
+  return backend?.state === 'established' && (backend.acpBinding === true || ownsRoute(backend.provider))
 }
 
 /** 原生模型会话在本地投影门直接旁路，不发 ACP Remote 请求。 */
-export function auditProjectionIsAcp(selection: unknown, ownsRoute: OwnsAcpRoute): boolean {
-  if (typeof selection !== 'object' || selection === null || !('lastUsed' in selection)) return false
+export function auditProjectionProvider(selection: unknown): string | undefined {
+  if (typeof selection !== 'object' || selection === null || !('lastUsed' in selection)) return undefined
   const provider = (selection as { lastUsed?: { provider?: unknown } | null }).lastUsed?.provider
-  return typeof provider === 'string' && ownsRoute(provider)
+  return typeof provider === 'string' ? provider : undefined
 }
 
 /** 首轮建立 binding 或宿主恢复后触发一次可见性复核。 */
@@ -255,38 +256,56 @@ function auditDetailOf(detail: string): AuditDetail {
  * stable while the native header and body filter their per-session view source.
  */
 export function AcpAuditVisibilityGate(props: AcpAuditVisibilityGateProps): ReactNode {
-  const { sessionId, useSession, useSessionRetainInfo, useProjection, remote, onVisibilityChange, ownsRoute } = props
+  const { sessionId, useSession, useSessionRetainInfo, useProjection, remote, onVisibilityChange, useRouteOwnership } =
+    props
   const owner = useMemo(() => ({}), [])
   const mainView = useSessionRetainInfo((value) => (value?.retainedBy.mainView ?? 0) > 0)
   const sessionRefreshKey =
     useSession === undefined ? 'absent' : useSession((snapshot) => auditSessionRefreshKeyOf(snapshot))
   const projectionSelection = useProjection('modelSelection')
-  const [verifiedSessionId, setVerifiedSessionId] = useState<string | undefined>(undefined)
-  const projectedAcp = mainView && sessionId !== undefined && auditProjectionIsAcp(projectionSelection, ownsRoute)
-  // Verification belongs to one session. A navigation therefore hides the
-  // tab synchronously instead of briefly carrying the previous ACP result
-  // into a native session while `backendOf` is still in flight.
-  const visible = projectedAcp && verifiedSessionId === sessionId
+  const [verified, setVerified] = useState<{
+    sessionId: string
+    provider: string | undefined
+    ownership: 'active' | 'historical'
+  } | null>(null)
+  const projectedProvider = auditProjectionProvider(projectionSelection)
+  const ownership = useRouteOwnership((routes) => {
+    if (includesRoute(routes.providers, projectedProvider)) return 'active'
+    if (includesRoute(routes.historicalProviders, projectedProvider)) return 'historical'
+    return null
+  })
+  const projectedAcp = mainView && sessionId !== undefined && ownership !== null
+  // Withdraw the tab immediately on navigation or a registration handoff.
+  const visible =
+    projectedAcp &&
+    verified !== null &&
+    verified.sessionId === sessionId &&
+    verified.provider === projectedProvider &&
+    verified.ownership === ownership
 
   useEffect(() => {
     let disposed = false
     if (sessionId === undefined || remote === undefined || !projectedAcp) {
-      setVerifiedSessionId(undefined)
+      setVerified(null)
       return
     }
     void remote
       .backendOf(sessionId)
       .then((result) => {
         if (!disposed)
-          setVerifiedSessionId(result.ok && auditHeaderVisible(result.value, ownsRoute) ? sessionId : undefined)
+          setVerified(
+            result.ok && auditHeaderVisible(result.value, (id) => ownership === 'active' && projectedProvider === id)
+              ? { sessionId, provider: projectedProvider, ownership }
+              : null,
+          )
       })
       .catch(() => {
-        if (!disposed) setVerifiedSessionId(undefined)
+        if (!disposed) setVerified(null)
       })
     return () => {
       disposed = true
     }
-  }, [sessionId, remote, projectedAcp, sessionRefreshKey, ownsRoute])
+  }, [sessionId, remote, projectedAcp, sessionRefreshKey, ownership, projectedProvider])
 
   useEffect(() => {
     if (sessionId === undefined) return

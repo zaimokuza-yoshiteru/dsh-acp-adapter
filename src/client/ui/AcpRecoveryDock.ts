@@ -5,10 +5,15 @@ import type { RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
 import { Button, DisclosureRow, IconWarningTriangleOutlineRegular, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AcpRecoveryView, AcpRemoteLike } from '../data/acp-remote.ts'
 import { recoveringRecoveryStream } from '../data/recovery-stream.ts'
+import { includesRoute, type UseRouteOwnership } from '../data/managed-routes.ts'
 import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import css from './AcpRecoveryDock.module.css'
 import type { SessionAccessSource } from './session-action-access.ts'
+import type {
+  independentSessionNavigation,
+  IndependentSessionOutcome,
+} from '../coordinator/native-session-navigation.ts'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { resolveCrossBackendLocation } from '../data/cross-backend-controller.ts'
 
@@ -16,8 +21,8 @@ type RecoveryDockProps = PropsRuntime<'conversation.input.dock'> &
   PropsLocale<'acpActivity'> & {
     readonly remote: AcpRemoteLike
     readonly streamFactory: RemoteStreamFactory
-    readonly createNewSession: (sourceSessionId: string) => Promise<void>
-    readonly ownsRoute: OwnsAcpRoute
+    readonly createNewSession: ReturnType<typeof independentSessionNavigation>
+    readonly useRouteOwnership: UseRouteOwnership
     readonly sessionAccessSource: SessionAccessSource
   }
 
@@ -103,12 +108,7 @@ function recoveryChoice(
   return h(
     'div',
     { className: css.choice },
-    h(
-      'div',
-      { className: css.choiceCopy },
-      h('p', { className: css.choiceLabel }, label),
-      h('p', { className: css.choiceExplanation }, explanation),
-    ),
+    h('p', { className: css.choiceExplanation }, explanation),
     h(Button, { variant, disabled: busy, onClick: run }, busyAction === action ? busyLabel : label),
   )
 }
@@ -126,7 +126,7 @@ export function AcpRecoveryDock({
   remote,
   streamFactory,
   createNewSession,
-  ownsRoute,
+  useRouteOwnership,
   sessionAccessSource,
 }: RecoveryDockProps): ReactNode {
   const reconnectAllowed = useAccess('dshAcp/retryOriginal')
@@ -144,6 +144,11 @@ export function AcpRecoveryDock({
     [snapshot.openState, snapshot.running, snapshot.promptAttempted, snapshot.lastAgentError ?? ''].join('|'),
   )
   const projection = useProjection('modelSelection')
+  const ownership = useRouteOwnership((routes) => {
+    if (projectionIsAcp(projection, (id) => includesRoute(routes.providers, id))) return 'active'
+    if (projectionIsAcp(projection, (id) => includesRoute(routes.historicalProviders, id))) return 'historical'
+    return null
+  })
   const projectionRecord =
     typeof projection === 'object' && projection !== null
       ? (projection as { readonly lastUsed?: Selection; readonly next?: Selection })
@@ -160,6 +165,7 @@ export function AcpRecoveryDock({
   const [recoveryRefreshReady, setRecoveryRefreshReady] = useState(false)
   const [retry, setRetry] = useState(0)
   const [confirmRebind, setConfirmRebind] = useState(false)
+  const [navigation, setNavigation] = useState<IndependentSessionOutcome>('idle')
   const epoch = useRef(0)
   const inFlight = useRef<RecoveryOperation | null>(null)
   const activeSession = useRef(sessionId)
@@ -170,6 +176,7 @@ export function AcpRecoveryDock({
     let cancelled = false
     setOpen(false)
     setConfirmRebind(false)
+    setNavigation('idle')
     if (inFlight.current?.sessionId === sessionId) setBusyAction(inFlight.current.action)
     else setBusyAction(null)
     setActionError(null)
@@ -178,7 +185,7 @@ export function AcpRecoveryDock({
     setReconnecting(false)
     setRecoveryRefreshReady(false)
     setRecovery(null)
-    if (!projectionIsAcp(projection, ownsRoute))
+    if (ownership === null)
       return () => {
         cancelled = true
       }
@@ -205,9 +212,11 @@ export function AcpRecoveryDock({
       ++epoch.current
       void stream.dispose()
     }
-  }, [lifecycleKey, ownsRoute, projectionProviderKey, remote, sessionId, streamFactory, retry])
+  }, [lifecycleKey, ownership, projectionProviderKey, remote, sessionId, streamFactory, retry])
 
-  if (!projectionIsAcp(projection, ownsRoute)) return null
+  // A retired name can belong to another plugin now. Only the session's
+  // own recovery record warrants a surface there; a carrier error is no proof.
+  if (ownership === null || (ownership === 'historical' && (unavailable || reconnecting))) return null
   if (unavailable)
     return h(
       'div',
@@ -251,7 +260,10 @@ export function AcpRecoveryDock({
   }
 
   const busy = busyAction !== null
-  const run = async (actionName: RecoveryAction, action: () => Promise<AcpRecoveryView | void>): Promise<void> => {
+  const run = async (
+    actionName: RecoveryAction,
+    action: (isCurrent: () => boolean) => Promise<AcpRecoveryView | void>,
+  ): Promise<void> => {
     if (inFlight.current?.sessionId === sessionId || activeSession.current !== sessionId) return
     if (actionName === 'new-session' && !creationAccess.current) return
     const endpoint =
@@ -266,19 +278,16 @@ export function AcpRecoveryDock({
     inFlight.current = operation
     setBusyAction(actionName)
     setActionError(null)
+    const isCurrent = () =>
+      inFlight.current?.token === operation.token &&
+      activeSession.current === sessionId &&
+      actionEpoch === epoch.current
     try {
-      const result = await action()
-      publishRecoveryActionResult(
-        result,
-        () =>
-          inFlight.current?.token === operation.token &&
-          activeSession.current === sessionId &&
-          actionEpoch === epoch.current,
-        (snapshot) => {
-          setUnavailable(false)
-          setRecovery(visibleRecovery(snapshot))
-        },
-      )
+      const result = await action(isCurrent)
+      publishRecoveryActionResult(result, isCurrent, (snapshot) => {
+        setUnavailable(false)
+        setRecovery(visibleRecovery(snapshot))
+      })
     } catch (error) {
       if (inFlight.current?.token === operation.token && activeSession.current === sessionId)
         setActionError(error instanceof Error ? error.message : String(error))
@@ -290,6 +299,8 @@ export function AcpRecoveryDock({
     }
   }
 
+  const ungrouped = navigation === 'ungrouped' || navigation === 'ungrouped-open-failed'
+  const reopen = ungrouped || navigation === 'open-failed'
   const detail = [recovery.kind, recovery.cause, recovery.detail, actionError]
     .filter((part): part is string => typeof part === 'string' && part.length > 0)
     .join('\n\n')
@@ -429,13 +440,16 @@ export function AcpRecoveryDock({
         recoveryChoice(
           'new-session',
           'outline',
-          t('recoveryNew'),
-          t('recoveryNewExplanation'),
+          t(reopen ? 'unroutedHistoryOpen' : 'recoveryNew'),
+          t(ungrouped ? 'unroutedHistoryUngrouped' : 'recoveryNewExplanation'),
           t('recoveryBusy'),
           busy || !createAllowed,
           busyAction,
           () => {
-            void run('new-session', () => createNewSession(sessionId))
+            void run('new-session', async (isCurrent) => {
+              const outcome = await createNewSession(sessionId, isCurrent, ungrouped)
+              if (isCurrent()) setNavigation(outcome)
+            })
           },
         ),
       ),
@@ -454,7 +468,19 @@ export function AcpRecoveryDock({
           detail === '' ? null : h('pre', { className: css.raw }, detail),
         ),
       ),
-      actionError === null ? null : h('p', { className: css.error, role: 'alert' }, t('recoveryActionFailed')),
+      actionError !== null || navigation.endsWith('-failed')
+        ? h(
+            'p',
+            { className: css.error, role: 'alert' },
+            t(
+              actionError !== null
+                ? 'recoveryActionFailed'
+                : navigation === 'create-failed'
+                  ? 'crossBackendFailureCreate'
+                  : 'crossBackendFailureOpen',
+            ),
+          )
+        : null,
     ),
   )
 }

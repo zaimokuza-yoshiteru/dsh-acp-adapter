@@ -1,5 +1,6 @@
 import { openNativeMemberAside, openNativeMembers } from './native-team-ui.ts'
 import { treeMember, treeMembers } from './subagent-tree.ts'
+import { en } from '../../src/client/ui/locales.ts'
 import { acpPermissionAudit } from './acp-permission-audit.ts'
 import {
   installTeamFixtureApprovals,
@@ -141,7 +142,7 @@ describe.each([
         await policyRow.waitFor()
         await policyRow.click()
         const policyOptions = page.getByRole('menu')
-        expect(await policyOptions.innerText()).toContain('Following the Lead’s current policy; read-only.')
+        await policyOptions.getByText(en.toolApprovalInherited, { exact: true }).waitFor()
         const inheritedAsk = policyOptions.getByRole('menuitem', { name: /^Ask(?:\s|$)/ })
         await inheritedAsk.waitFor()
         expect(await inheritedAsk.isDisabled()).toBe(true)

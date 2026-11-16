@@ -2,6 +2,7 @@ import { createElement as h, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { AcpRemoteLike, AcpAgentSessionSnapshotView } from '../data/acp-remote.ts'
+import { includesRoute, type UseRouteOwnership } from '../data/managed-routes.ts'
 import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
 import css from './AcpAgentControl.module.css'
 import { AgentSessionMenu } from './AgentSessionMenu.ts'
@@ -23,7 +24,7 @@ type AgentControlProps = PropsRuntime<'conversation.input.left'> &
   PropsLocale<'acpActivity'> & {
     readonly remote: AcpRemoteLike
     readonly streamFactory: RemoteStreamFactory
-    readonly ownsRoute: OwnsAcpRoute
+    readonly useRouteOwnership: UseRouteOwnership
     readonly getDefaultProvider: () => Promise<string | undefined>
     readonly watchDefaultProvider: (changed: () => void) => () => void
     readonly feedback: Pick<AcpUiFeedback, 'report'>
@@ -58,7 +59,7 @@ export function AcpAgentControl({
   t,
   remote,
   streamFactory,
-  ownsRoute,
+  useRouteOwnership,
   getDefaultProvider,
   watchDefaultProvider,
   feedback,
@@ -92,7 +93,9 @@ export function AcpAgentControl({
       active = false
     }
   }, [getDefaultProvider, defaultGeneration])
-  const isAcp = snapshotIsAcp(projection, ownsRoute, defaultProvider)
+  const isAcp = useRouteOwnership((routes) =>
+    snapshotIsAcp(projection, (id) => includesRoute(routes.providers, id), defaultProvider),
+  )
   const [snapshot, setSnapshot] = useState<AcpAgentSessionSnapshotView | null>(null)
   const [policySnapshot, setPolicySnapshot] = useState<ToolApprovalPolicySnapshot | null>(null)
   const [policyError, setPolicyError] = useState<'toolApprovalUnavailable' | 'toolApprovalChangeFailed' | null>(null)

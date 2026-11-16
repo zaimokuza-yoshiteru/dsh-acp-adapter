@@ -1,27 +1,7 @@
-import { retiredAgentReason } from '../../contract/agent-config.ts'
 /**
- * ACP provider 使用的 stub LLM adapter。
- *
- * One adapter instance serves every `acp-<id>` route: `stream()` never runs —
- * ACP sessions are driven by AcpAgent, and this route exists so the
- * prompt gate (`turnAgentFor`) accepts the selection. `listModels`
- * is a probe: spawn the agent, read the `model` config option, tear down：
- * capability-aware session cleanup first — close then delete when advertised);
- * the result (success OR failure) is cached by config hash with a TTL (ok 10min /
- * error 30s, agent-config.ts `acpProbeFresh`). Failed automatic refreshes keep
- * the last verified catalog for the same config without hiding the failure
- * from health. The panel refreshes via {@link AcpStubAdapter.invalidateProbe}.
- *
- * The adapter owns no registration: ./installed-profile-registry.ts registers/replaces routes and
- * directory entries. This module is deliberately free of cordis imports so the
- * cache and failure mapping stay unit-testable with plain fakes.
- *
- * 本包 tsconfig 用 `types: []`；本文件需要 `os.tmpdir()` 作为 probe 子进程
- * 的 cwd，经 triple-slash reference 引入 @types/node
- * （src/protocol/v1/connection.ts 同款先例）。
- * @module @zaimokuza/dsh-acp-adapter/host/composition/llm-stub
+ * Model discovery for one configured Agent. AcpProfileAdapter delegates its
+ * picker and Settings queries here and owns the live conversation stream.
  */
-
 /// <reference types="node" />
 
 import os from 'node:os'
@@ -36,7 +16,7 @@ import type {
 import type * as acp from '@agentclientprotocol/sdk'
 import { acpProbeConfigKey, acpProbeFresh } from '../../domain/session/agent-config.ts'
 import type { AcpStubAgentConfig } from '../../domain/session/agent-config.ts'
-import { effectiveRuntimeOf } from '../../contract/agent-config.ts'
+import { effectiveRuntimeOf, retiredAgentReason } from '../../contract/agent-config.ts'
 import { modelProbeOptions } from '../../agents/compatibility.ts'
 import { acpConfigOptionsSnapshot } from '../../domain/session/acp-config-options.ts'
 import { acpCanonicalHash16 } from '../../persistence/sidecar.ts'
@@ -59,10 +39,6 @@ import {
   acpModelSelection,
 } from '../../contract/model-selection.ts'
 import { redactSecretText } from '../../domain/observability/redaction.ts'
-
-// probe 缓存键的真源下沉到 domain/session/agent-config.ts（remote/创建门
-// 消费）；本 re-export 保持稳定的 composition import 路径。
-export { acpProbeConfigKey }
 
 /**
  * Probe runtime preparation：为健康探测准备临时 cwd 和清理回调；正式会话
@@ -319,17 +295,11 @@ function acpProbeFailure(
       case 'aborted':
         // 调用方中止（连接层 aborted kind，taxonomy user-rejected）
         return wrap(error.kind, `ACP agent probe for "${config.command}" was cancelled${ref}`)
-      case 'crash': {
-        const exit = error.exit
-        const fact =
-          exit === undefined
-            ? 'exit status unknown'
-            : `exit code ${String(exit.code ?? 'none')}, signal ${exit.signal ?? 'none'}`
+      case 'crash':
         return wrap(
           error.kind,
-          `ACP agent "${config.command}" exited during the probe (${fact}). Fix it, then re-check it in ACP settings${ref}`,
+          `The Agent disconnected during model discovery. Check its connection in ACP settings.${ref}`,
         )
-      }
       // protocol-error（预留）：协议层（connection
       // classify）的 message 只允许一个脱敏、有界首行；完整诊断留在
       // Settings/log correlation 侧，不能进入 stock ModelPicker。

@@ -1075,6 +1075,7 @@ describe('listBindings 全量 binding 索引（双绑守卫扫描面）', () => 
     // 无 binding 记录的行集（纯 permission）不出现在索引里
     await store.append(SessionId('sess-3'), { kind: 'permission', time: 40, data: permissionData('req-2') })
 
+    expect(await store.listBoundProviders()).toEqual(['acp-devin'])
     const bindings = await store.listBindings()
     expect(bindings.map((entry) => entry.dshSessionId).sort()).toEqual(['sess-1', 'sess-2'])
     // 最新优先：sess-1 的最新 binding 是 BINDING_B（permission 行不干扰）
@@ -1092,12 +1093,21 @@ describe('listBindings 全量 binding 索引（双绑守卫扫描面）', () => 
       time: 20,
       data: { provider: 'acp-devin', agentSessionId: 'agent-session-9' } as unknown as AcpBindingData,
     })
+    await store.append(SessionId('sess-other'), {
+      kind: 'binding',
+      time: 21,
+      data: { provider: 'native-provider' } as AcpBindingData,
+    })
+    // Indexed names are candidates. Only the binding payload proves a session's identity.
+    expect([...(await store.listBoundProviders())].sort()).toEqual(['acp-devin', 'native-provider'])
+    expect(await store.readLatestBinding(SessionId('sess-1'))).toEqual({ status: 'outdated' })
     expect(await store.listBindings()).toEqual([])
     expect(warns.some((message) => message.includes('outdated binding row(s)'))).toBe(true)
   })
 
   it('只读容错：root/库不存在 → []', async () => {
     const missing = createAcpSidecar({ root: path.join(root, 'missing'), warn: (message) => warns.push(message) })
+    expect(await missing.listBoundProviders()).toEqual([])
     expect(await missing.listBindings()).toEqual([])
     expect(fs.existsSync(path.join(root, 'missing'))).toBe(false)
   })

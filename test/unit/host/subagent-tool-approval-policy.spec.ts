@@ -65,7 +65,8 @@ async function setup() {
   const read = createToolApprovalPolicyReader(ctx, {
     sidecar,
     sessionOf: (id) => ctx.sessions.get(SessionId(id)),
-    ownsProvider: (id) => id === 'test',
+    ownsProvider: (provider) => provider === 'acp-test',
+    isForeignProvider: (provider) => provider === 'acp-thirdparty',
     defaultPolicy: () => defaultPolicy,
   })
   cleanups.push(async () => {
@@ -123,14 +124,17 @@ it('inherits root policy for new nested members and retains it across Team toggl
   await expect(h.sidecar.readToolApprovalPolicy(SessionId('leaf'))).resolves.toBeUndefined()
 })
 
-it('uses the configured ACP default under a known native runtime root without changing that root', async () => {
-  const h = await setup()
-  h.setDefault('ask')
-  h.add('root', 'deepseek')
-  h.add('child', 'acp-test', 'root', 'subagent')
-  await expect(h.read('child')).resolves.toMatchObject({ policy: 'ask', source: 'lead', editable: false })
-  await expect(h.sidecar.readToolApprovalPolicy(SessionId('root'))).resolves.toBeUndefined()
-})
+it.each(['deepseek', 'acp-thirdparty'])(
+  'uses the configured ACP default under native root %s without changing it',
+  async (provider) => {
+    const h = await setup()
+    h.setDefault('ask')
+    h.add('root', provider)
+    h.add('child', 'acp-test', 'root', 'subagent')
+    await expect(h.read('child')).resolves.toMatchObject({ policy: 'ask', source: 'lead', editable: false })
+    await expect(h.sidecar.readToolApprovalPolicy(SessionId('root'))).resolves.toBeUndefined()
+  },
+)
 
 it('snapshots an ordinary fork independently of its persisted parent', async () => {
   const h = await setup()

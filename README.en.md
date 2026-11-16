@@ -12,7 +12,7 @@ Released plugin version [`0.2.2-rc.2.1`](https://github.com/zaimokuza-yoshiteru/
 
 > Install and enable the ACP plugin: `@zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1`.
 
-Confirm the native prompt to install; the new plugin is enabled by default. Alternatively, open **Plugins → Add plugin**, paste `@zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1`, install it, then select **Enable now**.
+Confirm the installation when prompted. Alternatively, open **Plugins → Add plugin**, paste `@zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1`, and install it. If prompted, select **Enable now**.
 
 <details>
 <summary>Other installation methods: CLI, Git, and archive</summary>
@@ -29,9 +29,7 @@ dsh plugin --profile desktop add @zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1
 npx @deepseek-ai/dsh@0.2.2-rc.2 plugin --profile web add @zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1
 ```
 
-Git and archive examples:
-
-In the plugin manager, paste the Git address or .tgz URL below in place of the package name.
+To install from Git or an archive, paste the Git address or .tgz download URL into the plugin manager.
 
 | Source                         | Example                                                                                                                                                    |
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -42,43 +40,45 @@ This archive includes compiled output and matches the npm package. GitHub's auto
 
 </details>
 
-**Updates:** Choose a version matching your host from the plugin manager’s version list and update in place; no uninstall is needed. Select prereleases explicitly; plugins do not update automatically. After installation, fully quit and reopen DSH Desktop once the current task finishes; for Web, restart the DSH service and refresh the page. No new sign-in is required. Uninstalling the plugin does not uninstall an Agent or sign out of its account.
+To update, choose a version matching DSH in the plugin manager. Select prereleases manually. If a restart is required, wait for the current task to finish, then restart DSH Desktop or restart the Web service and refresh the page. Uninstalling the plugin leaves your Agent CLIs and their sign-ins in place.
 
 ## Connect an Agent
 
-The plugin ships with a snapshot of the [official ACP Agent catalog](https://agentclientprotocol.com/registry), with installation and sign-in guidance and command prefill. You can also add an ACP Agent manually. Install and sign in to the Agent CLI on the computer running DSH. Open **Plugins → ACP adapter**, follow the catalog guidance to add the Agent and check its connection, then choose its model in a new session. The plugin does not install CLIs or sign in to accounts.
+The plugin ships with a snapshot of the [official ACP Agent catalog](https://agentclientprotocol.com/registry), with installation and sign-in guidance and command prefill. You can also add an ACP Agent manually. Install the Agent CLI on the computer running DSH and sign in there if required. Open **Plugins → ACP adapter**, follow the catalog guidance to add the Agent and check its connection, then choose its model in a new session. The plugin does not install CLIs or sign in to accounts.
 
 > If an Agent has no model catalog, select **Agent current configuration** to use its current settings.
 >
-> DSH RC.1 / RC.2 cannot change models in an existing ACP session. To use another model, start an independent session; it does not inherit the original Agent context. Existing history and drafts are kept, and reasoning effort can still change on the same model.
+> To change models in an established ACP session, start an independent session. The new session starts with an empty context. Your original history and drafts stay in the first session. You can still adjust reasoning effort on the same model.
 
 Launch and sign-in commands for common Agents:
 
-| Agent                     | ACP command                                 | Authentication       |
-| ------------------------- | ------------------------------------------- | -------------------- |
-| Devin (3000.12.43+)       | `devin acp`                                 | `devin auth login`   |
-| CodeBuddy CLI (WorkBuddy) | `codebuddy --acp`                           | `codebuddy`          |
-| Antigravity               | `agy_acp_server.par` (official raw `1.3.0`) | Separate ACP sign-in |
-| Claude                    | `claude-agent-acp`                          | `claude`             |
-| Codex                     | `codex-acp`                                 | `codex login`        |
-| Qwen Code                 | `qwen --acp`                                | `qwen`               |
+| Agent                     | ACP command                                            | Authentication       |
+| ------------------------- | ------------------------------------------------------ | -------------------- |
+| Devin (3000.12.43+)       | `devin acp`                                            | `devin auth login`   |
+| CodeBuddy CLI (WorkBuddy) | `codebuddy --acp`                                      | `codebuddy`          |
+| Antigravity               | `agy_acp_server.par` (`agy_acp_server.exe` on Windows) | Separate ACP sign-in |
+| Claude                    | `claude-agent-acp`                                     | `claude`             |
+| Codex                     | `codex-acp`                                            | `codex login`        |
+| Qwen Code                 | `qwen --acp`                                           | `qwen`               |
 
-> CodeBuddy CLI and the WorkBuddy desktop app share account credits, with no separate subscription required. Connect DSH through the CodeBuddy CLI. See [CodeBuddy account and subscription details](https://www.codebuddy.cn/docs/ide/Account/pricing) and the [ACP CLI reference](https://www.codebuddy.cn/docs/cli/cli-reference).
+> To use WorkBuddy with DSH, connect through the CodeBuddy CLI. See the [ACP CLI reference](https://www.codebuddy.cn/docs/cli/cli-reference) and [CodeBuddy account and subscription details](https://www.codebuddy.cn/docs/ide/Account/pricing).
 
 ## Choose a mode
 
 Standard mode works with ACP Agents. Choose **Creator mode** to create plugins through conversation.
 
-The optional **ACP** mode lets you use DSH tools while the Agent manages conversation context. It omits DSH plugin-management, subagent and compaction tools; existing sessions and default choices stay unchanged.
+Choose the optional **ACP** mode to let the Agent manage conversation context. This mode provides DSH tools and omits DSH plugin management, subagent, and compaction tools.
 
-Kimi is no longer supported. Saved configurations and history are retained; remove unused configurations in settings.
+## Working in a session
 
-## Preview
-
-![An Agent working in the native DSH session UI](assets/readme/acp-session.en.png)
+- **Approvals.** Choose **Ask** to review each request the Agent makes for DSH tool access. Choose **Auto approve** to allow requests within existing DSH permissions. Devin requests still need your approval. Agents manage their own tools. Support for experimental Auto Review is limited.
+- **Queue and stop.** Press Enter during a turn to queue the next message. Agents that support continuation handle it in the same session. **Stop** cancels the current turn. Agents are responsible for stopping their own tools. Tools without a reported result stay unfinished.
+- **Members and tasks.** View subagent progress and handle member approvals in the main session. To share tasks, enable DSH’s experimental Agent Teams in the session.
 
 <details>
-<summary>More screenshots</summary>
+<summary>View real session examples from an earlier DSH version</summary>
+
+![An Agent working in the native DSH session UI](assets/readme/acp-session.en.png)
 
 ![Native DSH approval card](assets/readme/acp-permission.en.png)
 
@@ -87,8 +87,6 @@ Kimi is no longer supported. Saved configurations and history are retained; remo
 ![ACP Diagnostics records](assets/readme/acp-diagnostics.en.png)
 
 </details>
-
-**Auto** can automatically confirm Agent requests to use the current session's DSH tools, without changing DSH's sandbox or tool permissions. Permission requests from Devin still require your choice from the original options. **Ask** shows the native approval card when the Agent requests approval. Auto is separate from experimental Auto Review, which this version does not fully support. The Agent controls its own tools. **Stop** cancels the current turn; the Agent remains responsible for stopping its own tools, and tools without a reported result remain unfinished. Press Enter to queue a message, which supported Agents continue in the same Agent session. With DSH's experimental Agent Teams enabled, you can view member progress and handle approvals from the main conversation.
 
 ## Troubleshooting and feedback
 

@@ -419,6 +419,7 @@ describe('ACP resources through the published Gateway and Peer', () => {
     await expect(h.call(h.restricted, 'backendOf', { sessionId: 'member' })).resolves.toEqual({
       state: 'established',
       provider: 'acp-test',
+      acpBinding: true,
     })
     await expect(h.call(h.restricted, 'backendOf', { sessionId: 'other' })).rejects.toMatchObject({
       code: 'remote-access/denied',

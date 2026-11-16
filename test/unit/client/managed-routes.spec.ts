@@ -1,30 +1,57 @@
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
+import type { AcpOwnedRoutesView } from '../../../src/contract/remote.ts'
 import { ManagedAcpRouteCatalog } from '../../../src/client/data/managed-routes.ts'
-import type { AcpScopeSnapshot } from '../../../src/client/data/logic.ts'
 
-it('retains host-confirmed ownership while the native form is loading or unavailable', () => {
-  let snapshot: AcpScopeSnapshot = { status: 'loading', value: undefined, revision: undefined, writable: false }
-  let publish!: () => void
-  const catalog = new ManagedAcpRouteCatalog(
-    {
-      getSnapshot: () => snapshot,
-      subscribe: (fn) => {
-        publish = fn
-        return () => {}
-      },
-    },
-    ['acp-saved'],
-  )
-  expect(catalog.owns('acp-saved')).toBe(true)
-  expect(catalog.owns('acp-unowned')).toBe(false)
-  snapshot = { ...snapshot, value: { agents: { custom: { name: 'Custom', command: 'custom', args: [], env: {} } } } }
-  publish()
-  expect(catalog.owns('acp-saved')).toBe(true)
-  expect(catalog.owns('acp-custom')).toBe(true)
-  expect(catalog.owns('acp-unowned')).toBe(false)
-  snapshot = { ...snapshot, value: { agents: {} } }
-  publish()
-  expect(catalog.owns('acp-saved')).toBe(true)
-  expect(catalog.owns('acp-custom')).toBe(false)
+it('withdraws live controls when a registered route survives only in history', async () => {
+  const read = vi
+    .fn<() => Promise<AcpOwnedRoutesView>>()
+    .mockResolvedValueOnce({ providers: ['acp-agent'], historicalProviders: [] })
+    .mockResolvedValueOnce({ providers: [], historicalProviders: ['acp-agent'] })
+  const catalog = new ManagedAcpRouteCatalog(read)
+  const observed: boolean[] = []
+  const unsubscribe = catalog.store.subscribe(() => observed.push(catalog.owns('acp-agent')))
+
+  await catalog.refresh()
+  expect(catalog.owns('acp-third-party')).toBe(false)
+  await catalog.refresh()
+  expect(observed).toEqual([true, false])
+  expect(catalog.store.getSnapshot().historicalProviders).toEqual(['acp-agent'])
+  unsubscribe()
+})
+
+it('ignores a late authority reply from before reconnect or disposal', async () => {
+  const old = Promise.withResolvers<AcpOwnedRoutesView>()
+  const latest = Promise.withResolvers<AcpOwnedRoutesView>()
+  const read = vi
+    .fn<() => Promise<AcpOwnedRoutesView>>()
+    .mockResolvedValueOnce({ providers: ['acp-old'], historicalProviders: [] })
+    .mockReturnValueOnce(old.promise)
+    .mockResolvedValueOnce({ providers: ['acp-new'], historicalProviders: [] })
+    .mockReturnValueOnce(latest.promise)
+  const catalog = new ManagedAcpRouteCatalog(read)
+  await catalog.refresh()
+  const pending = catalog.refresh()
+  catalog.reset()
+  expect(catalog.owns('acp-old')).toBe(false)
+  old.resolve({ providers: ['acp-old'], historicalProviders: [] })
+  await pending
+  expect(catalog.owns('acp-old')).toBe(false)
+  expect(catalog.owns('acp-new')).toBe(true)
+
+  const stopped = catalog.refresh()
   catalog.dispose()
+  latest.resolve({ providers: ['acp-new'], historicalProviders: [] })
+  await stopped
+  expect(catalog.owns('acp-new')).toBe(false)
+})
+
+it('fails closed when the Host cannot confirm a previously registered route', async () => {
+  const read = vi
+    .fn<() => Promise<AcpOwnedRoutesView>>()
+    .mockResolvedValueOnce({ providers: ['acp-old'], historicalProviders: [] })
+    .mockRejectedValueOnce(new Error('offline'))
+  const catalog = new ManagedAcpRouteCatalog(read)
+  await catalog.refresh()
+  await catalog.refresh()
+  expect(catalog.owns('acp-old')).toBe(false)
 })

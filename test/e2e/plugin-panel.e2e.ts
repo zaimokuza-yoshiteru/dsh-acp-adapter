@@ -1,6 +1,8 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
+import english from '../../locale/en.json' with { type: 'json' }
+import chinese from '../../locale/zh.json' with { type: 'json' }
 import type { AcpRemoteService } from '../../src/remote/service.js'
 import type { Page } from 'playwright'
 import { launchBrowser, newEnglishPage } from './browser.ts'
@@ -67,14 +69,13 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
     await expect
       .poll(() => artwork.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0))
       .toBe(true)
-    await detail
-      .locator('p')
-      .getByText('Add and manage agents available from the DSH session UI through ACP.', { exact: true })
-      .waitFor()
+    await detail.locator('p').getByText(english.meta.description, { exact: true }).waitFor()
     await detail.getByRole('heading', { name: 'Agent configuration', exact: true }).waitFor()
     const panel = detail.locator('[data-dsh-acp-panel]')
     await panel.getByText(/Panel-fixture-with-a-very-long-unbroken-agent-display-name/, { exact: false }).waitFor()
     expect(await panel.count()).toBe(1)
+    await expect.poll(() => panel.getByRole('button', { name: 'Re-check', exact: true }).count()).toBe(1)
+    expect(await panel.getByRole('button', { name: 'Check all Agents', exact: true }).count()).toBe(0)
     expect(await detail.getByRole('heading', { name: 'ACP adapter', exact: true }).count()).toBe(1)
     expect(await panel.getByRole('heading', { name: 'ACP adapter', exact: true }).count()).toBe(0)
     const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version as string
@@ -193,10 +194,7 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
       .getByRole('button', { name: 'DSH 工具默认审批', exact: true })
       .getByText('询问', { exact: true })
       .waitFor()
-    await chineseDetail
-      .locator('p')
-      .getByText('添加并管理通过 ACP 接入 DSH 会话页面的智能体。', { exact: true })
-      .waitFor()
+    await chineseDetail.locator('p').getByText(chinese.meta.description, { exact: true }).waitFor()
     expect(await chineseDetail.locator('img').first().getAttribute('src')).toBe(iconSource)
     await page.screenshot({ path: join(evidence, 'normal-zh.png'), fullPage: true, animations: 'disabled' })
     expect(errors).toEqual([])
@@ -253,6 +251,7 @@ it('ignores stale bound-session counts after cancelling, switching agents, and u
     const detail = await openAcpPluginDetail(page)
     const devin = detail.locator('[data-dsh-acp-agent="devin"]')
     const codex = detail.locator('[data-dsh-acp-agent="codex"]')
+    await detail.getByRole('button', { name: 'Check all Agents', exact: true }).waitFor()
 
     await devin.getByRole('button', { name: 'Delete', exact: true }).click()
     await expect.poll(() => pending.length).toBe(1)

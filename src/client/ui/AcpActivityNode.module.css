@@ -129,11 +129,6 @@
   overflow-wrap: anywhere;
   color: var(--dsw-alias-label-primary);
 }
-.externalNote {
-  margin: 0;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
-}
 .openRecord {
   justify-self: start;
 }

@@ -8,11 +8,11 @@
 
 已发布版本 [`0.2.2-rc.2.1`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.2.1) 兼容 DSH `0.2.2-rc.2`。安装前请确认宿主版本一致。其他版本见 [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
 
-**推荐：** 在 DSH Creator 模式中发送：
+**推荐：** 在 DSH 创造模式中发送：
 
 > 请安装并启用 ACP 插件：`@zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1`。
 
-按提示确认安装，新插件默认启用。也可打开 **插件 → 添加插件**，粘贴 `@zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1`，安装后点 **立即启用**。
+按提示确认安装。也可打开 **插件 → 添加插件**，粘贴 `@zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1`。如果安装完成后提示启用，选择 **立即启用**。
 
 <details>
 <summary>其他安装方式：命令行、Git 与压缩包</summary>
@@ -29,9 +29,7 @@ dsh plugin --profile desktop add @zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1
 npx @deepseek-ai/dsh@0.2.2-rc.2 plugin --profile web add @zaimokuza/dsh-acp-adapter@0.2.2-rc.2.1
 ```
 
-Git 与压缩包安装示例：
-
-在插件管理器中，可将下方 Git 地址或 .tgz 包 URL 替换包名粘贴到输入框中。
+使用 Git 或压缩包安装时，将下表的 Git 地址或 .tgz 下载地址粘贴到插件管理器。
 
 | 来源              | 示例                                                                                                                                                   |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -42,62 +40,62 @@ Git 与压缩包安装示例：
 
 </details>
 
-**更新：** 在插件管理器的版本列表中选择与宿主匹配的版本，原地更新即可，无需先卸载；预发布版本需明确选择，插件不会自动更新。安装后，桌面端请在当前任务结束后完全退出并重新打开 DSH；Web 端请重启 DSH 服务并刷新页面。无需重新登录。卸载插件不会卸载 Agent 或退出账号。
+更新时，在插件管理器中选择与 DSH 匹配的版本。预发布版本需手动选择。若提示需要重启，等当前任务结束后重启 DSH 桌面应用，或重启 Web 服务并刷新页面。卸载插件会保留 Agent CLI 及其登录状态。
 
 ## 连接 Agent
 
-插件附带一份 [ACP 官方 Agent 目录](https://agentclientprotocol.com/registry)快照，提供安装、登录指引和命令预填；也可手动添加目录外的 ACP Agent。Agent CLI 必须安装并登录在运行 DSH 的主机上。打开 **插件 → ACP 适配器**，按目录指引添加 Agent 并检查连接，再在新会话选择 Agent 模型。插件不会替你安装 CLI 或登录账号。
+插件附带一份 [ACP 官方 Agent 目录](https://agentclientprotocol.com/registry)快照，提供安装、登录指引和命令预填；也可手动添加目录外的 ACP Agent。在运行 DSH 的主机上安装 Agent CLI。若 Agent 需要登录，请在同一台主机完成。打开 **插件 → ACP 适配器**，按目录指引添加 Agent 并检查连接，再在新会话选择 Agent 模型。插件不会替你安装 CLI 或登录账号。
 
 > Agent 没有模型目录时，选择 **Agent current configuration** 使用其当前配置。
 >
-> DSH RC.1 / RC.2 已有 ACP 会话暂不支持更换模型。需要换模型时，请新建独立会话；新会话不继承原会话的 Agent 上下文。原会话历史和草稿保留，同模型的推理强度仍可调整。
+> 在已开始的 ACP 会话中，更换模型需要新建独立会话。原会话的历史和草稿会保留，新会话从空白上下文开始。使用同一模型时仍可调整推理强度。
 
 常用 Agent 的启动与登录方式：
 
-| Agent                      | ACP 命令                                 | 认证               |
-| -------------------------- | ---------------------------------------- | ------------------ |
-| Devin (3000.12.43+)        | `devin acp`                              | `devin auth login` |
-| CodeBuddy CLI（WorkBuddy） | `codebuddy --acp`                        | `codebuddy`        |
-| Antigravity                | `agy_acp_server.par`（官方 raw `1.3.0`） | ACP 独立登录       |
-| Claude                     | `claude-agent-acp`                       | `claude`           |
-| Codex                      | `codex-acp`                              | `codex login`      |
-| Qwen Code                  | `qwen --acp`                             | `qwen`             |
+| Agent                      | ACP 命令                                                | 认证               |
+| -------------------------- | ------------------------------------------------------- | ------------------ |
+| Devin (3000.12.43+)        | `devin acp`                                             | `devin auth login` |
+| CodeBuddy CLI（WorkBuddy） | `codebuddy --acp`                                       | `codebuddy`        |
+| Antigravity                | `agy_acp_server.par`（Windows 为 `agy_acp_server.exe`） | ACP 独立登录       |
+| Claude                     | `claude-agent-acp`                                      | `claude`           |
+| Codex                      | `codex-acp`                                             | `codex login`      |
+| Qwen Code                  | `qwen --acp`                                            | `qwen`             |
 
-> CodeBuddy CLI 与 WorkBuddy 桌面端使用同一账号积分，无需分别订阅；通过 CodeBuddy CLI 接入 DSH。详见 [CodeBuddy 账号与订阅说明](https://www.codebuddy.cn/docs/ide/Account/pricing)及 [ACP 命令参考](https://www.codebuddy.cn/docs/cli/cli-reference)。
+> WorkBuddy 用户可通过 CodeBuddy CLI 接入 DSH。参见 [ACP 命令参考](https://www.codebuddy.cn/docs/cli/cli-reference)和 [CodeBuddy 账号与订阅说明](https://www.codebuddy.cn/docs/ide/Account/pricing)。
 
 ## 选择模式
 
 标准模式可直接使用 ACP Agent。需要通过对话创建插件时，选择**创造模式**。
 
-还可选择 **ACP** 模式：使用 DSH 工具，由 Agent 管理对话上下文。它不加载 DSH 的插件管理、子代理和压缩工具；已有会话和默认选择保持不变。
+如需让 Agent 管理对话上下文，可选择 **ACP** 模式。此模式提供 DSH 工具，不加载 DSH 的插件管理、子代理和压缩工具。
 
-Kimi 已不再支持；已保存的配置和历史保留，可在设置中删除不再使用的配置。
+## 使用会话
 
-## 功能预览
+- **审批**。选择「询问」可逐次审批 Agent 的 DSH 工具请求。选择「自动批准」后，DSH 会自动处理已有权限范围内的授权。Devin 发出的请求仍需你确认。Agent 自带工具由 Agent 管理。实验性 Auto Review 尚未完整支持。
+- **排队与停止**。运行中按 Enter 可将下一条消息加入队列，支持续聊的 Agent 会在同一会话处理。点击停止按钮可取消当前轮次。Agent 负责停止其自带工具，未报告结果的工具会保留为未完成。
+- **成员与任务**。在主会话中可查看子代理进度并处理成员审批。需要共享任务时，在会话中启用 DSH 的实验性 Agent Teams。
+
+<details>
+<summary>查看实际会话示例（早期版本界面）</summary>
 
 ![Agent 在 DSH 原生会话中的操作示例](assets/readme/acp-session.zh-CN.png)
 
-<details>
-<summary>更多界面预览</summary>
-
 ![DSH 原生审批卡](assets/readme/acp-permission.zh-CN.png)
 
-![subagent 只读详情](assets/readme/acp-subagent.zh-CN.png)
+![子代理只读详情](assets/readme/acp-subagent.zh-CN.png)
 
 ![ACP 诊断记录](assets/readme/acp-diagnostics.zh-CN.png)
 
 </details>
 
-**Auto** 可自动确认当前会话中 Agent 调用 DSH 工具的申请，不改变 DSH 的沙箱与工具授权。Devin 发出的授权请求仍需按原始选项确认。**Ask** 在 Agent 请求审批时显示原生审批卡。Auto 不等于实验性 Auto Review；本版尚未完整支持 Auto Review。Agent 自带工具仍由 Agent 控制。**Stop** 取消当前轮次；Agent 自带工具是否停止仍由 Agent 管理，未报告结果的工具保留未完成状态。按 Enter 可排队输入，支持的 Agent 会在同一 Agent 会话继续。开启 DSH 的实验性 Agent Teams 后，可在主会话查看成员进度并处理审批。
-
 ## 排障与反馈
 
-| 现象                     | 先检查                                                         |
-| ------------------------ | -------------------------------------------------------------- |
-| 命令无法启动             | 核对 Agent 可执行文件路径，尝试填写绝对路径。                  |
-| 登录或认证失败           | 在 Agent CLI 登录，并检查已配置的环境变量。                    |
-| 旧 subagent 详情无法打开 | 查看原生恢复提示；不兼容的旧详情会保留在本地记录中并显示错误。 |
-| 会话提示需要恢复         | 按输入栏提示和 **ACP 诊断** 操作，不要清空本地数据。           |
+| 现象                 | 先检查                                                         |
+| -------------------- | -------------------------------------------------------------- |
+| 命令无法启动         | 核对 Agent 可执行文件路径，尝试填写绝对路径。                  |
+| 登录或认证失败       | 在 Agent CLI 登录，并检查已配置的环境变量。                    |
+| 旧子代理详情无法打开 | 查看原生恢复提示；不兼容的旧详情会保留在本地记录中并显示错误。 |
+| 会话提示需要恢复     | 按输入栏提示和 **ACP 诊断** 操作，不要清空本地数据。           |
 
 在 **ACP 诊断**中可导出安全摘要 JSON；其中不含消息正文、命令、路径、原始会话 ID 或 ACP 凭据。DSH 原生会话日志 ZIP 可能含提示词、工具参数、文件路径和附件；分享前请检查并移除敏感信息。
 

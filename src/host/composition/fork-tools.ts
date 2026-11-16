@@ -2,7 +2,6 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-tools'
 import { z } from 'zod'
-import { acpAgentIdFromRoute } from '../../domain/session/agent-config.ts'
 
 const forkTurnSchema = z.object({ completed: z.boolean(), active: z.boolean() })
 type ForkTurnState = z.infer<typeof forkTurnSchema>
@@ -26,8 +25,9 @@ const forkTurnProjection = {
  * child route, so omitted targets retain native route validation and the ACP
  * provider's final seeded-fork gate. Keep the schema visible for native routes.
  * @param ctx - Host composition owning the projection and execution guard.
+ * @param ownsProvider - Whether this plugin currently serves the explicit child route.
  */
-export async function installAcpForkTools(ctx: Context): Promise<void> {
+export async function installAcpForkTools(ctx: Context, ownsProvider: (provider: string) => boolean): Promise<void> {
   const projection = await ctx.sessionProjections.register(forkTurnProjection)
   ctx.fiber.assertActive()
   ctx.inject(['tools'], (child) => {
@@ -39,7 +39,7 @@ export async function installAcpForkTools(ctx: Context): Promise<void> {
         args === null ||
         !('provider' in args) ||
         typeof args.provider !== 'string' ||
-        acpAgentIdFromRoute(args.provider) === undefined
+        !ownsProvider(args.provider)
       )
         return
       const state = projection.stateOf(exec.agent.session)

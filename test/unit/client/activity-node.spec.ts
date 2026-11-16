@@ -88,6 +88,19 @@ function activityStreamFactory(hooks: { accept?: () => void; dispose?: () => voi
   }
 }
 
+const journalRow = (revisionSeq: number) => ({
+  dshSessionId: 'dsh-1',
+  ownerDshSessionId: 'dsh-1',
+  promptAnchorMessageId: 'anchor',
+  activityId: `a-${String(revisionSeq)}`,
+  activitySeq: revisionSeq,
+  revisionSeq,
+  time: revisionSeq,
+  kind: 'tool' as const,
+  status: 'completed' as const,
+  presentation: `A${String(revisionSeq)}`,
+})
+
 describe('ACP activity conversation node', () => {
   it.each([
     {
@@ -1552,25 +1565,19 @@ describe('ACP activity conversation node', () => {
     const temporaryFailure = Object.assign(new Error('temporary activity page read failure'), {
       code: 'gateway/internal',
     })
-    const row = (revisionSeq: number) => ({
-      dshSessionId: 'dsh-1',
-      ownerDshSessionId: 'dsh-1',
-      promptAnchorMessageId: 'anchor',
-      activityId: `a-${String(revisionSeq)}`,
-      activitySeq: revisionSeq,
-      revisionSeq,
-      time: revisionSeq,
-      kind: 'tool' as const,
-      status: 'completed' as const,
-      presentation: `A${String(revisionSeq)}`,
-    })
     const remote = {
       activityFollow: async function* (_sessionId: string, _request: unknown, signal: AbortSignal) {
         starts += 1
         if (starts === 1) {
-          yield { type: 'opened' as const, cursor: 1, head: 1, activities: [row(1)] }
-          yield { type: 'entry' as const, activity: row(3) }
-        } else yield { type: 'opened' as const, cursor: 3, head: 3, activities: [row(1), row(2), row(3)] }
+          yield { type: 'opened' as const, cursor: 1, head: 1, activities: [journalRow(1)] }
+          yield { type: 'entry' as const, activity: journalRow(3) }
+        } else
+          yield {
+            type: 'opened' as const,
+            cursor: 3,
+            head: 3,
+            activities: [journalRow(1), journalRow(2), journalRow(3)],
+          }
         await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
       },
       activityPage: async () => ({ ok: false as const, error: temporaryFailure }),
@@ -1601,23 +1608,11 @@ describe('ACP activity conversation node', () => {
   it('increases backoff across opened journals that fail their first repair read', async () => {
     vi.useFakeTimers()
     let starts = 0
-    const row = (revisionSeq: number) => ({
-      dshSessionId: 'dsh-1',
-      ownerDshSessionId: 'dsh-1',
-      promptAnchorMessageId: 'anchor',
-      activityId: `a-${String(revisionSeq)}`,
-      activitySeq: revisionSeq,
-      revisionSeq,
-      time: revisionSeq,
-      kind: 'tool' as const,
-      status: 'completed' as const,
-      presentation: `A${String(revisionSeq)}`,
-    })
     const remote = {
       activityFollow: async function* (_sessionId: string, _request: unknown, signal: AbortSignal) {
         starts += 1
-        yield { type: 'opened' as const, cursor: 1, head: 1, activities: [row(1)] }
-        yield { type: 'entry' as const, activity: row(3) }
+        yield { type: 'opened' as const, cursor: 1, head: 1, activities: [journalRow(1)] }
+        yield { type: 'entry' as const, activity: journalRow(3) }
         await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
       },
       activityPage: async () => ({
@@ -1696,23 +1691,11 @@ describe('ACP activity conversation node', () => {
   })
 
   it('repairs a 2→4 gap through every page before delivering revision 4', async () => {
-    const row = (revisionSeq: number) => ({
-      dshSessionId: 'dsh-1',
-      ownerDshSessionId: 'dsh-1',
-      promptAnchorMessageId: 'anchor',
-      activityId: `a-${String(revisionSeq)}`,
-      activitySeq: revisionSeq,
-      revisionSeq,
-      time: revisionSeq,
-      kind: 'tool' as const,
-      status: 'completed' as const,
-      presentation: `A${String(revisionSeq)}`,
-    })
     const pages: number[] = []
     const remote = {
       activityFollow: async function* (_sessionId: string, _request: unknown, signal: AbortSignal) {
-        yield { type: 'opened' as const, cursor: 2, head: 4, activities: [row(1), row(2)] }
-        yield { type: 'entry' as const, activity: row(4) }
+        yield { type: 'opened' as const, cursor: 2, head: 4, activities: [journalRow(1), journalRow(2)] }
+        yield { type: 'entry' as const, activity: journalRow(4) }
         await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
       },
       activityPage: async (_sessionId: string, request: { readonly afterRevision?: number }) => {
@@ -1724,7 +1707,7 @@ describe('ACP activity conversation node', () => {
                 sessionId: 'dsh-1',
                 cursor: 0,
                 head: 4,
-                activities: [row(1), row(2)],
+                activities: [journalRow(1), journalRow(2)],
                 nextCursor: 2,
                 hasMore: true,
               },
@@ -1732,7 +1715,14 @@ describe('ACP activity conversation node', () => {
           : request.afterRevision === 2
             ? {
                 ok: true as const,
-                value: { sessionId: 'dsh-1', cursor: 2, head: 4, activities: [row(3)], nextCursor: 3, hasMore: true },
+                value: {
+                  sessionId: 'dsh-1',
+                  cursor: 2,
+                  head: 4,
+                  activities: [journalRow(3)],
+                  nextCursor: 3,
+                  hasMore: true,
+                },
               }
             : {
                 ok: true as const,
@@ -1740,7 +1730,7 @@ describe('ACP activity conversation node', () => {
                   sessionId: 'dsh-1',
                   cursor: 3,
                   head: 4,
-                  activities: [row(4)],
+                  activities: [journalRow(4)],
                   nextCursor: null,
                   hasMore: false,
                 },
@@ -1758,29 +1748,24 @@ describe('ACP activity conversation node', () => {
   })
 
   it('keeps the mounted snapshot when a repair page violates the durable revision contract', async () => {
-    const row = (revisionSeq: number) => ({
-      dshSessionId: 'dsh-1',
-      ownerDshSessionId: 'dsh-1',
-      promptAnchorMessageId: 'anchor',
-      activityId: `a-${String(revisionSeq)}`,
-      activitySeq: revisionSeq,
-      revisionSeq,
-      time: revisionSeq,
-      kind: 'tool' as const,
-      status: 'completed' as const,
-      presentation: `A${String(revisionSeq)}`,
-    })
     let starts = 0
     const remote = {
       activityFollow: async function* (_sessionId: string, _request: unknown, signal: AbortSignal) {
         starts += 1
-        yield { type: 'opened' as const, cursor: 2, head: 4, activities: [row(1), row(2)] }
-        yield { type: 'entry' as const, activity: row(4) }
+        yield { type: 'opened' as const, cursor: 2, head: 4, activities: [journalRow(1), journalRow(2)] }
+        yield { type: 'entry' as const, activity: journalRow(4) }
         await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
       },
       activityPage: async () => ({
         ok: true as const,
-        value: { sessionId: 'dsh-1', cursor: 2, head: 4, activities: [row(4)], nextCursor: null, hasMore: false },
+        value: {
+          sessionId: 'dsh-1',
+          cursor: 2,
+          head: 4,
+          activities: [journalRow(4)],
+          nextCursor: null,
+          hasMore: false,
+        },
       }),
     }
     const factory = activityStreamFactory()

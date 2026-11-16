@@ -44,7 +44,12 @@ import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typer
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-api-remote-access'
 import type * as acp from '@agentclientprotocol/sdk'
-import { acpRouteId, ACP_AGENT_ID_PATTERN, retiredAgentReason } from '../domain/session/agent-config.ts'
+import {
+  acpAgentIdFromRoute,
+  acpRouteId,
+  ACP_AGENT_ID_PATTERN,
+  retiredAgentReason,
+} from '../domain/session/agent-config.ts'
 import { ACP_CONFIG_IDENTIFIER_MAX } from '../contract/config-options.ts'
 import { isAcpCurrentConfigModel, isAcpModelRouteWithinBounds } from '../contract/model-selection.ts'
 import { acpProbeConfigKey, acpVersionCompatibility, catalogIdOf } from '../domain/session/agent-config.ts'
@@ -258,6 +263,7 @@ export interface AcpProbeSnapshotLike {
 /** Registry face: agent 列表 + probe 缓存（快照/刷新）。 */
 export interface AcpHealthRegistryLike {
   agents(): ReadonlyMap<string, AcpAgentConfig>
+  readonly registeredProviders?: () => readonly string[]
   /** Resolve the registered profile adapter that owns this route's probe cache. */
   readonly probeCacheFor: (profileId: string) => AcpProbeCacheLike | undefined
   /** Publish settled explicit checks through the native model registry. */
@@ -1019,19 +1025,14 @@ export class AcpRemoteService extends TypertRemoteService {
     return await preserveAcpFailure(() => adapter.setTeamMemberMode!(sessionId, modeId))
   }
 
-  /** Exact ownership proof consumed by additive client observers. Historical
-   * routes remain owned after profile removal so old Activity still renders;
-   * an unrelated plugin merely using the `acp-` prefix is never claimed. */
+  /** Live registrations for route admission and stored binding routes for historical session lookup. */
   @Remote('ownedProviderRoutes')
   async ownedProviderRoutes(): Promise<AcpOwnedRoutesView> {
-    const configured = [...this.resolved.registry.agents().keys()].map((key) =>
-      key.startsWith('acp-') ? key : acpRouteId(key),
-    )
-    const durable =
-      this.resolved.bindingFacts?.listBoundProviders === undefined
-        ? []
-        : await this.resolved.bindingFacts.listBoundProviders()
-    return { providers: [...new Set([...configured, ...durable])].sort() }
+    const history = await this.resolved.bindingFacts?.listBoundProviders?.()
+    return {
+      providers: [...(this.resolved.registry.registeredProviders?.() ?? [])].sort(),
+      historicalProviders: [...new Set(history?.filter((id) => acpAgentIdFromRoute(id) !== undefined))].sort(),
+    }
   }
 
   @Remote('projectedSubagentIds')
@@ -1451,7 +1452,7 @@ export class AcpRemoteService extends TypertRemoteService {
       )
     }
     const bound = await facts.readBindingProvider(sessionId)
-    if (bound !== undefined) return { state: 'established', provider: bound }
+    if (bound !== undefined) return { state: 'established', provider: bound, acpBinding: true }
     try {
       const header = await facts.peekHeaderProvider(sessionId)
       return header === undefined ? { state: 'blank' } : { state: 'established', provider: header }

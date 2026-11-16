@@ -131,8 +131,7 @@ const zh = {
   teamApprovalOpenFailed: '无法打开子会话，请从子会话列表重试',
   agentConfiguration: 'Agent 配置',
   toolApprovalDefault: 'DSH 工具默认审批',
-  toolApprovalDefaultHelp:
-    '仅设置新会话的 DSH 工具授权，不改变 Agent 模式、工具权限或已有会话。Agent 自带工具和其他 MCP 服务不受影响；Devin 请求仍需手动确认',
+  toolApprovalDefaultHelp: '选择新会话如何处理 DSH 工具授权请求。Devin 的请求仍需你确认。',
   toolApprovalAuto: '自动批准',
   toolApprovalAsk: '询问',
   toolApprovalSaveFailed: '无法保存默认审批设置，请重试。',
@@ -140,12 +139,12 @@ const zh = {
   toolApprovalAutoDescription: '可自动批准 DSH 工具授权；Devin 请求仍需你确认',
   toolApprovalAskDescription: 'Agent 请求 DSH 工具授权时，由你确认',
   toolApprovalScope: '仅影响后续授权，不改变 Agent 模式或 DSH 工具权限；待审批请求仍需手动处理',
-  toolApprovalInherited: '继承 Lead 的当前策略，只读。',
+  toolApprovalInherited: '沿用主会话的审批设置。',
   toolApprovalUnavailable: '无法读取 DSH 工具审批设置，请重试。',
   toolApprovalRetry: '重试读取 DSH 工具审批设置',
   toolApprovalChangeFailed: '无法保存 DSH 工具审批设置，请重试。',
   settingsLoading: '正在读取设置…',
-  settingsUnavailable: '当前环境不提供设置服务，ACP 面板不可用。',
+  settingsUnavailable: '当前环境无法打开 ACP 设置。',
   settingsInvalid: 'ACP 配置无效，请检查配置文件后重试',
   readOnly: '当前设置文档为只读，无法保存修改。',
   hostVersionMismatch:
@@ -155,9 +154,10 @@ const zh = {
   addAgent: '添加 Agent',
   addCustom: '手动添加',
   refresh: '重新检查',
+  refreshAll: '检查全部 Agent',
   refreshing: '检查中…',
   healthCheckTransportFailed: '检查请求失败，请重试。{reference}',
-  agentRetired: 'Kimi 支持已移除。已保存的配置和历史记录仍保留；不再需要时，可手动删除此配置。',
+  agentRetired: 'Kimi 已停止支持。你可以删除此配置，聊天记录会保留。',
   stateAgentRetired: '支持已移除',
   probeNotInstalled: '无法启动命令「{command}」；请检查是否已安装，以及可执行命令和参数是否正确。{reference}',
   probeAuthRequired: 'Agent 尚未登录；请先在终端完成登录，再重新检查。{reference}',
@@ -424,10 +424,9 @@ const zh = {
   'subagent.readOnlyTitle': '外部 Agent 只读记录',
   'subagent.readOnlyBody': '这里仅保留 Agent 返回的任务和结果，不包含完整的内部执行过程，也不支持后续消息',
   'subagent.unavailable': '该信息不可用。',
-  'subagent.observedTiming': '目录耗时是 DSH 观察到的委派时间，不代表模型或 Agent 自报耗时。',
   crossBackendAgent: 'Agent',
   unroutedHistoryCreateOnly: '默认 ACP 智能体需要独立会话。',
-  unroutedHistoryUngrouped: '独立会话已创建，但未能加入工作区。你可以直接打开它。',
+  unroutedHistoryUngrouped: '新会话已创建，目前未加入此工作区。',
   unroutedHistoryOpen: '打开已创建的会话',
   unroutedHistoryHint: '要继续这段对话，请在下方选择非 ACP 模型。默认 ACP 智能体需要独立会话。',
   crossBackendModelSwitchTitle: '已有 ACP 会话暂不支持切换模型',
@@ -445,8 +444,9 @@ const zh = {
   crossBackendFailureCreate: '无法创建新会话',
   crossBackendFailureSelect: '无法为新会话选择模型',
   crossBackendFailureOpen: '无法打开新会话',
-  crossBackendFailureUnknown: '操作失败，请重试',
   crossBackendDiagnostics: '查看技术详情',
+  crossBackendSourceUnavailable:
+    '原 Agent 已移除。你可以用所选模型开始独立会话，也可以取消并保留原对话。恢复原 Agent 后即可尝试续聊。',
   crossBackendFromTo: '将从 {source} 切换到 {target}。',
   crossBackendExistingHistory:
     '当前对话已有历史，但没有记录可恢复的原模型。继续会在新 DSH 会话中运行智能体并保留原对话；取消后当前会话仍选中该智能体，若要继续原对话，请重新选择模型。',
@@ -595,7 +595,7 @@ const en: Record<AcpLocaleKey, string> = {
   agentConfiguration: 'Agent configuration',
   toolApprovalDefault: 'Default DSH tool approval',
   toolApprovalDefaultHelp:
-    'Applies only to DSH tool authorization in new sessions, without changing Agent mode or tool permissions. Agent tools and other MCP services are unaffected; Devin requests still need your approval.',
+    'Choose how new sessions handle requests to use DSH tools. Devin requests still need your approval.',
   toolApprovalAuto: 'Auto approve',
   toolApprovalAsk: 'Ask',
   toolApprovalSaveFailed: 'Could not save the default approval setting. Please retry.',
@@ -604,12 +604,12 @@ const en: Record<AcpLocaleKey, string> = {
   toolApprovalAskDescription: 'Ask you when the Agent requests DSH tool access.',
   toolApprovalScope:
     'Future requests only. Agent mode and DSH tool permissions stay unchanged; pending requests still need your approval.',
-  toolApprovalInherited: 'Following the Lead’s current policy; read-only.',
+  toolApprovalInherited: 'Uses the main session’s approval setting.',
   toolApprovalUnavailable: 'Could not read DSH tool approval settings. Please retry.',
   toolApprovalRetry: 'Retry reading DSH tool approval settings',
   toolApprovalChangeFailed: 'Could not save the DSH tool approval setting. Please retry.',
   settingsLoading: 'Loading settings…',
-  settingsUnavailable: 'No settings service in this environment; the ACP panel is unavailable.',
+  settingsUnavailable: 'ACP settings are unavailable in this environment.',
   settingsInvalid: 'ACP configuration is invalid. Check the configuration file and retry.',
   readOnly: 'The settings document is read-only; changes cannot be saved.',
   hostVersionMismatch:
@@ -620,10 +620,10 @@ const en: Record<AcpLocaleKey, string> = {
   addAgent: 'Add Agent',
   addCustom: 'Add manually',
   refresh: 'Re-check',
+  refreshAll: 'Check all Agents',
   refreshing: 'Checking…',
   healthCheckTransportFailed: 'The check request failed. Try again.{reference}',
-  agentRetired:
-    'Kimi support has been removed. Your saved configuration and history remain; remove this configuration explicitly when no longer needed.',
+  agentRetired: 'Kimi is no longer supported. You can delete this configuration and keep your chat history.',
   stateAgentRetired: 'support removed',
   probeNotInstalled:
     'Cannot start "{command}". Check that it is installed and that its executable and arguments are correct.{reference}',
@@ -904,11 +904,9 @@ const en: Record<AcpLocaleKey, string> = {
   'subagent.readOnlyBody':
     'This read-only record contains the task and result reported by the Agent, not its full internal history. Follow-up messages are unavailable.',
   'subagent.unavailable': 'This information is unavailable.',
-  'subagent.observedTiming':
-    'Catalog duration is the delegation wall time observed by DSH, not model or Agent-reported time.',
   crossBackendAgent: 'Agent',
   unroutedHistoryCreateOnly: 'The default ACP Agent needs a separate session.',
-  unroutedHistoryUngrouped: 'The new session was created outside the workspace. You can open it directly.',
+  unroutedHistoryUngrouped: 'Your new session is ready and is currently outside this workspace.',
   unroutedHistoryOpen: 'Open the created session',
   unroutedHistoryHint:
     'To continue this conversation, choose a non-ACP model below. The default ACP Agent needs a separate session.',
@@ -928,8 +926,9 @@ const en: Record<AcpLocaleKey, string> = {
   crossBackendFailureCreate: 'Could not create the new session.',
   crossBackendFailureSelect: 'Could not select a model for the new session.',
   crossBackendFailureOpen: 'Could not open the new session.',
-  crossBackendFailureUnknown: 'The operation failed. Please retry.',
   crossBackendDiagnostics: 'View technical details',
+  crossBackendSourceUnavailable:
+    'The original Agent was removed. Start an independent session with the selected model, or cancel to keep this conversation. Restore the original Agent to try continuing here.',
   crossBackendFromTo: 'Switch from {source} to {target}.',
   crossBackendExistingHistory:
     'This session has conversation history but no recorded model to restore. Continuing runs the Agent in a new DSH session and keeps the original conversation. Cancel leaves this Agent selected in the current session; choose another model to continue that conversation.',

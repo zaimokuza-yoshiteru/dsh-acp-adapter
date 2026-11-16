@@ -1,3 +1,4 @@
+import type { AcpOwnedRoutesView } from '../../../src/contract/remote.ts'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ComponentProps } from 'react'
 import type { AcpAgentSessionSnapshotView } from '../../../src/contract/remote.ts'
@@ -167,7 +168,8 @@ function setup() {
     t: english,
     remote,
     streamFactory: {},
-    ownsRoute: (provider: string | undefined) => provider === 'acp-codex',
+    useRouteOwnership: (select: (value: AcpOwnedRoutesView) => unknown) =>
+      select({ providers: ['acp-codex'], historicalProviders: [] }),
     getDefaultProvider: async () => 'acp-codex',
     watchDefaultProvider: () => () => {},
     feedback,

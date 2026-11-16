@@ -125,7 +125,6 @@ function renderApprovals(
         : team,
     t: (key: string) => key,
     status: { subscribe: () => () => {}, getSnapshot: () => statuses },
-    ownsRoute: (provider: string | undefined) => provider === 'acp-devin',
     loadChildren: async () => children,
     isCurrent: () => true,
     openMember: options.openMember ?? (async () => {}),

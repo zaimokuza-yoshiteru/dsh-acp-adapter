@@ -74,6 +74,26 @@ describe('AcpRemoteService current public surface', () => {
     })
   })
 
+  it('publishes registered routes separately from saved settings and historical bindings', async () => {
+    let registered = ['acp-acp-custom']
+    const { instance } = service({
+      registry: { ...registry(), registeredProviders: () => registered },
+      bindingFacts: {
+        countBoundSessions: async () => 1,
+        listBoundProviders: async () => ['acp-removed', 'acp-removed', 'native-provider'],
+      },
+    })
+    await expect(instance.ownedProviderRoutes()).resolves.toEqual({
+      providers: ['acp-acp-custom'],
+      historicalProviders: ['acp-removed'],
+    })
+    registered = []
+    await expect(instance.ownedProviderRoutes()).resolves.toEqual({
+      providers: [],
+      historicalProviders: ['acp-removed'],
+    })
+  })
+
   it('reports retained retired profiles without launching or probing them, including explicit rechecks', async () => {
     const probe = vi.fn(async () => [])
     const checkExecutable = vi.fn(async () => true)
@@ -225,7 +245,11 @@ describe('AcpRemoteService current public surface', () => {
         hasLiveAgent: () => live,
       },
     })
-    await expect(instance.backendOf('s1')).resolves.toEqual({ state: 'established', provider: 'acp-devin' })
+    await expect(instance.backendOf('s1')).resolves.toEqual({
+      state: 'established',
+      provider: 'acp-devin',
+      acpBinding: true,
+    })
     expect(readHeader).not.toHaveBeenCalled()
     bound = undefined
     header = 'acp-codex'
@@ -339,7 +363,11 @@ describe('AcpRemoteService current public surface', () => {
 
     // backendOf is also the native/blank backend query used before ACP model
     // selection, so a native session without an ACP durable owner stays valid.
-    await expect(instance.backendOf('foreign')).resolves.toEqual({ state: 'established', provider: 'acp-devin' })
+    await expect(instance.backendOf('foreign')).resolves.toEqual({
+      state: 'established',
+      provider: 'acp-devin',
+      acpBinding: true,
+    })
     expect(readBinding).toHaveBeenCalledOnce()
 
     let storageAvailable = false

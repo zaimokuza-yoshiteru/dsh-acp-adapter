@@ -77,7 +77,9 @@ async function harness(mode: 'native' | 'ptc' = 'native') {
   const removeFresh = register('subagent')
   const mount = () =>
     ctx.plugin(
-      Object.assign((child: Context) => installAcpForkTools(child), { inject: ['tools', 'sessionProjections'] }),
+      Object.assign((child: Context) => installAcpForkTools(child, (route) => route === 'acp-demo'), {
+        inject: ['tools', 'sessionProjections'],
+      }),
     )
   const agent = async (provider = 'acp-demo') => {
     const session = ctx.sessions.create(SessionId(`fork-tools-${Math.random()}`))
@@ -241,15 +243,18 @@ describe('ACP fork tool admission', () => {
 })
 
 describe('fork target route admission', () => {
-  it('keeps explicit native child routes visible and executable from an ACP parent', async () => {
-    const h = await harness()
-    await h.mount()
-    const acp = await h.agent()
-    h.completed(acp)
-    expect(h.ctx.tools.schemas(acp).map((tool) => tool.name)).toContain('subagent_fork')
-    expect((await h.execute(acp, 'subagent_fork', { provider: 'deepseek', model: 'native' })).isError).toBe(false)
-    expect(h.bodies.subagent_fork).toHaveBeenCalledOnce()
-  })
+  it.each(['deepseek', 'acp-thirdparty'])(
+    'keeps the native child route %s executable from an ACP parent',
+    async (provider) => {
+      const h = await harness()
+      await h.mount()
+      const acp = await h.agent()
+      h.completed(acp)
+      expect(h.ctx.tools.schemas(acp).map((tool) => tool.name)).toContain('subagent_fork')
+      expect((await h.execute(acp, 'subagent_fork', { provider, model: 'native' })).isError).toBe(false)
+      expect(h.bodies.subagent_fork).toHaveBeenCalledOnce()
+    },
+  )
 
   it('does not infer a configured child route from its ACP parent when arguments omit provider', async () => {
     const h = await harness()

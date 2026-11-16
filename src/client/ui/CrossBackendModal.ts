@@ -69,19 +69,25 @@ export function CrossBackendModal({
     ? t('crossBackendModelSwitchDescription', {
         target: crossBackendSelectionLabel(target, catalog, profileName(target.provider), t),
       })
-    : source === undefined
-      ? t('crossBackendExistingHistory')
-      : `${t('crossBackendFromTo', {
-          source: crossBackendSelectionLabel(source, catalog, profileName(source.provider), t),
-          target: crossBackendSelectionLabel(target, catalog, profileName(target.provider), t),
-        })} ${t('crossBackendDescription')}`
+    : pending.ticket.sourceUnavailable
+      ? t('crossBackendSourceUnavailable')
+      : source === undefined
+        ? t('crossBackendExistingHistory')
+        : `${t('crossBackendFromTo', {
+            source: crossBackendSelectionLabel(source, catalog, profileName(source.provider), t),
+            target: crossBackendSelectionLabel(target, catalog, profileName(target.provider), t),
+          })} ${t('crossBackendDescription')}`
   const phaseKey: Record<CrossBackendPhase, AcpLocaleKey> = {
     'restore-source': 'crossBackendFailureRestore',
     'create-destination': 'crossBackendFailureCreate',
+    'ungrouped-destination': 'unroutedHistoryUngrouped',
     'select-destination': 'crossBackendFailureSelect',
     'open-destination': 'crossBackendFailureOpen',
-    completed: 'crossBackendFailureUnknown',
   }
+  const hasDestination =
+    pending.failure?.phase === 'ungrouped-destination' ||
+    pending.failure?.phase === 'select-destination' ||
+    pending.failure?.phase === 'open-destination'
   const error =
     pending.failure !== null
       ? t(phaseKey[pending.failure.phase])
@@ -126,7 +132,13 @@ export function CrossBackendModal({
           },
           pending.busy
             ? t('crossBackendWorking')
-            : t(modelSwitch ? 'crossBackendNewModelSession' : 'crossBackendContinue'),
+            : t(
+                hasDestination
+                  ? 'unroutedHistoryOpen'
+                  : modelSwitch
+                    ? 'crossBackendNewModelSession'
+                    : 'crossBackendContinue',
+              ),
         ),
       ),
     },

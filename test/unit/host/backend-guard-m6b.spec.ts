@@ -63,7 +63,8 @@ function sidecar(
 function install(
   selection: { lastUsed: LlmCallConfig | null; pending: LlmCallConfig | null } | undefined,
   acpSidecar: AcpSidecar,
-  ownsProvider: (provider: string) => boolean = (provider) => provider === 'acp-codex' || provider === 'acp-generic',
+  ownsProvider: (provider: string) => boolean = (provider) =>
+    ['acp-codex', 'acp-generic', 'acp-devin'].includes(provider),
 ): { listener: RequestListener; reads: ReturnType<typeof vi.fn> } {
   let listener: RequestListener | undefined
   const reads = vi.fn(() => selection)
@@ -190,11 +191,24 @@ describe('M6b additive ACP backend guard', () => {
     expect(acpSidecar.writeRecoveryState).not.toHaveBeenCalled()
   })
 
-  it('does not apply the model-change restriction to an unowned provider with an ACP-looking name', async () => {
-    const acpSidecar = sidecar(validBinding('thirdparty'))
-    const { listener } = install({ lastUsed: config('acp-thirdparty'), pending: null }, acpSidecar, () => false)
-    const next = config('acp-thirdparty', 'model-b')
+  it.each([
+    ['native', 'acp-thirdparty'],
+    ['acp-thirdparty', 'native'],
+    ['acp-thirdparty', 'acp-thirdparty'],
+  ])('leaves %s → %s to the registered third-party adapter', async (from, to) => {
+    const acpSidecar = sidecar(undefined)
+    const { listener } = install({ lastUsed: config(from), pending: null }, acpSidecar)
+    const next = config(to, 'model-b')
     await expect(listener({ agent: { session: session(['request/header']) } }, async () => next)).resolves.toEqual(next)
+    expect(acpSidecar.writeRecoveryState).not.toHaveBeenCalled()
+  })
+
+  it('protects a retained ACP binding when another adapter registers its route', async () => {
+    const acpSidecar = sidecar(validBinding('thirdparty'))
+    const { listener } = install({ lastUsed: config('acp-thirdparty'), pending: null }, acpSidecar)
+    await expect(
+      listener({ agent: { session: session(['request/header']) } }, async () => config('acp-thirdparty')),
+    ).rejects.toMatchObject({ code: 'ACP_BACKEND_NEW_SESSION_REQUIRED' })
   })
 
   it('blocks cross-backend transitions without reading or writing ACP state', async () => {

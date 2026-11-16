@@ -649,6 +649,8 @@ export interface AcpSidecar {
    * （畸形行跳过并 warn；库不存在 → 空数组）。
    */
   listBindings(): Promise<readonly AcpBoundSessionBinding[]>
+  /** Historical route hints only. Validate the specific session with readLatestBinding before use. */
+  listBoundProviders(): Promise<readonly string[]>
   /** 该 sessionId 全量合法 entry（按 seq 升序；行级校验失败者跳过并 warn）；库不存在 → 空数组。 */
   list(sessionId: SessionId): Promise<readonly AcpSidecarEntry[]>
   /** Cursor-paged audit read. Only the requested bounded window is decoded. */
@@ -2371,6 +2373,14 @@ class SidecarStore implements AcpSidecar {
       state.lastUserAction ?? null,
       stableStringify(state),
     )
+  }
+
+  async listBoundProviders(): Promise<readonly string[]> {
+    this.drainQueue()
+    const db = this.openIfExists()
+    if (db === undefined) return []
+    const rows = db.prepare('SELECT DISTINCT acp_provider_id FROM bindings').all()
+    return rows.map((row) => row.acp_provider_id).filter((id): id is string => typeof id === 'string')
   }
 
   listBindings(): Promise<readonly AcpBoundSessionBinding[]> {
