@@ -4,11 +4,12 @@
 
 Find installation commands, release dates, and package checksums on [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases).
 
-## 未发布 / Unreleased — DSH RC.3
+## 0.2.2-rc.3.1
 
 ### 中文
 
-- 兼容 DSH `0.2.2-rc.3`。
+- 兼容 DSH `0.2.2-rc.3`。使用 DSH RC.2 时请安装插件 `0.2.2-rc.2.1`。
+- Agent 拒绝插话后，原回复会保持文本和思考的顺序，并保留已确认的工具结果。
 - 切换模型或从恢复页另开会话时沿用原模式。建好空白会话后所选模型消失时，可以从原会话打开它并重新选模。
 - 切换工作目录时，若 Agent 已成功分叉但本地保存中断，重试会保存同一个子会话，避免会话误锁或重复分叉。
 - 原生主会话可以管理有访问权限的 ACP 子成员。纯原生团队隐藏 ACP 成员设置。
@@ -16,7 +17,8 @@ Find installation commands, release dates, and package checksums on [GitHub Rele
 
 ### English
 
-- Support DSH `0.2.2-rc.3`.
+- Support DSH `0.2.2-rc.3`. For DSH RC.2, install plugin `0.2.2-rc.2.1`.
+- When an Agent declines a mid-turn message, the original reply preserves text and reasoning order and keeps confirmed tool results.
 - New sessions opened from model switching or recovery keep the original mode. If the selected model disappears after creation, you can open the blank session from the original conversation and choose another model.
 - If an Agent forks successfully during a working directory change but saving the result fails, retrying saves the same child session.
 - Native lead sessions can manage their accessible ACP members. Teams with only native members hide ACP member settings.
