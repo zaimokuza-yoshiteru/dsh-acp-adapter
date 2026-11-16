@@ -348,10 +348,15 @@ describe('ACP execution SessionProjection integration', () => {
   })
 
   it('releases the retained projection handle with its disposer', async () => {
+    const ctx = new Context()
+    contexts.push(ctx)
     const handle = { stateOf: vi.fn(), readerFor: vi.fn(), dispose: vi.fn(async () => undefined) }
-    const release = retainAcpExecutionProjection(handle as never)
+    const release = retainAcpExecutionProjection(ctx, handle as never)
+    expect(readSessionFacts(ctx, {} as never)).toBeUndefined()
+    expect(handle.stateOf).toHaveBeenCalledOnce()
     await release()
     expect(handle.dispose).toHaveBeenCalledOnce()
+    expect(() => readSessionFacts(ctx, {} as never)).toThrow('ACP execution projection is not ready')
   })
 
   it('uses only the compact replay marker shape in checkpoint state', async () => {

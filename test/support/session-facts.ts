@@ -4,7 +4,7 @@ import { acpExecutionProjection, retainAcpExecutionProjection } from '../../src/
 
 /** Register the ACP execution projection and retain its awaited reader. */
 export async function installAcpExecutionProjection(ctx: Context): Promise<void> {
-  retainAcpExecutionProjection(await ctx.sessionProjections.register(acpExecutionProjection))
+  retainAcpExecutionProjection(ctx, await ctx.sessionProjections.register(acpExecutionProjection))
 }
 
 /** Legacy event fixtures exercise the same fold; production never scans snapshots. */

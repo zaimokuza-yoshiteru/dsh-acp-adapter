@@ -31,31 +31,41 @@ export const acpExecutionProjection = {
   },
 } satisfies ProjectionDefinition<'acpExecution', SessionFacts>
 
-/**
- * Reader retained from our awaited registration. One host composition owns the
- * `acpExecution` projection key per process; a reload replaces the reader.
- */
-let executionFactReader: ((session: Session) => SessionFacts) | undefined
+/** Reader of the ACP execution projection, owned by the composition that registered it. */
+export interface AcpSessionFactsReader {
+  read(session: Session): SessionFacts
+}
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    acpSessionFacts: AcpSessionFactsReader
+  }
+}
 
 /**
- * Retain the awaited ACP execution projection handle for this composition.
+ * Publish the awaited ACP execution projection handle on the composition that
+ * registered it, so a reload cannot read another composition's handle.
  * Registration readiness is owned by the caller that awaited it, so a read
  * before retention fails closed instead of folding an unregistered unit.
+ * @param ctx - composition context that owns the reader.
  * @param handle - ready handle returned by `sessionProjections.register`.
- * @returns disposer releasing the handle and clearing this reader.
+ * @returns disposer withdrawing the reader and releasing the handle.
  */
-export function retainAcpExecutionProjection(handle: ProjectionHandle<SessionFacts>): () => Promise<void> {
-  const read = (session: Session): SessionFacts => handle.stateOf(session)
-  executionFactReader = read
+export function retainAcpExecutionProjection(
+  ctx: Context,
+  handle: ProjectionHandle<SessionFacts>,
+): () => Promise<void> {
+  const withdraw = ctx.provide('acpSessionFacts', { read: (session) => handle.stateOf(session) })
   return async () => {
-    if (executionFactReader === read) executionFactReader = undefined
+    await withdraw()
     await handle.dispose()
   }
 }
 
-export function readSessionFacts(_ctx: Context, session: Session): SessionFacts {
-  if (executionFactReader === undefined) throw new Error('ACP execution projection is not ready')
-  return executionFactReader(session)
+export function readSessionFacts(ctx: Context, session: Session): SessionFacts {
+  const reader = ctx.get('acpSessionFacts', false)
+  if (reader === undefined) throw new Error('ACP execution projection is not ready')
+  return reader.read(session)
 }
 
 /** Accessors always read the host's current cut, including after a policy append. */

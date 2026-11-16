@@ -250,7 +250,7 @@ export async function installInstalledProfileRegistry(
 ): Promise<InstalledProfileRegistry> {
   const toolBridgeKey = createDshToolBridgeKey()
   const executionProjection = await ctx.sessionProjections.register(acpExecutionProjection)
-  const releaseExecutionReader = retainAcpExecutionProjection(executionProjection)
+  const releaseExecutionReader = retainAcpExecutionProjection(ctx, executionProjection)
   let disposed = false
   const log = createAcpLogger(ctx.logger)
   const sidecar = installAcpSidecar(ctx)

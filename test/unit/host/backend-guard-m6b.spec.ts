@@ -39,25 +39,30 @@ function install(
   let listener: RequestListener | undefined
   const reads = vi.fn(() => selection)
   lastUsedSelection = (selection as { lastUsed?: unknown } | undefined)?.lastUsed ?? undefined
-  const injected = {
-    sessionProjections: {
-      stateOf: () => reads(),
+  let facts: { read(session: Session): unknown } | undefined
+  // The composition owns the ACP execution reader; this fixture supplies the
+  // same read face over fake sessions while keeping the service on its context.
+  const context = {
+    get: (name: string, _strict?: boolean) =>
+      name === 'acpSessionFacts' ? facts : name === 'sessionProjections' ? { stateOf: () => reads() } : undefined,
+    provide: (name: string, value: { read(session: Session): unknown }) => {
+      if (name === 'acpSessionFacts') facts = value
+      return async () => undefined
     },
+    inject: (_keys: readonly string[], callback: (ctx: unknown) => void) => callback(context),
     on: (_event: string, handler: RequestListener) => {
       listener = handler
       return () => undefined
     },
   }
-  const context = {
-    inject: (_keys: readonly string[], callback: (ctx: unknown) => void) => callback(injected),
-  }
-  // The guard reads its own awaited ACP execution projection through the
-  // retained reader; this fixture supplies the same read face over fake sessions.
-  retainAcpExecutionProjection({
-    stateOf: (session: Session) => (session as Session & { facts: unknown }).facts,
-    readerFor: (session: Session) => () => (session as Session & { facts: unknown }).facts,
-    dispose: async () => undefined,
-  } as never)
+  retainAcpExecutionProjection(
+    context as unknown as Context,
+    {
+      stateOf: (session: Session) => (session as Session & { facts: unknown }).facts,
+      readerFor: (session: Session) => () => (session as Session & { facts: unknown }).facts,
+      dispose: async () => undefined,
+    } as never,
+  )
   installAcpBackendGuard(context as unknown as Context, { sidecar: acpSidecar })
   if (listener === undefined) throw new Error('guard listener was not installed')
   return { listener, reads }
