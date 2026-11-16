@@ -2150,7 +2150,12 @@ describe('provider activity bridge', () => {
           status: 'in_progress',
           content: [{ type: 'diff', path: 'file.txt', oldText: 'before', newText: 'after' }],
         })
-        update({ sessionUpdate: 'tool_call_update', toolCallId: 'replace', status: 'completed', content: [] })
+        update({
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'replace',
+          content: [{ type: 'terminal', terminalId: 'term' }],
+        })
+        update({ sessionUpdate: 'tool_call_update', toolCallId: 'replace', status: 'failed', content: [] })
         update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' } })
         return { stopReason: 'end_turn' } as never
       },
@@ -2171,8 +2176,9 @@ describe('provider activity bridge', () => {
     }
     const rows = await sidecar.activitySnapshot('session-details' as never)
     expect(rows.map((row) => [row.kind, row.status, row.contentIndex])).toEqual([
-      ['tool', 'completed', 0],
+      ['tool', 'failed', 0],
       ['diff', 'completed', 0],
+      ['terminal', 'failed', 0],
     ])
     expect(rows[0]!.activitySeq).toBeLessThan(rows[1]!.activitySeq)
     expect(rows[1]!.revisionSeq).toBeGreaterThan(rows[1]!.activitySeq)
