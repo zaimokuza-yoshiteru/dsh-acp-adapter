@@ -100,8 +100,7 @@ import { AcpHostContinuity, ensureHostContinuity } from './host-continuity.ts'
 import { AcpHostSettlementError } from '../../runtime/session/mcp-lease.ts'
 import { AcpSteeringRequestError, supportsFork } from '../../protocol/v1/connection.ts'
 import type { AcpSessionNotification } from '../../protocol/v1/types.ts'
-import { nonTextContentFallback } from '../../domain/session/assistant-content.ts'
-import type { AcpNonTextContent } from '../../domain/session/assistant-content.ts'
+import { ReplySegments } from './reply-segments.ts'
 import { AcpToolCallReducer } from './tool-call-reducer.ts'
 import type { AcpToolCallPatch, AcpToolCallSnapshot } from './tool-call-reducer.ts'
 import { AcpLocalSettlementError } from './local-settlement.ts'
@@ -2342,51 +2341,12 @@ export class AcpProfileAdapter extends LlmAdapter {
           visibleContentEmitted = true
           lastVisibleResponseByAnchor.set(observation.anchor, observation.seq)
         }
-        const unsupportedChunkContents: Array<{ type: string; reason: string }> = []
-        let unsupportedChunkContentsTruncated = false
-        let contentBreakVersion = 0
-        // Only contiguous content belongs to the same native block. Never
-        // return to an older text/reasoning index after another segment.
-        let nextContentIndex = contentOffset
-        let contentSegment: { kind: 'text' | 'reasoning'; index: number; messageId?: string } | undefined
-        const breakContent = (): void => {
-          contentBreakVersion += 1
-          contentSegment = undefined
-        }
-        const contentIndex = (kind: 'text' | 'reasoning', messageId?: string | null): number => {
-          if (
-            contentSegment?.kind !== kind ||
-            (messageId != null && contentSegment.messageId !== undefined && messageId !== contentSegment.messageId)
-          ) {
-            contentSegment = { kind, index: nextContentIndex++ }
-          }
-          if (messageId != null) contentSegment.messageId = messageId
-          return contentSegment.index
-        }
         const pushChunk = (chunk: StreamChunk): void => {
           queue.push(chunk)
           wake?.()
           wake = undefined
         }
-        const noteUnsupportedChunk = (type: string, reason: string): void => {
-          if (unsupportedChunkContents.length < 32) unsupportedChunkContents.push({ type, reason })
-          else unsupportedChunkContentsTruncated = true
-        }
-        const pushNonTextFallback = (
-          content: AcpNonTextContent,
-          observation: { anchor: string; seq: number },
-        ): void => {
-          breakContent()
-          noteUnsupportedChunk(content.type, 'non-text ACP answer content was rendered with a safe text fallback')
-          pushChunk({
-            type: 'text-delta',
-            index: contentIndex('text'),
-            text: `\n\n${nonTextContentFallback(content)}\n\n`,
-          })
-          noteVisibleResponse(observation)
-          // Keep the fallback as its own block in ACP content order.
-          breakContent()
-        }
+        const reply = new ReplySegments(contentOffset, pushChunk)
         const emitAgentContent = async (
           content: acp.ContentBlock,
           observation: { anchor: string; seq: number },
@@ -2397,7 +2357,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             // the same terminal-response rule here so formatting whitespace
             // cannot mask ACP_NO_VISIBLE_RESPONSE.
             if (content.text.trim().length > 0) noteVisibleResponse(observation)
-            pushChunk({ type: 'text-delta', index: contentIndex('text', messageId), text: content.text })
+            reply.text(content.text, messageId)
             return
           }
           if (content.type === 'image' && self.attachments?.saveImages !== undefined) {
@@ -2409,11 +2369,7 @@ export class AcpProfileAdapter extends LlmAdapter {
                 },
               ])
               if (attachment === undefined) throw new Error('attachment store returned no image reference')
-              breakContent()
-              const index = nextContentIndex
-              nextContentIndex += 1
-              pushChunk({ type: 'block-start', index, blockType: 'image' })
-              pushChunk({ type: 'block-end', index, block: { type: 'image', attachment } })
+              reply.image(attachment)
               noteVisibleResponse(observation)
               return
             } catch {
@@ -2421,20 +2377,14 @@ export class AcpProfileAdapter extends LlmAdapter {
               // visible without exposing the raw base64 payload.
             }
           }
-          pushNonTextFallback(content, observation)
+          reply.fallback(content)
+          noteVisibleResponse(observation)
         }
         const writeUnsupportedChunkAudit = async (): Promise<void> => {
-          if (unsupportedChunkContents.length === 0 || self.sidecar === undefined) return
+          const data = reply.degradation
+          if (data === undefined || self.sidecar === undefined) return
           try {
-            await self.sidecar.append(sessionKey as never, {
-              kind: 'degradation',
-              data: {
-                code: 'unsupported-chunk-content',
-                items: unsupportedChunkContents,
-                keptPreviewChars: 0,
-                truncated: unsupportedChunkContentsTruncated,
-              },
-            })
+            await self.sidecar.append(sessionKey as never, { kind: 'degradation', data })
           } catch {
             /* best effort: audit failure never changes the prompt outcome */
           }
@@ -2493,7 +2443,7 @@ export class AcpProfileAdapter extends LlmAdapter {
               // terminal one) marks its insertion point in the answer stream.
               // A late terminal notification only updates activity state; it
               // must not split answer text that arrived after the tool began.
-              scheduleContent(breakContent)
+              scheduleContent(() => reply.breakContent())
             }
             toolContentBoundaries.set(toolId, terminal)
           }
@@ -2569,8 +2519,8 @@ export class AcpProfileAdapter extends LlmAdapter {
                 // A tool's detail rows are nested under its original call;
                 // late output must not split an unrelated streaming sentence.
                 const parentPosition = isToolUpdate ? activityPositions.get(`tool:${toolId}`) : undefined
-                if (parentPosition === undefined) breakContent()
-                activityPositions.set(activity.activityId, parentPosition ?? nextContentIndex)
+                if (parentPosition === undefined) reply.breakContent()
+                activityPositions.set(activity.activityId, parentPosition ?? reply.position)
               }
               scheduleActivity(activity)
             }
@@ -2581,19 +2531,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             })
           } else if (update.sessionUpdate === 'agent_thought_chunk') {
             const thought = update.content
-            scheduleContent(() => {
-              const text =
-                thought.type === 'text'
-                  ? thought.text
-                  : (() => {
-                      noteUnsupportedChunk(
-                        thought.type,
-                        'non-text ACP thought content was omitted from the safe reasoning preview',
-                      )
-                      return `[ACP ${thought.type} reasoning content omitted.]`
-                    })()
-              pushChunk({ type: 'reasoning-delta', index: contentIndex('reasoning', update.messageId), text })
-            })
+            scheduleContent(() => reply.thought(thought, update.messageId))
           }
         }
         const finishExternalDelegations = (): void => {
@@ -2703,22 +2641,36 @@ export class AcpProfileAdapter extends LlmAdapter {
           } catch (error) {
             throw new SteeringFailure(error, false)
           }
-          const previousAnchor = currentAnchor
-          const previousOffset = activityIndexOffset
-          const previousSegment = contentSegment
-          const previousReportEligible = teammateReportEligible
-          const previousReportConfirmed = teammateReportConfirmed
-          const previousTurnConclusionEligible = turnConclusionEligible
-          const previousTurnConclusionConfirmed = turnConclusionConfirmed
-          const previousSuccessfulToolResultEligible = successfulToolResultEligible
-          const previousSuccessfulToolResultConfirmed = successfulToolResultConfirmed
-          const previousRemoteCancellationHook = remoteCancellationHook
-          const previousSystem = promptSystem
-          let projectedAtDispatch = false
-          let segmentBoundaryVersion = contentBreakVersion
-          let segmentBoundaryIndex = nextContentIndex
+          let restoreProjection: (() => void) | undefined
           const applyProjectionAtDispatch = (): void => {
-            projectedAtDispatch = true
+            // The original prompt can still report completed tools while the
+            // connection waits to dispatch steering. Save its facts here.
+            const previousAnchor = currentAnchor
+            const previousOffset = activityIndexOffset
+            const previousReportEligible = teammateReportEligible
+            const previousReportConfirmed = teammateReportConfirmed
+            const previousTurnConclusionEligible = turnConclusionEligible
+            const previousTurnConclusionConfirmed = turnConclusionConfirmed
+            const previousSuccessfulToolResultEligible = successfulToolResultEligible
+            const previousSuccessfulToolResultConfirmed = successfulToolResultConfirmed
+            const previousRemoteCancellationHook = remoteCancellationHook
+            const previousSystem = promptSystem
+            const restoreSegment = reply.holdSteeringBoundary()
+            restoreProjection = (): void => {
+              promptSystem = previousSystem
+              steeringInstructionsPending = false
+              updateDeliveredHostInstructions()
+              remoteCancellationHook = previousRemoteCancellationHook
+              currentAnchor = previousAnchor
+              activityIndexOffset = previousOffset
+              teammateReportEligible = previousReportEligible
+              teammateReportConfirmed = previousReportConfirmed
+              turnConclusionEligible = previousTurnConclusionEligible
+              turnConclusionConfirmed = previousTurnConclusionConfirmed
+              successfulToolResultEligible = previousSuccessfulToolResultEligible
+              successfulToolResultConfirmed = previousSuccessfulToolResultConfirmed
+              restoreSegment()
+            }
             // Steering may replace Host context again before this provider
             // attempt settles. Do not certify its original context as current.
             self.deliveredQwenContexts.delete(runtime)
@@ -2732,42 +2684,16 @@ export class AcpProfileAdapter extends LlmAdapter {
             // A pending pull may contain the old segment's final text. It will
             // occupy a block in the next native reply before injected output.
             activityIndexOffset = Math.min(
-              nextContentIndex,
-              handoff.pendingIndex ?? nextContentIndex,
+              reply.position,
+              handoff.pendingIndex ?? reply.position,
               ...queue.flatMap((chunk) => ('index' in chunk ? [chunk.index] : [])),
             )
-            breakContent()
-            segmentBoundaryVersion = contentBreakVersion
-            segmentBoundaryIndex = nextContentIndex
             teammateReportEligible = false
             teammateReportConfirmed = false
             turnConclusionEligible = false
             turnConclusionConfirmed = false
             successfulToolResultEligible = false
             successfulToolResultConfirmed = false
-          }
-          const restoreProjection = (): void => {
-            promptSystem = previousSystem
-            steeringInstructionsPending = false
-            updateDeliveredHostInstructions()
-            remoteCancellationHook = previousRemoteCancellationHook
-            currentAnchor = previousAnchor
-            activityIndexOffset = previousOffset
-            teammateReportEligible = previousReportEligible
-            teammateReportConfirmed = previousReportConfirmed
-            turnConclusionEligible = previousTurnConclusionEligible
-            turnConclusionConfirmed = previousTurnConclusionConfirmed
-            successfulToolResultEligible = previousSuccessfulToolResultEligible
-            successfulToolResultConfirmed = previousSuccessfulToolResultConfirmed
-            // Restore the prior text segment only when nothing arrived after
-            // the request boundary; never revisit an index already emitted.
-            if (
-              projectedAtDispatch &&
-              contentBreakVersion === segmentBoundaryVersion &&
-              nextContentIndex === segmentBoundaryIndex &&
-              contentSegment === undefined
-            )
-              contentSegment = previousSegment
           }
           let result: 'injected' | 'promptRequired'
           try {
@@ -2777,20 +2703,20 @@ export class AcpProfileAdapter extends LlmAdapter {
             // whether the Agent accepted the injected prompt. Only the concrete
             // connection marker can prove it failed before SDK dispatch.
             const remoteRequestSent = !(error instanceof AcpSteeringRequestError) || error.remoteRequestSent
-            if (!remoteRequestSent) restoreProjection()
+            if (!remoteRequestSent) restoreProjection?.()
             else {
               hostInstructionOutcome = 'failed'
               updateDeliveredHostInstructions()
             }
             throw new SteeringFailure(error, remoteRequestSent)
           }
-          if (result === 'injected' && !projectedAtDispatch) {
+          if (result === 'injected' && restoreProjection === undefined) {
             hostInstructionOutcome = 'failed'
             updateDeliveredHostInstructions()
             throw new SteeringFailure(new Error('ACP steering runtime did not confirm its dispatch boundary'), true)
           }
           if (result !== 'injected') {
-            restoreProjection()
+            restoreProjection?.()
             return false
           }
           promptSystem = nextSystem

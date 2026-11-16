@@ -353,6 +353,7 @@ async function steeringFixture(
       },
     ),
   }
+  const resolveQuestions = vi.fn(() => undefined)
   const adapter = new AcpProfileAdapter(
     'test',
     () => profile(),
@@ -368,7 +369,7 @@ async function steeringFixture(
       },
     } as never,
     undefined,
-    undefined,
+    resolveQuestions,
     undefined,
     undefined,
     undefined,
@@ -399,6 +400,7 @@ async function steeringFixture(
     offTurnEnd,
     offRouteChange,
     controlsChanged,
+    resolveQuestions,
     onCancel: (callback: () => void) => {
       onCancel = callback
     },
@@ -564,6 +566,35 @@ it('restores the prior projection when the steering connection proves it failed 
   await f.adapter.close()
 })
 
+it('retains the latest pre-dispatch segment when declined steering drains the old prompt', async () => {
+  const f = await steeringFixture()
+  try {
+    f.text('pending old text')
+    f.runtime.steer.mockImplementationOnce(async (_content, onDispatch) => {
+      f.update({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'old thought' } })
+      // The queued terminal patch proves the preceding thought reached its
+      // native block before dispatch. Patching an existing tool adds no block.
+      f.update({ sessionUpdate: 'tool_call_update', toolCallId: 'old-tool', status: 'completed' })
+      await vi.waitFor(() => expect(f.rows.some((row) => row.status === 'completed')).toBe(true))
+      onDispatch?.()
+      return 'promptRequired'
+    })
+    f.runtime.prompt.mock.calls[0]![2]!.addEventListener('abort', () => f.text('drained old text'), { once: true })
+    const blocks = []
+    for await (const chunk of f.next()) {
+      if (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta') blocks.push([chunk.index, chunk.text])
+    }
+    expect(blocks).toEqual([
+      [0, 'pending old text'],
+      [1, 'old thought'],
+      [2, 'drained old text'],
+      [3, 'replacement'],
+    ])
+  } finally {
+    await f.adapter.close()
+  }
+})
+
 it('keeps indices monotonic and emits late old-prompt output once after promptRequired', async () => {
   const f = await steeringFixture()
   f.runtime.steer.mockImplementationOnce(async (_content, onDispatch) => {
@@ -695,6 +726,39 @@ it('retires a failed suspended drain, releases listeners, and starts the next ow
   expect(f.runtime.prompt).toHaveBeenCalledOnce()
   await f.adapter.close()
 })
+
+it.each(['successfulToolResult', 'conclude', 'report'] as const)(
+  'preserves original %s evidence delivered while steering waits for dispatch',
+  async (evidence) => {
+    const f = await steeringFixture(false)
+    try {
+      f.runtime.steer.mockImplementationOnce(async () => {
+        f[evidence]()
+        throw new AcpSteeringRequestError(false, new Error('steering connection closed'))
+      })
+      const consume = async () => {
+        const chunks = []
+        for await (const chunk of f.next()) chunks.push(chunk)
+        return chunks
+      }
+      await expect(consume()).rejects.toMatchObject({ code: 'ACP_STEERING_FAILED' })
+      // Resolving the response locale is the last synchronous step before its
+      // finish is queued. Let the original prompt settle before retrying input.
+      const finishing = Promise.withResolvers<void>()
+      f.resolveQuestions.mockImplementationOnce(() => {
+        finishing.resolve()
+        return undefined
+      })
+      f.finish.resolve({ stopReason: 'end_turn' })
+      await finishing.promise
+      const chunks = await consume()
+      expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+      expect(chunks).toContainEqual(expect.objectContaining({ type: 'text-delta', text: 'replacement' }))
+    } finally {
+      await f.adapter.close()
+    }
+  },
+)
 
 it('does not let an earlier or late teammate report bless a newly steered request', async () => {
   const f = await steeringFixture(false)
