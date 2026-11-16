@@ -1,9 +1,10 @@
 import { createElement as h, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { nextIndependentAction } from '../coordinator/native-session-navigation.ts'
 import type { ReactNode } from 'react'
 import type { ModelDirectoryState } from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import type { HostObservable, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { IndependentSessionOutcome } from '../coordinator/native-session-navigation.ts'
+import type { IndependentSessionAction, IndependentSessionOutcome } from '../coordinator/native-session-navigation.ts'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { includesRoute, type UseRouteOwnership } from '../data/managed-routes.ts'
 import css from './AcpRecoveryDock.module.css'
@@ -12,7 +13,10 @@ type Props = PropsRuntime<'conversation.input.dock'> &
   PropsLocale<'acpActivity'> & {
     readonly directory: HostObservable<ModelDirectoryState>
     readonly useRouteOwnership: UseRouteOwnership
-    readonly openIndependent: (current: () => boolean, openUngrouped: boolean) => Promise<IndependentSessionOutcome>
+    readonly openIndependent: (
+      current: () => boolean,
+      action: IndependentSessionAction,
+    ) => Promise<IndependentSessionOutcome>
   }
 
 /** Show the native picker's alternative only when a completed history has no recorded model. */
@@ -64,7 +68,8 @@ export function UnroutedHistoryDock({
 
   if (!enabled || (!canChoose && !canCreate)) return null
   const ungrouped = action === 'ungrouped' || action === 'ungrouped-open-failed'
-  const readyToOpen = ungrouped || action === 'open-failed'
+  const nextAction = nextIndependentAction(action)
+  const readyToOpen = nextAction === 'open-existing'
   const start = async (): Promise<void> => {
     if (!canCreate || active.current !== undefined) return
     const token = Symbol()
@@ -76,7 +81,7 @@ export function UnroutedHistoryDock({
       directory.getSnapshot().current?.provider === currentDefault?.provider &&
       directory.getSnapshot().current?.model === currentDefault?.model
     try {
-      const result = await openIndependent(current, ungrouped)
+      const result = await openIndependent(current, nextAction)
       if (current()) setAction(result)
     } catch {
       if (current()) setAction(readyToOpen ? 'open-failed' : 'create-failed')
@@ -93,7 +98,17 @@ export function UnroutedHistoryDock({
       h(
         'span',
         { className: css.summaryText },
-        t(ungrouped ? 'unroutedHistoryUngrouped' : canChoose ? 'unroutedHistoryHint' : 'unroutedHistoryCreateOnly'),
+        t(
+          action === 'preset-unavailable'
+            ? 'independentPresetUnavailable'
+            : action === 'create-unknown'
+              ? 'independentCreationUnknown'
+              : ungrouped
+                ? 'unroutedHistoryUngrouped'
+                : canChoose
+                  ? 'unroutedHistoryHint'
+                  : 'unroutedHistoryCreateOnly',
+        ),
       ),
       canCreate
         ? h(
@@ -106,7 +121,15 @@ export function UnroutedHistoryDock({
                 void start()
               },
             },
-            t(readyToOpen ? 'unroutedHistoryOpen' : 'crossBackendContinue'),
+            t(
+              action === 'create-unknown'
+                ? 'independentCheckCreated'
+                : action === 'preset-unavailable'
+                  ? 'independentUseDefault'
+                  : readyToOpen
+                    ? 'unroutedHistoryOpen'
+                    : 'crossBackendContinue',
+            ),
           )
         : null,
     ),

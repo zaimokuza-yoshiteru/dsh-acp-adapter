@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { SessionCreateError } from '@deepseek-ai/dsh-api-session-controller/client'
+import { SessionId } from '@deepseek-ai/dsh-session'
+import type { AcpOwnedRoutesView } from '../../../src/contract/remote.ts'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import {
   CrossBackendCoordinator,
@@ -34,7 +36,7 @@ function observable<T>(initial: T) {
 function fixture(
   options: {
     sessionId?: string
-    row?: { blank: boolean; cwd?: string | null }
+    row?: { blank: boolean; cwd?: string | null; agentPreset?: string }
     projection?: { lastUsed: Selection | null; next: Selection | null }
   } = {},
 ) {
@@ -50,19 +52,27 @@ function fixture(
       [sessionId]: {
         id: sessionId,
         blank: options.row?.blank ?? false,
+        ...(options.row?.agentPreset ? { projectionValues: { agentPreset: options.row.agentPreset } } : {}),
         cwd: options.row?.cwd === null ? undefined : (options.row?.cwd ?? '/tmp'),
       },
     },
   })
   const bindings = new Map([[sessionId, { session: { projections: { faceOf: () => projection } } }]])
   const sessionBinding = (id: string) => bindings.get(id)
+  const main = observable({ retainedBy: { mainView: 1 } })
+  const childReadable = observable(true)
   const sessions = {
-    list,
+    list: { subscribe: list.subscribe, getSnapshot: () => ({ ...list.getSnapshot(), phase: 'ready' }) },
+    retainInfo: () => main,
+    refresh: vi.fn(async () => {}),
     binding: sessionBinding,
     create: vi.fn(async () => 'destination'),
     open: vi.fn(),
   }
-  const routes = observable({ providers: ['acp-codex', 'acp-devin'], historicalProviders: [] as string[] })
+  const routes = observable<AcpOwnedRoutesView>({
+    providers: ['acp-codex', 'acp-devin'],
+    historicalProviders: [] as string[],
+  })
   const remote = {
     dshAcp: {
       ownedProviderRoutes: vi.fn(async () => ({ ok: true, value: routes.getSnapshot() })),
@@ -74,6 +84,14 @@ function fixture(
       ),
     },
     session: {
+      list: vi.fn(
+        async (): Promise<{
+          ok: boolean
+          value: { items: { sessionId: string; blank: boolean; cwd?: string }[] }
+          error?: Error
+        }> => ({ ok: true, value: { items: [] } }),
+      ),
+      projections: vi.fn(async () => ({ ok: true, value: null })),
       selectModel: vi.fn(async (): Promise<{ ok: boolean; error?: { message: string }; value?: unknown }> => ({
         ok: true,
       })),
@@ -85,6 +103,11 @@ function fixture(
   const ctx = {
     uiWorkspace: { openSession: sessions.open },
     get(name: string) {
+      if (name === 'remoteAccess')
+        return {
+          source: (_kind: string, _id: string, action: string) =>
+            action === 'session/follow' ? childReadable : observable(true),
+        }
       if (name === 'sessions') return sessions
       if (name === 'modelDirectories') return { directoryFor: modelDirectories }
       if (name === 'workspaces') return { list: observable({ items: [] }) }
@@ -94,6 +117,8 @@ function fixture(
   } as never
   return {
     ctx,
+    main,
+    childReadable,
     remote,
     modelDirectories,
     sessions,
@@ -201,7 +226,7 @@ describe('cross-backend coordinator', () => {
         await vi.waitFor(() => expect(f.sessions.create).toHaveBeenCalledOnce())
         f.routes.set(retired)
       }
-      created.resolve('destination')
+      created.resolve('published-child')
       await confirming
       expect(f.coordinator.getSnapshot().pending).toBeNull()
       expect(f.sessions.create).toHaveBeenCalledTimes(phase === 'while creating' ? 1 : 0)
@@ -211,9 +236,137 @@ describe('cross-backend coordinator', () => {
         model: 'model-a',
       })
       expect(f.sessions.open).not.toHaveBeenCalled()
+      const source = SessionId('session-1')
+      const child = SessionId('published-child')
+      const entry = { source, child }
+      expect(f.coordinator.getSnapshot().created).toEqual(phase === 'while creating' ? [entry] : [])
+      if (phase === 'while creating') {
+        f.list.set({ byId: { ...f.list.getSnapshot().byId, [child]: { id: child, blank: true, cwd: '/tmp' } } })
+        f.main.set({ retainedBy: { mainView: 0 } })
+        expect(f.coordinator.openCreated(source, child, () => true)).toBe(false)
+        f.main.set({ retainedBy: { mainView: 1 } })
+        expect(f.coordinator.openCreated(source, child, () => false)).toBe(false)
+        expect(f.coordinator.openCreated(SessionId('other'), child, () => true)).toBe(false)
+        expect(f.sessions.open).not.toHaveBeenCalled()
+        expect(f.coordinator.openCreated(source, child, () => true)).toBe(true)
+        expect(f.coordinator.openCreated(source, child, () => true)).toBe(false)
+        expect(f.sessions.open).toHaveBeenCalledExactlyOnceWith(child)
+        expect(f.sessions.create).toHaveBeenCalledOnce()
+      }
       stop()
     },
   )
+
+  it('abandons a selection when an Agent is replaced under the same provider id and offers the published child once', async () => {
+    const f = fixture()
+    f.routes.set({ ...f.routes.getSnapshot(), generations: { 'acp-devin': 'original' } })
+    const stop = f.coordinator.start()
+    f.projection.set({
+      lastUsed: { provider: 'native', model: 'model-a' },
+      next: { provider: 'acp-devin', model: 'new' },
+    })
+    await settle()
+    const select = Promise.withResolvers<{ ok: boolean }>()
+    f.remote.session.selectModel.mockReturnValueOnce(select.promise)
+    const confirming = f.coordinator.confirm()
+    await vi.waitFor(() => expect(f.remote.session.selectModel).toHaveBeenCalledTimes(2))
+    f.routes.set({ ...f.routes.getSnapshot(), generations: { 'acp-devin': 'replacement' } })
+    expect(f.coordinator.getSnapshot()).toMatchObject({
+      pending: null,
+      created: [{ source: 'session-1', child: 'destination' }],
+    })
+    f.coordinator.dismissCreated('session-1', SessionId('destination'))
+    select.resolve({ ok: true })
+    await confirming
+    expect(f.coordinator.getSnapshot().created).toEqual([])
+    expect(f.sessions.open).not.toHaveBeenCalled()
+    stop()
+  })
+
+  it('requires a new decision to switch with the default when the source preset disappears', async () => {
+    const f = fixture({
+      row: { blank: false, agentPreset: 'cordis' },
+      projection: {
+        lastUsed: { provider: 'native', model: 'old' },
+        next: { provider: 'acp-codex', model: 'new' },
+      },
+    })
+    f.sessions.create.mockRejectedValueOnce(
+      new SessionCreateError(
+        new RemoteError('agent-preset/not-found', 'gone', { agentPreset: 'cordis', available: ['standard'] }),
+        undefined,
+      ),
+    )
+    const stop = f.coordinator.start()
+    await settle()
+    await f.coordinator.confirm()
+    expect(f.coordinator.getSnapshot().pending?.failure?.phase).toBe('preset-unavailable')
+    const key = f.coordinator.getSnapshot().pending!.ticket.key
+    await f.coordinator.confirm(key)
+    await f.coordinator.confirm('previous', true)
+    expect(f.sessions.create).toHaveBeenCalledExactlyOnceWith({
+      sessionId: expect.any(String),
+      cwd: '/tmp',
+      agentPreset: 'cordis',
+    })
+    await f.coordinator.confirm(key, true)
+    expect(f.sessions.create).toHaveBeenLastCalledWith({ sessionId: expect.any(String), cwd: '/tmp' })
+    expect(f.sessions.open).toHaveBeenCalledExactlyOnceWith('destination')
+    stop()
+  })
+
+  it('retains the selected child if its events grant is revoked before opening', async () => {
+    const f = fixture({
+      projection: { lastUsed: { provider: 'native', model: 'old' }, next: { provider: 'acp-codex', model: 'new' } },
+    })
+    const stop = f.coordinator.start()
+    await settle()
+    f.childReadable.set(false)
+    await f.coordinator.confirm()
+    expect(f.coordinator.getSnapshot().pending?.failure?.phase).toBe('open-destination')
+    expect(f.sessions.open).not.toHaveBeenCalled()
+    f.childReadable.set(true)
+    await f.coordinator.confirm()
+    expect(f.sessions.create).toHaveBeenCalledOnce()
+    expect(f.remote.session.selectModel).toHaveBeenCalledTimes(2)
+    expect(f.sessions.open).toHaveBeenCalledExactlyOnceWith('destination')
+    stop()
+  })
+
+  it('recovers a late blank after withdrawal only once the Host confirms its requested identity', async () => {
+    const f = fixture({
+      projection: { lastUsed: { provider: 'native', model: 'old' }, next: { provider: 'acp-devin', model: 'new' } },
+    })
+    const stop = f.coordinator.start()
+    await settle()
+    let requested = ''
+    const lost = Promise.withResolvers<string>()
+    f.sessions.create.mockImplementationOnce(function (...args: unknown[]) {
+      requested = (args[0] as { sessionId: string }).sessionId
+      return lost.promise
+    })
+    const listing = f.remote.session.list
+    listing.mockRejectedValueOnce(new Error('disconnected'))
+    const confirming = f.coordinator.confirm()
+    await vi.waitFor(() => expect(requested).not.toBe(''))
+    f.routes.set({ providers: [], historicalProviders: ['acp-devin'] })
+    lost.reject(new Error('no create response'))
+    await confirming
+    const entry = { id: requested, blank: true, cwd: '/tmp' }
+    listing.mockRejectedValueOnce(new Error('still disconnected'))
+    f.list.set({ byId: { ...f.list.getSnapshot().byId, [requested]: entry } })
+    await vi.waitFor(() => expect(listing).toHaveBeenCalledTimes(2))
+    await settle()
+    expect(f.coordinator.getSnapshot().created).toEqual([])
+    listing.mockResolvedValueOnce({ ok: true, value: { items: [{ sessionId: requested, blank: true }] } })
+    f.list.set({ ...f.list.getSnapshot() })
+    await vi.waitFor(() =>
+      expect(f.coordinator.getSnapshot().created).toEqual([{ source: 'session-1', child: requested }]),
+    )
+    expect(f.sessions.create).toHaveBeenCalledOnce()
+    expect(f.sessions.open).not.toHaveBeenCalled()
+    stop()
+  })
 
   it('does not display a stale decision after restoring the source', async () => {
     const f = fixture()
@@ -512,7 +665,7 @@ describe('cross-backend coordinator', () => {
   })
 
   it.each([
-    ['create-destination', 'create'],
+    ['create-unknown', 'create'],
     ['select-destination', 'select'],
     ['open-destination', 'open'],
   ] as const)('retains the structured %s failure for localized UI handling', async (phase, failedStep) => {

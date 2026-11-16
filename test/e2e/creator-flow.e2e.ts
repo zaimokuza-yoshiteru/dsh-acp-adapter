@@ -78,6 +78,7 @@ it('keeps native Creator mode usable through ACP while installing, toggling and 
             MOCK_SCENARIO: 'regression',
             MOCK_PROFILE: 'codex',
             MOCK_CREATOR_RESULTS: results,
+            MOCK_UNIQUE_SESSION_IDS: '1',
             MOCK_LOG: agentLog,
           },
         },
@@ -125,11 +126,12 @@ it('keeps native Creator mode usable through ACP while installing, toggling and 
     expect((await composer.innerText()).trim()).toBe('')
     await page.getByRole('button', { name: 'Creator mode', exact: true }).waitFor()
     expect(host.ctx.agentPresets.defaultId).toBe('standard')
-    const run = async (plan: CreatorPlan) => {
+    const run = async (plan: CreatorPlan, sessionId = owner) => {
+      const active = page.locator(`[data-conversation-session="${sessionId}"]`)
       const settled = host.whenTurnSettled()
       void settled.catch(() => undefined)
-      await writeComposerDraft(page, composer, `${CREATOR_PLAN}${JSON.stringify(plan)}`)
-      await conversation.getByRole('button', { name: 'Send message', exact: true }).click()
+      await writeComposerDraft(page, active.locator('[data-composer-input]'), `${CREATOR_PLAN}${JSON.stringify(plan)}`)
+      await active.getByRole('button', { name: 'Send message', exact: true }).click()
       if (plan.calls.some((call) => call.name === 'plugin_manager')) {
         // Approve this exact native escalation in the isolated UI; never mutate the session's permission mode.
         const approval = page.getByRole('button', { name: 'Allow once', exact: true }).last()
@@ -140,7 +142,7 @@ it('keeps native Creator mode usable through ACP while installing, toggling and 
         if (ready === 'approval') await approval.click()
       }
       const id = await settled
-      expect(id).toBe(owner)
+      expect(id).toBe(sessionId)
       expect(records(plan.label).filter((row) => row.kind === 'failure')).toEqual([])
       expect(records(plan.label).filter((row) => row.kind === 'complete')).toHaveLength(1)
       await page.getByText(`E2E_CREATOR_DONE ${plan.label}`, { exact: true }).waitFor()
@@ -207,6 +209,53 @@ it('keeps native Creator mode usable through ACP while installing, toggling and 
     const previousComposer = page.locator(`[data-conversation-session="${standardId}"] [data-composer-input]`)
     await previousComposer.filter({ hasText: draft }).waitFor()
     expect(await previousComposer.innerText()).toBe(draft)
+
+    await page.locator(`[data-row-key="session:${owner}"]`).click()
+    const creatorDraft = 'Keep this unsent idea in the original Creator session.'
+    await writeComposerDraft(page, composer, creatorDraft)
+    await conversation.getByRole('button', { name: /^Select model, current Mock Model A/ }).click()
+    await page.getByRole('menuitem', { name: /^Model/ }).click()
+    await page.getByRole('menuitemradio', { name: 'Mock Model B', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Existing ACP sessions cannot switch models yet', exact: true })
+    const [handoff] = await Promise.all([
+      page.waitForResponse('**/api/session/create'),
+      dialog.getByRole('button', { name: 'Create an independent session with this model', exact: true }).click(),
+    ])
+    const child = (await handoff.json()).result.value as { sessionId: string; agentPreset: string }
+    expect(child.agentPreset).toBe('cordis')
+    expect(child.sessionId).not.toBe(owner)
+    const blank = page.locator(`[data-conversation-session="${child.sessionId}"]`)
+    await blank.getByRole('button', { name: /^Select model, current Mock Model B/ }).waitFor()
+    expect(await blank.getAttribute('data-content-phase')).toBe('hero')
+    expect((await blank.locator('[data-composer-input]').innerText()).trim()).toBe('')
+    const switched = await run(
+      { label: 'switched-creator', fixtureAvailable: true, calls: [{ name: CREATOR_TOOL }] },
+      child.sessionId,
+    )
+    expect(switched[0]).toMatchObject({ kind: 'directory', model: 'mock-model-b' })
+    expect(switched[0]!.sessionId).not.toBe(initialRemote)
+    expect(switched.find((row) => row.name === CREATOR_TOOL)?.text).toContain('E2E_CREATOR_CAPABILITY_OK')
+    expect(host.ctx.agentPresets.defaultId).toBe('standard')
+
+    await writeComposerDraft(page, blank.locator('[data-composer-input]'), 'E2E_CRASH')
+    await blank.getByRole('button', { name: 'Send message', exact: true }).click()
+    await blank.getByRole('button', { name: 'Resolve recovery issue', exact: true }).click()
+    const [recovery] = await Promise.all([
+      page.waitForResponse('**/api/session/create'),
+      page.getByRole('dialog').getByRole('button', { name: 'Create an independent session', exact: true }).click(),
+    ])
+    const fresh = (await recovery.json()).result.value as { sessionId: string; agentPreset: string }
+    expect(fresh.agentPreset).toBe('cordis')
+    expect([owner, child.sessionId]).not.toContain(fresh.sessionId)
+    const recovered = page.locator(`[data-conversation-session="${fresh.sessionId}"]`)
+    await recovered.locator('[data-composer-input]').waitFor()
+    expect(await recovered.getAttribute('data-content-phase')).toBe('hero')
+    expect((await recovered.locator('[data-composer-input]').innerText()).trim()).toBe('')
+    await page.locator(`[data-row-key="session:${owner}"]`).click()
+    await conversation.getByRole('button', { name: /^Select model, current Mock Model A/ }).waitFor()
+    await conversation.getByText('E2E_CREATOR_DONE restored-call', { exact: true }).waitFor()
+    expect(await composer.innerText()).toBe(creatorDraft)
+    expect(errors).toEqual([])
   } finally {
     if (existsSync(results)) writeFileSync(join(evidence, 'results.jsonl'), readFileSync(results))
     await browser?.close()

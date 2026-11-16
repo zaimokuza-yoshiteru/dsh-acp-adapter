@@ -1,4 +1,5 @@
 import { createElement as h, useEffect, useRef, useState } from 'react'
+import { nextIndependentAction } from '../coordinator/native-session-navigation.ts'
 import type { ReactNode } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
@@ -300,7 +301,8 @@ export function AcpRecoveryDock({
   }
 
   const ungrouped = navigation === 'ungrouped' || navigation === 'ungrouped-open-failed'
-  const reopen = ungrouped || navigation === 'open-failed'
+  const nextAction = nextIndependentAction(navigation)
+  const reopen = nextAction === 'open-existing'
   const detail = [recovery.kind, recovery.cause, recovery.detail, actionError]
     .filter((part): part is string => typeof part === 'string' && part.length > 0)
     .join('\n\n')
@@ -440,14 +442,30 @@ export function AcpRecoveryDock({
         recoveryChoice(
           'new-session',
           'outline',
-          t(reopen ? 'unroutedHistoryOpen' : 'recoveryNew'),
-          t(ungrouped ? 'unroutedHistoryUngrouped' : 'recoveryNewExplanation'),
+          t(
+            navigation === 'create-unknown'
+              ? 'independentCheckCreated'
+              : navigation === 'preset-unavailable'
+                ? 'independentUseDefault'
+                : reopen
+                  ? 'unroutedHistoryOpen'
+                  : 'recoveryNew',
+          ),
+          t(
+            navigation === 'preset-unavailable'
+              ? 'independentPresetUnavailable'
+              : navigation === 'create-unknown'
+                ? 'independentCreationUnknown'
+                : ungrouped
+                  ? 'unroutedHistoryUngrouped'
+                  : 'recoveryNewExplanation',
+          ),
           t('recoveryBusy'),
           busy || !createAllowed,
           busyAction,
           () => {
             void run('new-session', async (isCurrent) => {
-              const outcome = await createNewSession(sessionId, isCurrent, ungrouped)
+              const outcome = await createNewSession(sessionId, () => isCurrent() && creationAccess.current, nextAction)
               if (isCurrent()) setNavigation(outcome)
             })
           },

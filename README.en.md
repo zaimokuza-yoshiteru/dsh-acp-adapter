@@ -48,7 +48,7 @@ The plugin ships with a snapshot of the [official ACP Agent catalog](https://age
 
 > If an Agent has no model catalog, select **Agent current configuration** to use its current settings.
 >
-> To change models in an established ACP session, start an independent session. The new session starts with an empty context. Your original history and drafts stay in the first session. You can still adjust reasoning effort on the same model.
+> Switching models in an established ACP session opens a blank session in the same mode. Your history and draft stay in the original session. You can adjust reasoning effort without leaving the session.
 
 Launch and sign-in commands for common Agents:
 

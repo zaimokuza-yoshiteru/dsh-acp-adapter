@@ -361,7 +361,7 @@ it('uses the destination workspace or global create grant instead of the source 
     const allowed = recoveryButton(h.recovery(), 'recoveryNew')
     expect(allowed.props.disabled).toBe(false)
     ;(allowed.props.onClick as () => void)()
-    expect(h.createNewSession).toHaveBeenCalledExactlyOnceWith('lead', expect.any(Function), false)
+    expect(h.createNewSession).toHaveBeenCalledExactlyOnceWith('lead', expect.any(Function), 'create')
   }
 })
 
@@ -372,7 +372,16 @@ it('offers opening the existing ungrouped session after a recovery attachment fa
   expect(labels).toContain('unroutedHistoryUngrouped')
   expect(labels).not.toContain('recoveryNew')
   ;(recoveryButton(view, 'unroutedHistoryOpen').props.onClick as () => void)()
-  expect(h.createNewSession).toHaveBeenCalledExactlyOnceWith('lead', expect.any(Function), true)
+  expect(h.createNewSession).toHaveBeenCalledExactlyOnceWith('lead', expect.any(Function), 'open-existing')
+})
+
+it('offers the default mode as an explicit alternate recovery action when the original mode is unavailable', () => {
+  const h = setup(true)
+  const view = h.recovery(false, 'preset-unavailable')
+  const button = recoveryButton(view, 'independentUseDefault')
+  expect(nodes(view).flatMap((node) => node.props.children ?? [])).toContain('independentPresetUnavailable')
+  ;(button.props.onClick as () => void)()
+  expect(h.createNewSession).toHaveBeenCalledExactlyOnceWith('lead', expect.any(Function), 'use-default')
 })
 
 it('offers only available model and creation actions in an imported history', () => {

@@ -17,6 +17,7 @@ export interface CrossBackendModelSelection {
 }
 
 export interface CrossBackendLocation {
+  readonly agentPreset?: string
   readonly workspaceId?: string
   readonly cwd?: string
 }
@@ -36,7 +37,13 @@ export interface CrossBackendTicket {
 }
 
 export type CrossBackendPhase =
-  'restore-source' | 'create-destination' | 'ungrouped-destination' | 'select-destination' | 'open-destination'
+  | 'restore-source'
+  | 'create-destination'
+  | 'create-unknown'
+  | 'preset-unavailable'
+  | 'ungrouped-destination'
+  | 'select-destination'
+  | 'open-destination'
 
 export interface CrossBackendFailure {
   readonly phase: CrossBackendPhase
@@ -50,7 +57,8 @@ export type CrossBackendResult =
 
 /** A confirmed creation carries the identity actually published by the Host. */
 type CrossBackendCreateResult =
-  { readonly sessionId: string; readonly attachmentError?: string } | { readonly message: string }
+  | { readonly sessionId: string; readonly attachmentError?: string }
+  | { readonly message: string; readonly presetUnavailable?: true; readonly uncertain?: true }
 
 export interface CrossBackendOperationResult {
   readonly ok: boolean
@@ -84,10 +92,12 @@ export function resolveCrossBackendLocation(
   sessionId: string,
   workspaces: readonly { workspaceId: string; sessionIds: readonly string[] }[],
   cwd: string | undefined,
+  recordedPreset?: unknown,
 ): CrossBackendLocation | undefined {
   const workspace = workspaces.find((candidate) => candidate.sessionIds.includes(sessionId))
-  if (workspace !== undefined) return { workspaceId: workspace.workspaceId }
-  if (typeof cwd === 'string' && cwd.length > 0) return { cwd }
+  const preset = typeof recordedPreset === 'string' && recordedPreset.length > 0 ? { agentPreset: recordedPreset } : {}
+  if (workspace !== undefined) return { workspaceId: workspace.workspaceId, ...preset }
+  if (typeof cwd === 'string' && cwd.length > 0) return { cwd, ...preset }
   return undefined
 }
 
@@ -155,7 +165,11 @@ export class CrossBackendTransactionController {
         return {
           ok: false,
           failure: {
-            phase: 'create-destination',
+            phase: created.presetUnavailable
+              ? 'preset-unavailable'
+              : created.uncertain
+                ? 'create-unknown'
+                : 'create-destination',
             message: messageOf(created.message, 'destination creation failed'),
             destinationSessionId: state.destinationSessionId,
           },
@@ -227,6 +241,12 @@ export class CrossBackendTransactionController {
     }
     this.states.delete(ticket.key)
     return { ok: true, destinationSessionId: '' }
+  }
+
+  /** Only the actual Host acknowledgement or a reconciled list row establishes a child. */
+  confirmedDestination(key: string): string | undefined {
+    const state = this.states.get(key)
+    return state?.destinationCreated && !state.opened ? state.destinationSessionId : undefined
   }
 
   /** Explicitly discard a completed/failed transaction after the UI is done. */

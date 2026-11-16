@@ -40,6 +40,7 @@ it('preserves real Agent model names even when a wire model collides with the cu
 
 it.each([
   [null, 'crossBackendNewModelSession'],
+  ['preset-unavailable', 'independentUseDefault'],
   ['ungrouped-destination', 'unroutedHistoryOpen'],
 ] as const)('offers the correct destination action after %s', (phase, actionLabel) => {
   const cancel = vi.fn()
@@ -81,7 +82,7 @@ it.each([
   expect(cancel).toHaveBeenCalledOnce()
   expect(confirm).not.toHaveBeenCalled()
   create!.props.onClick()
-  expect(confirm).toHaveBeenCalledOnce()
+  expect(confirm).toHaveBeenCalledExactlyOnceWith('change', phase === 'preset-unavailable')
 })
 
 it('explains that the original Agent must be restored to continue a retired session', () => {

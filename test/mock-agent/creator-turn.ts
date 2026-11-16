@@ -17,6 +17,7 @@ export interface CreatorRecord {
   sessionId: string
   kind: 'directory' | 'call' | 'complete' | 'failure'
   names?: string[]
+  model?: string | null
   name?: string
   text?: string
 }
@@ -56,7 +57,11 @@ export async function creatorTurn(session: MockSession, msg: PromptMessage, peer
           }),
     )
     const names = (await client.listTools()).tools.map(({ name }) => name)
-    record({ kind: 'directory', names })
+    record({
+      kind: 'directory',
+      names,
+      model: session.configOptions?.find((option) => option.id === 'model')?.currentValue ?? null,
+    })
     for (const name of ['skill', 'cordis_inspect_list', 'cordis_inspect_query', 'plugin_manager']) {
       if (!names.includes(name)) throw new Error(`Creator capability missing: ${name}`)
     }

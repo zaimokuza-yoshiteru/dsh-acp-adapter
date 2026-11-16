@@ -251,6 +251,7 @@ export async function installInstalledProfileRegistry(
   const executionFacts = await ctx.plugin(AcpSessionFacts)
   ctx.fiber.assertActive()
   const registrations = new Map<string, AdapterRegistrationHandle>()
+  let routeGenerations = new Map<string, { identity: string; generation: string }>()
   const ownsProvider = (provider: string): boolean => {
     const id = acpAgentIdFromRoute(provider)
     return id !== undefined && registrations.has(id)
@@ -543,6 +544,8 @@ export async function installInstalledProfileRegistry(
         // Settings panel's targeted check is always reported as unknown.
         agents: () => new Map(Object.entries(agents)),
         registeredProviders: () => [...registrations.keys()].map(acpRouteId),
+        registeredProviderGenerations: () =>
+          Object.fromEntries([...routeGenerations].map(([route, { generation }]) => [route, generation])),
         // Health delegates to the exact adapter registered for the profile;
         // this keeps Settings and the stock ModelPicker on one cache/key and
         // one in-flight probe. There is deliberately no detached fallback.
@@ -712,12 +715,9 @@ export async function installInstalledProfileRegistry(
     // runtime edits. Values are hashed and never enter the registration key.
     const identities = Object.entries(availableAgents)
       .sort(([left], [right]) => left.localeCompare(right))
-      .map(([id, config]) => [id, profileLaunchIdentityHash(id, config)])
+      .map(([id, config]) => [id, profileLaunchIdentityHash(id, config)] as const)
     const key = JSON.stringify({ facts, identities })
     if (key === registeredKey) {
-      // Registration facts intentionally ignore runtime settings such as env
-      // and args. Still publish the new active snapshot so the route adapter
-      // sees the next immutable generation on its next call.
       activeAgents = { ...availableAgents }
       return
     }
@@ -832,6 +832,18 @@ export async function installInstalledProfileRegistry(
       if (adapter !== undefined) void closeProfile(adapter).catch(() => undefined)
       profileAdapters.delete(id)
     }
+    // Advance only after the whole registration succeeds. A rename or catalog
+    // refresh keeps its generation; reinstating even the same command gets a new one.
+    routeGenerations = new Map(
+      identities.map(([id, identity]) => {
+        const route = acpRouteId(id)
+        const previous = routeGenerations.get(route)
+        return [
+          route,
+          previous?.identity === identity ? previous : { identity, generation: globalThis.crypto.randomUUID() },
+        ]
+      }),
+    )
     registeredKey = key
   }
 
@@ -880,6 +892,7 @@ export async function installInstalledProfileRegistry(
           }
         }
         registrations.clear()
+        routeGenerations.clear()
         const results = await Promise.allSettled([...profileAdapters.values()].map(closeProfile))
         for (const result of results) {
           if (result.status === 'rejected')

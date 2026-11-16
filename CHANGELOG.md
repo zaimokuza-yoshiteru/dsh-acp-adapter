@@ -9,6 +9,7 @@ Find installation commands, release dates, and package checksums on [GitHub Rele
 ### 中文
 
 - 兼容 DSH `0.2.2-rc.3`。
+- 切换模型或从恢复页另开会话时沿用原模式。建好空白会话后所选模型消失时，可以从原会话打开它并重新选模。
 - 切换工作目录时，若 Agent 已成功分叉但本地保存中断，重试会保存同一个子会话，避免会话误锁或重复分叉。
 - 原生主会话可以管理有访问权限的 ACP 子成员。纯原生团队隐藏 ACP 成员设置。
 - 打开没有已选模型的导入对话时，若默认模型为 ACP，输入区会按当前权限与可用模型，提示如何继续原对话或另开独立 ACP 会话。
@@ -16,6 +17,7 @@ Find installation commands, release dates, and package checksums on [GitHub Rele
 ### English
 
 - Support DSH `0.2.2-rc.3`.
+- New sessions opened from model switching or recovery keep the original mode. If the selected model disappears after creation, you can open the blank session from the original conversation and choose another model.
 - If an Agent forks successfully during a working directory change but saving the result fails, retrying saves the same child session.
 - Native lead sessions can manage their accessible ACP members. Teams with only native members hide ACP member settings.
 - When the default model is ACP, an imported conversation without a selected model offers the available choices for continuing with a native model or starting an independent ACP session.

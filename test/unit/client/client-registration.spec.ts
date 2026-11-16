@@ -18,6 +18,7 @@ describe('client contribution', () => {
       'configForms',
       'remote.settings',
       'remote.session',
+      'remote.workspace',
     ])
   })
 
@@ -34,10 +35,15 @@ describe('client contribution', () => {
     const lifecycle: string[] = []
     const child = Promise.withResolvers<SessionId>()
     const openSession = vi.fn()
+    let mayReadChild = false
     const sessions = {
       create: vi.fn(() => child.promise),
+      binding: () => undefined,
       list: {
-        getSnapshot: () => ({ byId: {}, projectionsBySession: {} }),
+        getSnapshot: () => ({
+          byId: { source: { id: 'source', projectionValues: { agentPreset: 'cordis' } } },
+          projectionsBySession: {},
+        }),
         subscribe: () => () => {},
       },
     }
@@ -73,6 +79,7 @@ describe('client contribution', () => {
         }),
       },
       sessions,
+      remoteAccess: { source: () => ({ getSnapshot: () => mayReadChild }) },
       workspaces,
       uiWorkspace: { openSession },
       effect: (fn: () => unknown) => {
@@ -90,7 +97,14 @@ describe('client contribution', () => {
         register: (value: unknown) => value,
         registerFactory: () => () => {},
       },
-      get: (name: string) => (name === 'sessions' ? sessions : name === 'workspaces' ? workspaces : {}),
+      get: (name: string) =>
+        name === 'sessions'
+          ? sessions
+          : name === 'workspaces'
+            ? workspaces
+            : name === 'remoteAccess'
+              ? ctx.remoteAccess
+              : undefined,
     }
     const uiInjects: string[][] = []
     Object.assign(ctx, {
@@ -145,14 +159,21 @@ describe('client contribution', () => {
     }
     const { createNewSession } = recovery.inject()
     let selected = true
-    const create = createNewSession(SessionId('source'), () => selected, false)
+    const create = createNewSession(SessionId('source'), () => selected, 'create')
     selected = false
     child.resolve(SessionId('published'))
     await create
     expect(openSession).not.toHaveBeenCalled()
-    await createNewSession(SessionId('source'), () => true, false)
+    expect(await createNewSession(SessionId('source'), () => true, 'create')).toBe('open-failed')
+    expect(openSession).not.toHaveBeenCalled()
+    mayReadChild = true
+    await createNewSession(SessionId('source'), () => true, 'create')
     expect(openSession).toHaveBeenCalledExactlyOnceWith('published')
-    expect(sessions.create).toHaveBeenCalledOnce()
+    expect(sessions.create).toHaveBeenCalledExactlyOnceWith({
+      sessionId: expect.any(String),
+      workspaceId: 'w',
+      agentPreset: 'cordis',
+    })
     await dispose()
     expect(lifecycle).toEqual(['mount', 'ui-dispose', 'dispose'])
   })

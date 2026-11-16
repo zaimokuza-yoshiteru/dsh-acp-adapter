@@ -418,11 +418,14 @@ describe('real Cordis ACP composition settings lifecycle', () => {
 
     expect(routeCalls).toEqual([['acp-codex']])
     const remote = ctx.get('dshAcp' as never) as unknown as {
+      ownedProviderRoutes(): Promise<{ generations: Record<string, string> }>
       health(request?: unknown): Promise<{ providers: Array<{ id: string }> }>
       activitySnapshot(sessionId: string, request?: unknown): Promise<unknown>
       toolApprovalPolicy(sessionId: string): Promise<{ policy: 'auto' | 'ask'; source: string; editable: boolean }>
       setToolApprovalPolicy(sessionId: string, request: { policy: 'auto' | 'ask' }): Promise<unknown>
     }
+    const initialRegistration = (await remote.ownedProviderRoutes()).generations['acp-codex']
+    expect(initialRegistration).toEqual(expect.any(String))
     // Opening Settings is cache-only: it may resolve executable presence but
     // must not spawn either an ACP probe or a `--version` helper.
     await expect(remote.health()).resolves.toMatchObject({
@@ -440,6 +443,8 @@ describe('real Cordis ACP composition settings lifecycle', () => {
     })
     expect(versionTerminations).toBe(1)
     failVersionProvider = false
+    await settings.replace({ agents: { codex: agent('Renamed', 'codex-acp') } })
+    expect((await remote.ownedProviderRoutes()).generations['acp-codex']).toBe(initialRegistration)
 
     // The parent SessionStore is intentionally empty in this fixture. A
     // persisted activity owner must still be readable after a cold reload;
@@ -593,6 +598,14 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       editable: true,
     })
 
+    await settings.replace({ agents: { codex: agent('Codex', 'replacement-acp') } })
+    const replacement = (await remote.ownedProviderRoutes()).generations['acp-codex']
+    expect(replacement).toEqual(expect.any(String))
+    expect(replacement).not.toBe(initialRegistration)
+    await settings.replace({ agents: {} })
+    expect((await remote.ownedProviderRoutes()).generations).toEqual({})
+    await settings.replace({ agents: { codex: agent('Codex', 'replacement-acp') } })
+    expect((await remote.ownedProviderRoutes()).generations['acp-codex']).not.toBe(replacement)
     await settings.replace({ agents: { devin: agent('Devin', 'devin') } })
     expect(routeCalls).toContainEqual(['acp-codex'])
     expect(routeCalls).toContainEqual(['acp-devin'])

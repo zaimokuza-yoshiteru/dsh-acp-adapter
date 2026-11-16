@@ -15,6 +15,10 @@ import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import {
   independentSessionNavigation,
+  reconcileIndependentChild,
+  openIndependentChild,
+  sourcePresetUnavailable,
+  type IndependentSessionAction,
   isMainSession,
   openSubagentAside,
 } from './coordinator/native-session-navigation.ts'
@@ -36,6 +40,7 @@ import { UnroutedHistoryDock } from './ui/UnroutedHistoryDock.ts'
 import { CrossBackendCoordinator } from './coordinator/cross-backend-coordinator.ts'
 import { AcpNativeForkCoordinator, type NativeForkFailure } from './coordinator/native-fork.ts'
 import { createNativeForkJournal } from './coordinator/native-fork-journal.ts'
+import { CreatedSessionDock } from './ui/CreatedSessionDock.ts'
 import { CrossBackendModal } from './ui/CrossBackendModal.ts'
 import { AcpOutcomeToast } from './ui/AcpOutcomeToast.ts'
 import { AcpRecoveryDock } from './ui/AcpRecoveryDock.ts'
@@ -102,6 +107,7 @@ export const inject = [
   'configForms',
   'remote.settings',
   'remote.session',
+  'remote.workspace',
 ] as const
 
 const forkOutcomes: Readonly<Record<NativeForkFailure, AcpUiOutcome>> = {
@@ -426,25 +432,19 @@ async function registerUi(ctx: ClientContext): Promise<void> {
   })
   const openIndependentSession = independentSessionNavigation(
     sessions,
-    (source) =>
-      resolveCrossBackendLocation(
+    (source) => {
+      const row = sessions.list.getSnapshot().byId[source]
+      return resolveCrossBackendLocation(
         source,
         workspaces.list.getSnapshot().items,
-        sessions.list.getSnapshot().byId[source]?.cwd,
-      ),
-    (child) => ctx.uiWorkspace.openSession(child),
-    async (child, location) => {
-      await sessions.refresh()
-      const list = sessions.list.getSnapshot()
-      if (list.phase !== 'ready') throw new Error('Session list unavailable')
-      if (list.byId[child] === undefined) return 'missing'
-      return location.workspaceId !== undefined &&
-        !workspaces.list
-          .getSnapshot()
-          .items.some((row) => row.workspaceId === location.workspaceId && row.sessionIds.includes(child))
-        ? 'ungrouped'
-        : 'created'
+        row?.cwd,
+        row?.projectionValues?.agentPreset,
+      )
     },
+    (child) => openIndependentChild(ctx, child),
+    (child, location) => reconcileIndependentChild(ctx, child, location),
+    (preset) => sourcePresetUnavailable(ctx, preset),
+    (repair, child, current) => repair.run(ctx, child, current),
   )
   ctx.inject(['modelDirectories'], (scope) =>
     scope.slots.inject('conversation.input.dock', () =>
@@ -457,12 +457,24 @@ async function registerUi(ctx: ClientContext): Promise<void> {
           inject: (sessionId) => ({
             directory: scope.modelDirectories.directoryFor(sessionId).store,
             hooks: { routeOwnership: managedRoutes.store },
-            openIndependent: (current: () => boolean, openUngrouped: boolean) =>
-              openIndependentSession(sessionId, () => current() && isMainSession(sessions, sessionId), openUngrouped),
+            openIndependent: (current: () => boolean, action: IndependentSessionAction) =>
+              openIndependentSession(sessionId, () => current() && isMainSession(sessions, sessionId), action),
           }),
         },
         UnroutedHistoryDock,
       ),
+    ),
+  )
+  ctx.slots.inject('conversation.input.dock', () =>
+    ctx.slots.register(
+      {
+        name: 'conversation.input.dock',
+        id: 'dsh-acp-created-session',
+        order: 86,
+        locale: 'acpActivity',
+        inject: () => ({ coordinator, sessionAccessSource }),
+      },
+      CreatedSessionDock,
     ),
   )
   ctx.effect(() => coordinator.start(), 'dsh-acp: model transition coordinator')

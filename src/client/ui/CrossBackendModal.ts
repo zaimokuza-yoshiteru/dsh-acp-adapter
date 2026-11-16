@@ -78,6 +78,8 @@ export function CrossBackendModal({
             target: crossBackendSelectionLabel(target, catalog, profileName(target.provider), t),
           })} ${t('crossBackendDescription')}`
   const phaseKey: Record<CrossBackendPhase, AcpLocaleKey> = {
+    'create-unknown': 'independentCreationUnknown',
+    'preset-unavailable': 'independentPresetUnavailable',
     'restore-source': 'crossBackendFailureRestore',
     'create-destination': 'crossBackendFailureCreate',
     'ungrouped-destination': 'unroutedHistoryUngrouped',
@@ -127,17 +129,21 @@ export function CrossBackendModal({
             variant: 'primary',
             disabled: pending.busy || !pending.confirmable,
             onClick: () => {
-              void coordinator.confirm()
+              void coordinator.confirm(pending.ticket.key, pending.failure?.phase === 'preset-unavailable')
             },
           },
           pending.busy
             ? t('crossBackendWorking')
             : t(
-                hasDestination
-                  ? 'unroutedHistoryOpen'
-                  : modelSwitch
-                    ? 'crossBackendNewModelSession'
-                    : 'crossBackendContinue',
+                pending.failure?.phase === 'create-unknown'
+                  ? 'independentCheckCreated'
+                  : pending.failure?.phase === 'preset-unavailable'
+                    ? 'independentUseDefault'
+                    : hasDestination
+                      ? 'unroutedHistoryOpen'
+                      : modelSwitch
+                        ? 'crossBackendNewModelSession'
+                        : 'crossBackendContinue',
               ),
         ),
       ),

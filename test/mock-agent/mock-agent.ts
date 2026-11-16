@@ -355,6 +355,12 @@ const PERMISSION_OPTIONS = [
 ]
 
 // ---------- 会话 ----------
+function nextSessionId(): string {
+  // Multi-process scenarios compare identities even after a plugin restart.
+  if (process.env.MOCK_UNIQUE_SESSION_IDS === '1') return `mock-session-${globalThis.crypto.randomUUID()}`
+  return `mock-session-${++state.sessionSeq}`
+}
+
 function createSession(id: string, cwd: string) {
   const session: MockSession = {
     id,
@@ -443,7 +449,7 @@ async function handleSessionNew(msg: MockRequest) {
   }
   const delay = intEnv('MOCK_SESSION_NEW_DELAY_MS', 0)
   if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay))
-  const session = createSession(`mock-session-${++state.sessionSeq}`, msg.params?.cwd ?? '/mock/cwd')
+  const session = createSession(nextSessionId(), msg.params?.cwd ?? '/mock/cwd')
   session.mcpServers = sessionMcpServers(msg)
   // 对齐 devin 实测流量（research/probe-output.log L55-58 先于 session/new 响应）：
   // 先主动推厂商扩展通知 + config_option_update + current_mode_update 快照，再回响应
@@ -505,7 +511,7 @@ function handleSessionFork(msg: MockRequest) {
   const parent = getSession(msg)
   if (!parent) return
   if (!ADVERTISE_FORK) return respondError(msg.id, -32601, 'Method not found: session/fork')
-  const child = createSession(`mock-session-${++state.sessionSeq}`, msg.params?.cwd ?? parent.cwd)
+  const child = createSession(nextSessionId(), msg.params?.cwd ?? parent.cwd)
   child.configOptions = parent.configOptions ? JSON.parse(JSON.stringify(parent.configOptions)) : null
   child.modes = parent.modes ? JSON.parse(JSON.stringify(parent.modes)) : null
   log(`session/fork parent=${parent.id} child=${child.id}`)

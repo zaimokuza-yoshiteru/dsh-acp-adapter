@@ -243,6 +243,8 @@ export interface AcpHostVersionMismatchView {
 export interface AcpOwnedRoutesView {
   /** Live routes registered by this plugin on the Host. */
   readonly providers: readonly string[]
+  /** Opaque registration lifetimes. An existing user choice cannot authorize a replacement Agent. */
+  readonly generations?: Readonly<Record<string, string>>
   /** Routes referenced by stored bindings. Only a session-specific record proves historical ownership. */
   readonly historicalProviders: readonly string[]
 }

@@ -9,12 +9,13 @@ import { LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmModelInfo, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 
 class SearchFixture extends LlmAdapter {
+  offerModelOne = true
   override providerInfo(provider: string) {
     return { id: provider, name: 'Search fixture' }
   }
   override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     return Promise.resolve([
-      { provider, id: 'one', name: 'Model One' },
+      ...(this.offerModelOne ? [{ provider, id: 'one', name: 'Model One' }] : []),
       { provider, id: 'two', name: 'Model Two' },
       { provider, id: 'three', name: 'Model Three' },
       { provider, id: 'four', name: 'Model Four' },
@@ -62,7 +63,8 @@ it('keeps native search and reasoning usable while model changes offer an indepe
       },
     })
     await expect.poll(() => host.ctx.llm.listProviders().some((route) => route.id === provider)).toBe(true)
-    host.ctx.effect(() => host.ctx.llm.registerAdapter(['native-search-fixture'], new SearchFixture()))
+    const searchFixture = new SearchFixture()
+    host.ctx.effect(() => host.ctx.llm.registerAdapter(['native-search-fixture'], searchFixture))
     await host.ctx.agentDefaultModel.saveSelection({ provider, model: 'mock-model-a' })
     browser = await launchBrowser({
       headless: true,
@@ -146,6 +148,40 @@ it('keeps native search and reasoning usable while model changes offer an indepe
       .split('\n')
       .find((line) => line.includes('E2E_MESSAGE_AFTER_NATIVE_SELECTION'))
     expect(selectedTurn).toContain('model=mock-model-b thought_level=high')
+
+    // The native picker accepted Model One on the source. Withdraw only that
+    // model before the destination tries to select it, leaving its provider live.
+    const sourceDraft = 'Keep this draft in Model B'
+    const composer = page.locator('[data-composer-input]').first()
+    await writeComposerDraft(page, composer, sourceDraft)
+    await selected.click()
+    await page.getByRole('menuitem', { name: /^Model/ }).click()
+    await page.getByRole('searchbox', { name: 'Search models…' }).fill('Model One')
+    await page.getByRole('menuitemradio', { name: 'Model One', exact: true }).click()
+    const changeAgent = page.getByRole('dialog', { name: 'Changing Agents requires an independent session' })
+    await changeAgent.waitFor()
+    searchFixture.offerModelOne = false
+    await changeAgent.getByRole('button', { name: 'Create an independent session', exact: true }).click()
+    const entry = page.locator('[data-acp-created-session]')
+    await entry.waitFor()
+    expect(await composer.innerText()).toBe(sourceDraft)
+    await page.setViewportSize({ width: 390, height: 844 })
+    for (const lang of ['zh', 'en'] as const) {
+      await host.ctx.settings.replace('locale', { preference: lang })
+      const link = entry.getByRole('button', {
+        name: lang === 'en' ? 'Open the created session' : '打开已创建的会话',
+        exact: true,
+      })
+      await link.waitFor()
+      await link.click({ trial: true })
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+      await capture(page, `withdrawn-model-${lang}-390.png`)
+    }
+    await entry.getByRole('button', { name: 'Open the created session', exact: true }).click()
+    await entry.waitFor({ state: 'hidden' })
+    await expect.poll(() => composer.innerText()).not.toContain(sourceDraft)
+    await expect.poll(() => page.locator(`[data-conversation-session="${independent}"]`).count()).toBe(0)
+    expect(await page.getByText('E2E_DONE mock-model-b', { exact: true }).count()).toBe(0)
     expect(errors).toEqual([])
   } finally {
     await browser?.close()
