@@ -8,7 +8,11 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent'
 import { EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER } from '../../../src/contract/external-subagent.ts'
-import { acpSessionView, readSessionFacts } from '../../../src/host/composition/session-facts.ts'
+import {
+  acpSessionView,
+  readSessionFacts,
+  retainAcpExecutionProjection,
+} from '../../../src/host/composition/session-facts.ts'
 import { installAcpExecutionProjection } from '../../support/session-facts.ts'
 import { sessionFactsSchema } from '../../../src/domain/session/session-facts.ts'
 import type { AcpReplayPayloadV1 } from '../../../src/domain/session/acp-replay-payload.ts'
@@ -341,6 +345,13 @@ describe('ACP execution SessionProjection integration', () => {
     const state = sessionFactsSchema.parse(restored.checkpoint.acpExecution?.val)
     expect(state.openSteps).toHaveLength(1)
     expect(state.turnOpen).toBe(true)
+  })
+
+  it('releases the retained projection handle with its disposer', async () => {
+    const handle = { stateOf: vi.fn(), readerFor: vi.fn(), dispose: vi.fn(async () => undefined) }
+    const release = retainAcpExecutionProjection(handle as never)
+    await release()
+    expect(handle.dispose).toHaveBeenCalledOnce()
   })
 
   it('uses only the compact replay marker shape in checkpoint state', async () => {

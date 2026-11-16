@@ -755,16 +755,28 @@ export async function createDshToolBridge(
     }
   }
   // One ACP prompt is one admission scope: resolve step conditions once and
-  // release the admitted set when that prompt ends (or the lease closes).
+  // release the admitted sets when that prompt ends (or the lease closes).
   let admittedTools: { readonly generation: number; readonly set: Promise<ResolvedToolSet | undefined> } | undefined
+  // A re-registration that keeps the lease live still replaces definition
+  // identities, and the Host admits only identities that match the live
+  // registry. Retired sets stay open until the prompt ends because a call that
+  // already captured one must remain dispatchable.
+  const retainedAdmissions = new Set<Promise<ResolvedToolSet | undefined>>()
+  const disposeAdmission = (pending: Promise<ResolvedToolSet | undefined>): void => {
+    void pending.then(
+      (set) => set?.dispose(),
+      () => undefined,
+    )
+  }
   const disposeAdmittedTools = (): void => {
+    admittedTools = undefined
+    for (const pending of retainedAdmissions) disposeAdmission(pending)
+    retainedAdmissions.clear()
+  }
+  const retireAdmittedTools = (): void => {
     const current = admittedTools
     admittedTools = undefined
-    if (current !== undefined)
-      void current.set.then(
-        (set) => set?.dispose(),
-        () => undefined,
-      )
+    if (current !== undefined) retainedAdmissions.add(current.set)
   }
   const admittedToolsForPrompt = async (): Promise<ResolvedToolSet | undefined> => {
     const signal = prompt
@@ -777,16 +789,9 @@ export async function createDshToolBridge(
         : undefined)
     if (selection === undefined) return undefined
     if (admittedTools?.generation !== promptGeneration) {
-      const generation = promptGeneration
       const set = tools.resolve({ agent, modelSelection: selection, signal })
-      admittedTools = { generation, set }
-      // A prompt that ended before resolution finished must not retain the set.
-      void set.then(
-        (resolved) => {
-          if (generation !== promptGeneration) resolved.dispose()
-        },
-        () => undefined,
-      )
+      admittedTools = { generation: promptGeneration, set }
+      retainedAdmissions.add(set)
     }
     return await admittedTools.set
   }
@@ -1800,9 +1805,11 @@ export async function createDshToolBridge(
   }
   listeners.push(
     ctx.on('tools/change', () => {
-      // A schema-equal re-registration stays live for the active prompt; any
-      // real restriction, removal or schema change still closes immediately.
+      // A schema-equal re-registration stays live for the active prompt but
+      // replaces the identities its admission was resolved from; the next call
+      // re-resolves. Any real restriction, removal or schema change closes.
       if (!live()) void lease.close()
+      else retireAdmittedTools()
     }),
   )
   listeners.push(

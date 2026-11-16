@@ -280,6 +280,7 @@ async function setup(
         calls: readonly { readonly id: string; readonly name: string; readonly arguments: string }[]
         agent: unknown
         signal: AbortSignal
+        toolSet?: unknown
       }) => {
         const call = input.calls[0]
         if (call === undefined) throw new Error('missing tool call')
@@ -289,6 +290,7 @@ async function setup(
           agent: input.agent,
           signal: input.signal,
           callId: call.id,
+          toolSet: input.toolSet,
         })) as { additionalContexts?: readonly unknown[]; concludesTurn?: boolean }
         return {
           results: [{ callId: call.id, result }],
@@ -1605,6 +1607,55 @@ describe('session-owned native Teams MCP bridge', () => {
     expect(fixture.lease.signal.aborted).toBe(true)
     await expect(fixture.client.callTool({ name: 'present', arguments: {} })).rejects.toThrow()
     expect(fixture.execute).toHaveBeenCalledOnce()
+  })
+
+  it('re-resolves tool admission after a schema-equal re-registration that keeps the prompt live', async () => {
+    const fixture = await setup('antigravity', ['present'], true)
+    // The Host admits only definitions whose identity still matches the live
+    // registry, so replacing a definition retires the set resolved before it.
+    const admissions: Array<{ closed: boolean }> = []
+    Object.assign(fixture.services.tools as object, {
+      resolve: async () => {
+        const admitted = new Map(fixture.definitions)
+        const admission = { closed: false }
+        admissions.push(admission)
+        return {
+          dispose: () => {
+            admission.closed = true
+          },
+          view: (scope: unknown) => {
+            const visible = new Map<string, unknown>()
+            if (admission.closed || scope !== fixture.agent) return visible
+            for (const [name, definition] of admitted)
+              if (fixture.definitions.get(name) === definition) visible.set(name, definition)
+            return visible
+          },
+        }
+      },
+    })
+    Object.assign(fixture.agent, { model: { current: () => ({ provider: 'deepseek', model: 'chat' }) } })
+    const executedAdmission = (): { view(scope: unknown): Map<string, unknown> } | undefined =>
+      (
+        fixture.execute.mock.calls.at(-1)?.[0] as
+          { toolSet?: { view(scope: unknown): Map<string, unknown> } } | undefined
+      )?.toolSet
+    fixture.lease.beginPrompt(new AbortController().signal)
+    await fixture.client.callTool({ name: 'present', arguments: {} })
+    expect(executedAdmission()?.view(fixture.agent).has('present')).toBe(true)
+
+    fixture.definitions.set('present', { ...fixture.definitions.get('present') })
+    fixture.listeners.get('tools/change')!()
+    expect(fixture.lease.signal.aborted).toBe(false)
+    // A call already dispatched keeps its admission, while the next call
+    // re-resolves the replacement definition instead of failing as UNKNOWN_TOOL.
+    expect(admissions[0]?.closed).toBe(false)
+    await expect(fixture.client.callTool({ name: 'present', arguments: {} })).resolves.toMatchObject({ isError: false })
+    expect(admissions).toHaveLength(2)
+    expect(executedAdmission()?.view(fixture.agent).has('present')).toBe(true)
+
+    fixture.lease.endPrompt()
+    await Promise.resolve()
+    expect(admissions.every((admission) => admission.closed)).toBe(true)
   })
 
   it('does not expose global tools hidden from this agent or team tools to non-members', async () => {

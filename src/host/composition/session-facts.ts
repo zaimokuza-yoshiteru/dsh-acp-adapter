@@ -42,13 +42,14 @@ let executionFactReader: ((session: Session) => SessionFacts) | undefined
  * Registration readiness is owned by the caller that awaited it, so a read
  * before retention fails closed instead of folding an unregistered unit.
  * @param handle - ready handle returned by `sessionProjections.register`.
- * @returns disposer clearing this reader.
+ * @returns disposer releasing the handle and clearing this reader.
  */
-export function retainAcpExecutionProjection(handle: ProjectionHandle<SessionFacts>): () => void {
+export function retainAcpExecutionProjection(handle: ProjectionHandle<SessionFacts>): () => Promise<void> {
   const read = (session: Session): SessionFacts => handle.stateOf(session)
   executionFactReader = read
-  return () => {
+  return async () => {
     if (executionFactReader === read) executionFactReader = undefined
+    await handle.dispose()
   }
 }
 

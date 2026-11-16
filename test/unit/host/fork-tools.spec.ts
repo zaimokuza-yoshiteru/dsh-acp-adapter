@@ -13,7 +13,11 @@ import { PtcRuntime, type PtcRunRequest, type PtcRunResult, type PtcRunSpec } fr
 import { installAcpForkTools } from '../../../src/host/composition/fork-tools.ts'
 
 const contexts: Context[] = []
+const pendingReleases: Array<() => void> = []
 afterEach(async () => {
+  // A deferred registration keeps its effect setup pending; release it before
+  // fiber disposal or the hook waits for a promise no test will resolve.
+  for (const release of pendingReleases.splice(0)) release()
   for (const ctx of contexts.splice(0)) await ctx.fiber.dispose()
 })
 
@@ -29,11 +33,35 @@ class ForkTestPtcRuntime extends PtcRuntime {
   }
 }
 
-async function harness(mode: 'native' | 'ptc' = 'native') {
+async function harness(mode: 'native' | 'ptc' = 'native', projections: 'real' | 'deferred' = 'real') {
   const ctx = new Context()
   contexts.push(ctx)
   await ctx.plugin(SessionStore)
-  await ctx.plugin(SessionProjectionRegistry)
+  // A deferred registry keeps the fork projection unregistered until the test
+  // releases it, exposing the activation window the guard must fail closed in.
+  const projectionHandles: Array<{ dispose: () => Promise<void> }> = []
+  let releaseRegistration: (() => void) | undefined
+  const releaseProjectionRegistration = (): void => {
+    const release = releaseRegistration
+    releaseRegistration = undefined
+    release?.()
+  }
+  if (projections === 'real') await ctx.plugin(SessionProjectionRegistry)
+  else {
+    pendingReleases.push(releaseProjectionRegistration)
+    ctx.provide('sessionProjections', {
+      register: () =>
+        new Promise((resolve) => {
+          const handle = {
+            stateOf: () => ({ completed: false, active: false }),
+            readerFor: () => () => ({ completed: false, active: false }),
+            dispose: vi.fn(async () => undefined),
+          }
+          projectionHandles.push(handle)
+          releaseRegistration = () => resolve(handle as never)
+        }),
+    } as never)
+  }
   await ctx.plugin(SystemPrompt, {})
   await ctx.plugin(ToolRuntime)
   if (mode === 'ptc') {
@@ -108,7 +136,18 @@ async function harness(mode: 'native' | 'ptc' = 'native') {
     if (settled === undefined) throw new Error('missing tool result')
     return settled.result
   }
-  return { ctx, bodies, register, removeFork, mount, agent, completed, execute }
+  return {
+    ctx,
+    bodies,
+    register,
+    removeFork,
+    mount,
+    agent,
+    completed,
+    execute,
+    projectionHandles,
+    releaseRegistration: releaseProjectionRegistration,
+  }
 }
 
 describe('ACP fork tool admission', () => {
@@ -182,6 +221,25 @@ describe('ACP fork tool admission', () => {
     expect((await h.execute(acp, 'subagent_fork', { provider: 'acp-demo', model: 'test' })).isError).toBe(true)
     removeScoped()
     expect((await h.execute(acp, 'subagent_fork', { provider: 'deepseek', model: 'native' })).isError).toBe(false)
+  })
+
+  it('rejects an ACP target until the fork projection is registered', async () => {
+    const h = await harness('native', 'deferred')
+    await h.mount()
+    const acp = await h.agent()
+    h.completed(acp)
+    const result = await h.execute(acp, 'subagent_fork', { provider: 'acp-demo', model: 'test' })
+    expect(result.isError).toBe(true)
+    expect(h.bodies.subagent_fork).not.toHaveBeenCalled()
+    h.releaseRegistration()
+  })
+
+  it('releases the fork projection when the guard is removed', async () => {
+    const h = await harness('native', 'deferred')
+    const plugin = await h.mount()
+    h.releaseRegistration()
+    await plugin.dispose()
+    expect(h.projectionHandles[0]?.dispose).toHaveBeenCalledOnce()
   })
 
   it('preserves the PTC SDK and checks the explicit target through real nested dispatch', async () => {

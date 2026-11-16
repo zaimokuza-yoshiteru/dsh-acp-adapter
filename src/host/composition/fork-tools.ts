@@ -8,6 +8,9 @@ import { acpAgentIdFromRoute } from '../../domain/session/agent-config.ts'
 const forkTurnSchema = z.object({ completed: z.boolean(), active: z.boolean() })
 type ForkTurnState = z.infer<typeof forkTurnSchema>
 
+/** Guidance shared by every rejected ACP-target fork call. */
+const FORK_UNAVAILABLE_SUFFIX = 'Use subagent with a complete, self-contained task or select a native child route.'
+
 declare module '@deepseek-ai/dsh-session-projection/types' {
   interface SessionProjectionStateMap {
     acpForkDelegation: ForkTurnState
@@ -43,8 +46,9 @@ export function installAcpForkTools(ctx: Context): void {
       const handle = await child.sessionProjections.register(forkTurnProjection)
       const read = (session: Session): ForkTurnState => handle.stateOf(session)
       readState = read
-      return () => {
+      return async () => {
         if (readState === read) readState = undefined
+        await handle.dispose()
       }
     }, '@zaimokuza/dsh-acp-adapter: fork-turn projection')
     child.tools.guard((exec) => {
@@ -58,9 +62,13 @@ export function installAcpForkTools(ctx: Context): void {
         acpAgentIdFromRoute(args.provider) === undefined
       )
         return
+      // The projection registers asynchronously; a fork requested before it is
+      // ready would bypass the completed-prefix check, so it fails closed.
       const state = readState?.(exec.agent.session)
-      if (state?.completed === true && state.active)
-        return 'ACP_DELEGATED_FORK_UNAVAILABLE: An ACP child cannot inherit the completed prefix of an active conversation. Use subagent with a complete, self-contained task or select a native child route.'
+      if (state === undefined)
+        return `ACP_DELEGATED_FORK_UNAVAILABLE: ACP fork admission is waiting for the session projection. ${FORK_UNAVAILABLE_SUFFIX}`
+      if (state.completed === true && state.active)
+        return `ACP_DELEGATED_FORK_UNAVAILABLE: An ACP child cannot inherit the completed prefix of an active conversation. ${FORK_UNAVAILABLE_SUFFIX}`
     })
   })
 }
