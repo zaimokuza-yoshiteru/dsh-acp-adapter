@@ -231,15 +231,21 @@ function fakeHarness(options: { failOnRoute?: string } = {}): FakeHarness {
   const errors: unknown[] = []
   const listeners = new Map<string, (...args: any[]) => any>()
   settings.onChange = () => listeners.get('loader/volatile-update')?.([])
-  const scopedCtx = {
-    get: (name: string): unknown => (name === 'settings' ? settings : undefined),
-  }
+  const provided = new Map<string, unknown>()
+  const getService = (name: string): unknown => (name === 'settings' ? settings : provided.get(name))
+  const scopedCtx = { get: getService }
   const ctx = {
     on: (name: string, listener: (...args: any[]) => any) => {
       listeners.set(name, listener)
       return () => listeners.delete(name)
     },
-    get: (name: string): unknown => (name === 'settings' ? settings : undefined),
+    get: getService,
+    provide: (name: string, value: unknown): (() => Promise<void>) => {
+      provided.set(name, value)
+      return async () => {
+        provided.delete(name)
+      }
+    },
     inject: (deps: string[], callback: (sctx: unknown) => void): void => {
       if (deps.every((name) => scopedCtx.get(name) !== undefined)) callback(scopedCtx)
     },

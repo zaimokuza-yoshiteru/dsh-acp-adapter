@@ -351,12 +351,15 @@ describe('ACP execution SessionProjection integration', () => {
     const ctx = new Context()
     contexts.push(ctx)
     const handle = { stateOf: vi.fn(), readerFor: vi.fn(), dispose: vi.fn(async () => undefined) }
-    const release = retainAcpExecutionProjection(ctx, handle as never)
+    const retention = retainAcpExecutionProjection(ctx, handle as never)
     expect(readSessionFacts(ctx, {} as never)).toBeUndefined()
     expect(handle.stateOf).toHaveBeenCalledOnce()
-    await release()
+    await retention.release()
     expect(handle.dispose).toHaveBeenCalledOnce()
     expect(() => readSessionFacts(ctx, {} as never)).toThrow('ACP execution projection is not ready')
+    // An accepted transaction may still read through the composition-owned
+    // reader after the published service is withdrawn.
+    expect(retention.read({} as never)).toBeUndefined()
   })
 
   it('uses only the compact replay marker shape in checkpoint state', async () => {

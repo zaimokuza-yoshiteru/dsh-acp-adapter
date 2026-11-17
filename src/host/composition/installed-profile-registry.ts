@@ -29,12 +29,7 @@ import type { AcpSidecar } from '../../persistence/sidecar.ts'
 import type { AcpNativeUserQuestionService } from '../../domain/policy/elicitation.ts'
 import type { AcpNativeQuestionBinding } from './profile-adapter.ts'
 import type { Session } from '@deepseek-ai/dsh-session'
-import {
-  acpExecutionProjection,
-  acpSessionView,
-  readSessionFacts,
-  retainAcpExecutionProjection,
-} from './session-facts.ts'
+import { acpExecutionProjection, acpSessionView, retainAcpExecutionProjection } from './session-facts.ts'
 import type { DispatchLedgerStore } from '../../runtime/session/dispatch-ledger.ts'
 import { resolveSubprocessSeam } from './subprocess.ts'
 import { AcpRemoteService } from '../../remote/service.ts'
@@ -250,7 +245,7 @@ export async function installInstalledProfileRegistry(
 ): Promise<InstalledProfileRegistry> {
   const toolBridgeKey = createDshToolBridgeKey()
   const executionProjection = await ctx.sessionProjections.register(acpExecutionProjection)
-  const releaseExecutionReader = retainAcpExecutionProjection(ctx, executionProjection)
+  const executionFacts = retainAcpExecutionProjection(ctx, executionProjection)
   let disposed = false
   const log = createAcpLogger(ctx.logger)
   const sidecar = installAcpSidecar(ctx)
@@ -724,7 +719,7 @@ export async function installInstalledProfileRegistry(
                             store,
                             context.parentDshSessionId,
                             parent,
-                            () => readSessionFacts(ctx, parent).turnOpen,
+                            () => executionFacts.read(parent).turnOpen,
                           ),
                       })
                       return result?.childSessionId
@@ -819,7 +814,7 @@ export async function installInstalledProfileRegistry(
   // Accepted projection/repair and final Activity writes retain their registry,
   // catalog, persistence scope and Sidecar until their final dependency use.
   ctx.effect(function* () {
-    yield releaseExecutionReader
+    yield executionFacts.release
     yield ctx.effect(() => async () => {
       try {
         await sidecar?.dispose()

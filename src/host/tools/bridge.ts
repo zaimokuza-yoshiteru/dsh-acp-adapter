@@ -1468,35 +1468,43 @@ export async function createDshToolBridge(
       promptGeneration++
       adapterPromptOrdinal = undefined
       presented.clear()
-      disposeAdmittedTools()
+      // The closed generation's bodies may still run until `drainPrompt`, and a
+      // PTC body resolves its nested calls while it runs; release them there.
+      retireAdmittedTools()
       // A definition reloaded during the prompt keeps it live there; once the
       // prompt is over, the stale binding can no longer serve later calls.
       if (!live()) void lease.close()
     },
     async drainPrompt() {
       const pending = [...drainingPrompts]
-      await Promise.all(
-        pending.map(async (scope) => {
-          while (scope.calls.size > 0)
-            await Promise.allSettled(
-              [...scope.calls].flatMap((call) => (call.promise === undefined ? [] : [call.promise])),
-            )
-          if ([...pendingFeedback.values()].some((entry) => entry.scope === scope))
-            throw new AcpHostSettlementError('ACP_HOST_FEEDBACK_COMMIT_FAILED', {
-              remoteOutcomeKnown: scope.remoteOutcomeKnown,
-            })
-          if (
-            scope.remoteOutcomeKnown &&
-            !scope.externallyAborted &&
-            scope.bodySignal?.aborted !== true &&
-            [...scope.terminalCalls].some((call) => call.abortedBeforeDispatch === true)
-          ) {
+      try {
+        await Promise.all(
+          pending.map(async (scope) => {
+            while (scope.calls.size > 0)
+              await Promise.allSettled(
+                [...scope.calls].flatMap((call) => (call.promise === undefined ? [] : [call.promise])),
+              )
+            if ([...pendingFeedback.values()].some((entry) => entry.scope === scope))
+              throw new AcpHostSettlementError('ACP_HOST_FEEDBACK_COMMIT_FAILED', {
+                remoteOutcomeKnown: scope.remoteOutcomeKnown,
+              })
+            if (
+              scope.remoteOutcomeKnown &&
+              !scope.externallyAborted &&
+              scope.bodySignal?.aborted !== true &&
+              [...scope.terminalCalls].some((call) => call.abortedBeforeDispatch === true)
+            ) {
+              drainingPrompts.delete(scope)
+              throw new AcpHostSettlementError('ACP_HOST_TOOL_NOT_DISPATCHED')
+            }
             drainingPrompts.delete(scope)
-            throw new AcpHostSettlementError('ACP_HOST_TOOL_NOT_DISPATCHED')
-          }
-          drainingPrompts.delete(scope)
-        }),
-      )
+          }),
+        )
+      } finally {
+        // `beginPrompt` disposes these before resolving a later prompt, so a
+        // concurrent start keeps its own admission.
+        if (prompt === undefined) disposeAdmittedTools()
+      }
     },
     async flushHostFeedback() {
       for (const [key, pending] of [...pendingFeedback]) {

@@ -1654,7 +1654,9 @@ describe('session-owned native Teams MCP bridge', () => {
     expect(executedAdmission()?.view(fixture.agent).has('present')).toBe(true)
 
     fixture.lease.endPrompt()
-    await Promise.resolve()
+    // Bodies admitted by the closed prompt stay dispatchable until they settle.
+    expect(admissions.every((admission) => admission.closed)).toBe(false)
+    await fixture.lease.drainPrompt?.()
     expect(admissions.every((admission) => admission.closed)).toBe(true)
   })
 

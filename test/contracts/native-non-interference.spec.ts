@@ -52,6 +52,7 @@ describe('native DSH non-interference contract', () => {
         watch: () => () => undefined,
       }),
     }
+    const provided = new Map<string, unknown>()
     const context = {
       sessionProjections: { register: () => () => undefined },
       get: (name: string) =>
@@ -59,7 +60,13 @@ describe('native DSH non-interference contract', () => {
           ? settings
           : name === 'dshHomePath'
             ? (...segments: string[]) => [home, ...segments].join('/')
-            : undefined,
+            : provided.get(name),
+      provide: (name: string, value: unknown) => {
+        provided.set(name, value)
+        return async () => {
+          provided.delete(name)
+        }
+      },
       inject: (deps: string[], callback: (ctx: unknown) => void) => {
         if (
           !deps.includes('settings') &&

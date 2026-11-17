@@ -36,6 +36,12 @@ export interface AcpSessionFactsReader {
   read(session: Session): SessionFacts
 }
 
+/** Composition-owned access to the ACP execution projection. */
+export interface RetainedAcpExecutionProjection extends AcpSessionFactsReader {
+  /** Withdraw the published reader and release the registration. */
+  release(): Promise<void>
+}
+
 declare module '@deepseek-ai/cordis' {
   interface Context {
     acpSessionFacts: AcpSessionFactsReader
@@ -47,18 +53,23 @@ declare module '@deepseek-ai/cordis' {
  * registered it, so a reload cannot read another composition's handle.
  * Registration readiness is owned by the caller that awaited it, so a read
  * before retention fails closed instead of folding an unregistered unit.
- * @param ctx - composition context that owns the reader.
+ * The returned reader stays usable after `release` for transactions the
+ * composition accepted before disposal drains them.
+ * @param ctx - composition context that publishes the reader.
  * @param handle - ready handle returned by `sessionProjections.register`.
- * @returns disposer withdrawing the reader and releasing the handle.
+ * @returns the composition-owned reader and its release.
  */
 export function retainAcpExecutionProjection(
   ctx: Context,
   handle: ProjectionHandle<SessionFacts>,
-): () => Promise<void> {
+): RetainedAcpExecutionProjection {
   const withdraw = ctx.provide('acpSessionFacts', { read: (session) => handle.stateOf(session) })
-  return async () => {
-    await withdraw()
-    await handle.dispose()
+  return {
+    read: (session) => handle.stateOf(session),
+    release: async () => {
+      await withdraw()
+      await handle.dispose()
+    },
   }
 }
 
