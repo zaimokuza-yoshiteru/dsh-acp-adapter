@@ -54,7 +54,7 @@ npx @deepseek-ai/dsh@0.2.2-rc.3 plugin --profile web add @zaimokuza/dsh-acp-adap
 
 | Agent                      | ACP 命令                                                | 认证               |
 | -------------------------- | ------------------------------------------------------- | ------------------ |
-| Devin (3000.12.43+)        | `devin acp`                                             | `devin auth login` |
+| Devin (3000.14.30821+)     | `devin acp`                                             | `devin auth login` |
 | CodeBuddy CLI（WorkBuddy） | `codebuddy --acp`                                       | `codebuddy`        |
 | Antigravity                | `agy_acp_server.par`（Windows 为 `agy_acp_server.exe`） | ACP 独立登录       |
 | Claude                     | `claude-agent-acp`                                      | `claude`           |

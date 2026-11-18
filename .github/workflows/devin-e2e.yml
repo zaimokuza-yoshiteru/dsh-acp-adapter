@@ -9,7 +9,7 @@ on:
         required: true
         default: false
 
-run-name: Real Devin 3000.12.43 (${{ github.ref_name }})
+run-name: Real Devin (${{ github.ref_name }})
 
 permissions:
   contents: read

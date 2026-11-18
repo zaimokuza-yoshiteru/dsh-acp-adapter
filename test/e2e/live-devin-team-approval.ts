@@ -15,7 +15,7 @@ import { summarizeRawInputForAudit } from '../../src/domain/policy/events.ts'
 import {
   exactOnceOption,
   intactPermissionInput,
-  isKnownDevinManualTitleRequest,
+  matchesPinnedDevinManualRequest,
   permitsDevinTeamTool,
   type DevinTeamScope,
 } from './live-devin-team-scope.ts'
@@ -348,7 +348,7 @@ export function installLiveDevinTeamApprovals({
       )
         identity = 'devin-meta'
       else {
-        if (manualTitle === undefined || !isKnownDevinManualTitleRequest(manualTitle.cliVersion, row.data, bridge))
+        if (manualTitle === undefined || !matchesPinnedDevinManualRequest(manualTitle.cliVersion, row.data, bridge))
           return fail('LIVE_TEAM_MANUAL_PERMISSION_IDENTITY_UNPROVEN')
         check.stage = 'isolated-session-mcp'
         await manualTitle.assertIsolatedSessionMcp(required(owner.session.header.cwd))

@@ -1,16 +1,17 @@
+import { devinCiRelease } from '../../scripts/devin-ci-release.ts'
 import type { PermissionOption } from '@agentclientprotocol/sdk'
 import { summarizeRawInputForAudit } from '../../src/domain/policy/events.ts'
 import type { AcpPermissionAskedAuditData, AcpPermissionCheckAuditData } from '../../src/domain/policy/events.ts'
 
-/** This single observed CLI's manual UI contract, never an Auto-policy identity rule. */
-export function isKnownDevinManualTitleRequest(
+/** Only the pinned test binary and an exact native question can enter the isolated fixture's manual UI path. */
+export function matchesPinnedDevinManualRequest(
   cliVersion: string,
   asked: AcpPermissionAskedAuditData,
   bridge: AcpPermissionCheckAuditData,
 ): boolean {
   const tool = bridge.toolName
   if (
-    cliVersion !== '3000.12.43' ||
+    cliVersion !== devinCiRelease.version ||
     tool === undefined ||
     !/^[a-z_]+$/.test(tool) ||
     bridge.reason !== 'approval-required' ||

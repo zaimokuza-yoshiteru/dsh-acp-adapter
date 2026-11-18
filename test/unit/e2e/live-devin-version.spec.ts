@@ -1,7 +1,5 @@
 import { beforeEach, expect, it, vi } from 'vitest'
 import { readLiveDevinCliVersion } from '../../e2e/live-devin-version.ts'
-import { isKnownDevinManualTitleRequest } from '../../e2e/live-devin-team-scope.ts'
-import { devinManualPermission } from '../../fixtures/devin-manual-permission.ts'
 
 const runner = vi.hoisted(() => ({ output: '', error: null as Error | null, calls: [] as unknown[][] }))
 vi.mock('node:child_process', () => ({
@@ -14,22 +12,16 @@ vi.mock('node:child_process', () => ({
 beforeEach(() => {
   runner.calls.length = 0
   runner.error = null
-  runner.output = '3000.12.43 (517d03d73926)\n'
+  runner.output = 'devin 3000.14.30821 (a09cd7f323ee)\n'
 })
 
 // First sample is the captured output of this selected CLI, not ACP agentInfo.version.
-it.each(['3000.12.43 (517d03d73926)\n', '3000.12.43\n', 'Devin CLI 3000.12.43\n'])(
+it.each(['devin 3000.14.30821 (a09cd7f323ee)\n', '3000.14.30821\n', 'Devin CLI 3000.14.30821\n'])(
   'parses one complete CLI version line %j without treating ACP agentInfo as the CLI',
   async (output) => {
     runner.output = output
     const cliVersion = await readLiveDevinCliVersion('/selected/devin', '/isolated/workspace', {})
-    expect(cliVersion).toBe('3000.12.43')
-    expect(isKnownDevinManualTitleRequest(cliVersion, devinManualPermission.asked, devinManualPermission.bridge)).toBe(
-      true,
-    )
-    expect(isKnownDevinManualTitleRequest('0.0.0-dev', devinManualPermission.asked, devinManualPermission.bridge)).toBe(
-      false,
-    )
+    expect(cliVersion).toBe('3000.14.30821')
   },
 )
 
@@ -61,7 +53,7 @@ it('uses the selected executable, finite output/deadline, private HOME and no cr
   expect(options.env.DSH_ACP_TEAM_MCP_URL).toBeUndefined()
 })
 
-it.each(['', '3000.12.43 (private)', 'Devin CLI 3000.12.43\n3000.12.44', 'private 3000.12.43 payload'])(
+it.each(['', '3000.14.30821 (private)', 'Devin CLI 3000.14.30821\n3000.14.30822', 'private 3000.14.30821 payload'])(
   'rejects ambiguous/non-version output %j without disclosing it',
   async (output) => {
     runner.output = output

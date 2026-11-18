@@ -54,7 +54,7 @@ Launch and sign-in commands for common Agents:
 
 | Agent                     | ACP command                                            | Authentication       |
 | ------------------------- | ------------------------------------------------------ | -------------------- |
-| Devin (3000.12.43+)       | `devin acp`                                            | `devin auth login`   |
+| Devin (3000.14.30821+)    | `devin acp`                                            | `devin auth login`   |
 | CodeBuddy CLI (WorkBuddy) | `codebuddy --acp`                                      | `codebuddy`          |
 | Antigravity               | `agy_acp_server.par` (`agy_acp_server.exe` on Windows) | Separate ACP sign-in |
 | Claude                    | `claude-agent-acp`                                     | `claude`             |
