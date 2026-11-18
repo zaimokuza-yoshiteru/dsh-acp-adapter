@@ -2,6 +2,7 @@ import { expect, it } from 'vitest'
 import { AcpSessionRuntime } from '../../../src/runtime/session/session-runtime.ts'
 import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts'
 import { openCodeQuestionFixture } from '../../fixtures/opencode-question.ts'
+import { isOpenCodeQuestion } from '../../../src/agents/compatibility.ts'
 
 it('correlates only the current OpenCode question after its input arrives as a separate patch', async () => {
   const { tool, request } = openCodeQuestionFixture()
@@ -32,8 +33,8 @@ it('correlates only the current OpenCode question after its input arrives as a s
     config: { command: argv[0]!, args: argv.slice(1), env: {} },
     subprocess: (await sharedTestSubprocess()).seam,
     prepareLaunch: async () => ({ argv, env: {}, spawnPlan: { argv, env: {} } }),
-    onElicitationRequest: async (_params, _signal, _hostTool, _call, openCodeQuestion) => {
-      observed.push(openCodeQuestion === true)
+    onElicitationRequest: async (params, _signal, _hostTool, _call, agentTool) => {
+      observed.push(isOpenCodeQuestion(agentTool?.agentName, params, agentTool?.toolCall))
       return { action: 'cancel' }
     },
   })

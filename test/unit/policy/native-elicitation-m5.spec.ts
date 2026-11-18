@@ -445,6 +445,9 @@ describe('native ACP form elicitation bridge (M5c)', () => {
       expect(isOpenCodeQuestion('OpenCode', request, { ...tool, rawInput: {} })).toBe(false)
       const properties = request.requestedSchema.properties
       for (const requestedSchema of [
+        {},
+        { properties: null },
+        { properties: [] },
         { ...request.requestedSchema, properties: { ...properties, notes: { type: 'string' as const } } },
         {
           ...request.requestedSchema,

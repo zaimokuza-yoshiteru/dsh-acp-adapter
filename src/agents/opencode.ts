@@ -20,7 +20,11 @@ export function isOpenCodeQuestion(
   const input = tool.rawInput
   if (typeof input !== 'object' || input === null || !('questions' in input) || !Array.isArray(input.questions))
     return false
-  const fieldCount = Object.keys(request.requestedSchema?.properties ?? {}).length
+  const schema = request.requestedSchema
+  if (typeof schema !== 'object' || schema === null || !('properties' in schema)) return false
+  const fields = schema.properties
+  if (typeof fields !== 'object' || fields === null || Array.isArray(fields)) return false
+  const fieldCount = Object.keys(fields).length
   if (fieldCount === 0 || fieldCount !== 2 * input.questions.length) return false
   const properties: Record<string, unknown> = {}
   for (const [index, prompt] of input.questions.entries()) {
@@ -53,5 +57,5 @@ export function isOpenCodeQuestion(
       description: multi ? 'Add your own answer' : 'Type your own answer',
     }
   }
-  return isDeepStrictEqual(request.requestedSchema, { type: 'object', properties, required: [] })
+  return isDeepStrictEqual(schema, { type: 'object', properties, required: [] })
 }

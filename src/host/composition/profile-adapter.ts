@@ -59,7 +59,7 @@ import {
 import { prepareAgentLaunch } from './agent-launch.ts'
 import { buildAcpSpawnPlan } from '../../domain/policy/sandbox.ts'
 import { effectiveRuntimeOf, retiredAgentReason } from '../../contract/agent-config.ts'
-import { sessionCompatibilityOptions } from '../../agents/compatibility.ts'
+import { isOpenCodeQuestion, sessionCompatibilityOptions } from '../../agents/compatibility.ts'
 import { DispatchLedger } from '../../runtime/session/dispatch-ledger.ts'
 import { StreamHandoff } from './stream-handoff.ts'
 import type { DispatchLedgerStore } from '../../runtime/session/dispatch-ledger.ts'
@@ -4304,17 +4304,11 @@ export class AcpProfileAdapter extends LlmAdapter {
             const starter = this.qwenTaskJobs(sessionId)
             return starter === undefined ? {} : { qwenTaskJobs: starter }
           })()),
-      onElicitationRequest: async (
-        params: acp.CreateElicitationRequest,
-        signal?: AbortSignal,
-        hostToolName?: string,
-        hostToolCall?: acp.ToolCallUpdate,
-        openCodeQuestion?: true,
-      ): Promise<acp.CreateElicitationResponse> => {
+      onElicitationRequest: async (params, signal, hostToolName, hostToolCall, agentTool) => {
         const binding = this.resolveQuestions?.(sessionId)
         if (binding?.userQuestions === undefined) return { action: 'cancel' }
         return await createAcpNativeElicitationHandler({
-          ...(openCodeQuestion ? { openCodeQuestion } : {}),
+          ...(isOpenCodeQuestion(agentTool?.agentName, params, agentTool?.toolCall) ? { openCodeQuestion: true } : {}),
           userQuestions: binding.userQuestions,
           ...(binding.permissionQuestions === undefined ? {} : { permissionQuestions: binding.permissionQuestions }),
           getAgent: binding.getAgent,
