@@ -75,7 +75,12 @@ export async function parentPermissionOptionsTurn(session: MockSession, msg: Pro
               },
           ...(fileWrite ? {} : { locations: [{ path: markerPath }] }),
         },
-        options: PARENT_PERMISSION_OPTIONS,
+        options:
+          key === 'binary-policy-deny'
+            ? PARENT_PERMISSION_OPTIONS.filter(
+                (option) => option.kind === 'allow_once' || option.kind === 'reject_once',
+              )
+            : PARENT_PERMISSION_OPTIONS,
       }),
       cancelled.promise,
     ])
