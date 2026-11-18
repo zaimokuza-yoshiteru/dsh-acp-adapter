@@ -15,8 +15,10 @@
 
 ## PR #79 的贡献与合入情况
 
-NateScarlet 在 [PR #79](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/pull/79) 提交了 RC.1 适配代码，覆盖批量工具调用、逐步工具准入、PTC 的 `run_code`、投影和成员模型恢复。#74、#77 和 #78 都早于这份 PR。当前主线通过独立实现覆盖了这些主要功能，PR 的五个原始提交没有合入。11 月 17 日，作者账户[回复了三项逐行审阅并请求复核](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/pull/79#issuecomment-6937855420)。11 月 18 日，作者自行关闭了 PR。公开讨论中没有维护者对这五个提交的最终反馈。
+NateScarlet 于 11 月 7 日向当时的 `main` 提交了完整的 RC.1 迁移，包含工具批调用、逐步工具准入、PTC 的 `run_code`、投影和成员模型恢复。开发分支在 10 月 29 日已迁入其中多项原生 API，11 月 11 日对齐 RC.1。PR 的五个原始提交均未合入。11 月 11 日，主线针对 #77 采用了 PR 提出的按工具处理变更的思路，在提交中明确注明来源，并将 NateScarlet 列为共同作者。报告者后来确认开发分支已修复断连。[PR #79](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/pull/79) · [早期迁移](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/commit/9a53467) · [共同署名提交](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/commit/76d8fbd1f7d07fee18ac8047fd2d5133d5bbaaa0) · [报告者确认](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues/77#issuecomment-6913245108)
 
-有一处值得保留区别。工具热重载时，PR 允许在 schema 相同的情况下重新取得新工具实现。主线保留已接纳的调用和其他工具，替换后的实现需经过新连接准入。投影注册和停启时序由现有实现及回归覆盖。[工具替换回归](../../test/unit/runtime/team-bridge.spec.ts) · [投影回归](../../test/unit/host/session-facts-projection.spec.ts)
+作者于 11 月 16–17 日补上四个提交，并请求复核投影生命周期、分叉保护和工具热重载。11 月 18 日作者自行关闭 PR。公开讨论没有记录维护者对这些修订的最终反馈，也没有逐提交放弃 cherry-pick 的同期说明。#74、#77 和 #78 均早于该 PR。[作者的复核请求](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/pull/79#issuecomment-6937855420)
+
+热重载仍有一处行为差异。PR 允许在原连接上为同名、同 schema 的新注册重新向宿主取得工具集。主线借用 DSH 对当前步骤已经解析的工具集，并记录本连接公布的注册。替换时，在途调用可完成，其他工具可继续使用。新实现要由新连接重新准入。工具被撤销时，会取消该工具的在途工作。这样旧请求或尚待回答的审批只对应原先的工具实现，代价是同一连接不能立即调用热替换后的工具。[迁移时记录的审批与撤权边界](dsh-0.2.2-rc.1.md#六处修复及保留边界) · [工具替换回归](../../test/unit/runtime/team-bridge.spec.ts) · [投影回归](../../test/unit/host/session-facts-projection.spec.ts)
 
 #87 中 lukstei 提交了[独立的参考修复和回归](https://github.com/lukstei/dsh-acp-adapter/commit/78e4d0ce696db34a70c3c9a7bec9a6163edd360e)。#88 由 #79 的作者后续提出，涉及在同一 ACP 会话保留私有上下文的切模；#79 的成员模型初始化没有提供这项能力。
