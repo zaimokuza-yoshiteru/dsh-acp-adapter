@@ -8,6 +8,8 @@ import { codexModelProbeOptions } from './codex.ts'
 import { devinModelProbeOptions, devinToolDiscoveryInstructions } from './devin.ts'
 import { qwenHasModelSpecificConfiguration } from './qwen.ts'
 
+export { isOpenCodeQuestion } from './opencode.ts'
+
 export function executableOverrideEnvFor(runtime: AcpAgentId | undefined): string | undefined {
   if (runtime === 'claude') return claudeCompatibility.executableOverrideEnv
   if (runtime === 'antigravity') return antigravityCompatibility.executableOverrideEnv

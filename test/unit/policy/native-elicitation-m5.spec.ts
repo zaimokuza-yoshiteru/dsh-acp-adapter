@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type * as acp from '@agentclientprotocol/sdk'
+import { isOpenCodeQuestion } from '../../../src/agents/compatibility.ts'
+import { openCodeQuestionFixture } from '../../fixtures/opencode-question.ts'
 import {
   createAcpNativeElicitationHandler,
   type AcpNativeUserQuestionService,
@@ -410,6 +412,52 @@ describe('native ACP form elicitation bridge (M5c)', () => {
     expect(approveDelegatedOnce).toHaveBeenCalledTimes(['approval-error', 'late-abort'].includes(scenario) ? 1 : 0)
   })
 
+  describe('OpenCode question tool (#75)', () => {
+    it.each([
+      ['single choice', false, ['B'], undefined, { q0: 'B' }],
+      ['single custom', false, [], 'My plan', { q0_custom: 'My plan' }],
+      ['multiple choices and custom', true, ['A', 'B'], 'Another plan', { q0: ['A', 'B'], q0_custom: 'Another plan' }],
+      ['custom multi-select only', true, [], 'My plan', { q0_custom: 'My plan' }],
+      ['skipped', false, [], undefined, {}],
+    ] as const)('keeps %s on one native question', async (_name, multiple, selected, custom, content) => {
+      const { tool, request } = openCodeQuestionFixture(multiple)
+      expect(isOpenCodeQuestion('OpenCode', request, tool)).toBe(true)
+      const handler = createAcpNativeElicitationHandler({
+        getAgent: () => ({}),
+        openCodeQuestion: true,
+        userQuestions: {
+          ask: async ({ questions }) => {
+            expect(questions.map((q) => q.id)).toEqual(['q0'])
+            expect(questions[0]?.multiSelect === true).toBe(multiple)
+            return { answers: [{ id: 'q0', selected, ...(custom === undefined ? {} : { custom }) }] }
+          },
+        },
+      })
+      await expect(handler(request)).resolves.toEqual({ action: 'accept', content })
+    })
+
+    it('requires the live OpenCode call, its original input and the whole generated schema', () => {
+      const { tool, request } = openCodeQuestionFixture()
+      expect(isOpenCodeQuestion('another-agent', request, tool)).toBe(false)
+      expect(isOpenCodeQuestion('OpenCode', request, undefined)).toBe(false)
+      expect(isOpenCodeQuestion('OpenCode', request, { ...tool, name: 'another-tool' })).toBe(false)
+      expect(isOpenCodeQuestion('OpenCode', request, { ...tool, toolCallId: 'another-call' })).toBe(false)
+      expect(isOpenCodeQuestion('OpenCode', request, { ...tool, rawInput: {} })).toBe(false)
+      const properties = request.requestedSchema.properties
+      for (const requestedSchema of [
+        { ...request.requestedSchema, properties: { ...properties, notes: { type: 'string' as const } } },
+        {
+          ...request.requestedSchema,
+          properties: { ...properties, q0_custom: { ...properties.q0_custom, maxLength: 10 } },
+        },
+        { ...request.requestedSchema, properties: { ...properties, q0: { ...properties.q0, title: 'New plan' } } },
+        { ...request.requestedSchema, required: ['q0_custom'] },
+      ]) {
+        expect(isOpenCodeQuestion('OpenCode', { ...request, requestedSchema }, tool)).toBe(false)
+      }
+    })
+  })
+
   describe('optional fields without inferred companion relationships (#75)', () => {
     type Answer = { id: string; selected: string[]; custom?: string }
     const ask = (answers: (ids: readonly string[]) => Answer[]) => {
@@ -425,7 +473,7 @@ describe('native ACP form elicitation bridge (M5c)', () => {
       })
       return { handler, seen }
     }
-    // opencode's `question` tool: an enum plus an optional "(other)" text field.
+    // A generic form can legitimately name an independent text field "(other)".
     const single = (required: string[] = []) =>
       form(
         {

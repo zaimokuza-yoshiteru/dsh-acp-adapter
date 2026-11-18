@@ -392,6 +392,8 @@ export interface AcpNativeQuestionUnavailable {
 
 export interface AcpNativeElicitationDeps {
   readonly userQuestions?: AcpNativeUserQuestionService
+  /** The live OpenCode question call and its full wire schema matched. */
+  readonly openCodeQuestion?: true
   /** Available only for verified external permission forms, never arbitrary questions. */
   readonly permissionQuestions?: AcpPermissionQuestionService
   readonly getAgent: () => unknown
@@ -435,7 +437,10 @@ export function createAcpNativeElicitationHandler(
     const scopeTitles: Record<string, string> = zh
       ? { once: '仅允许一次', session: '在本次会话中允许', always: '始终允许，不再询问' }
       : { once: 'Allow once', session: 'Allow for this session', always: "Always allow, don't ask again" }
-    const fields = schema.fields.map((field) => {
+    const presented = deps.openCodeQuestion
+      ? schema.fields.filter((field) => !field.name.endsWith('_custom'))
+      : schema.fields
+    const fields = presented.map((field) => {
       const scope =
         params._meta?.codex_approval_kind === 'mcp_tool_call' &&
         field.name === 'persist' &&
@@ -458,8 +463,6 @@ export function createAcpNativeElicitationHandler(
         options,
       }
     })
-    // A schema names independent fields; a suffix cannot prove that one is
-    // another field's custom-answer channel. Preserve every field and its copy.
     const questions = fields.map((field, index) => {
       // Only a verified, exact Codex bridge message is replaced. Other agents'
       // explanations remain intact, including any additional approval context.
@@ -526,11 +529,15 @@ export function createAcpNativeElicitationHandler(
           // Omit ordinary optional fields instead of fabricating an empty value.
           continue
         }
+        if (deps.openCodeQuestion && custom !== undefined) {
+          values.push({ name: `${field.name}_custom`, value: custom })
+          if (item.selected.length === 0) continue
+        }
         // Enum answers must be explicit displayed choices; never interpret free
         // text as a permission scope or guess from a protocol identifier.
         if (
           field.options.length > 0 &&
-          (custom !== undefined ||
+          ((custom !== undefined && !deps.openCodeQuestion) ||
             item.selected.some((label) => !field.options.some((option) => option.label === label)))
         )
           return { action: 'cancel' }

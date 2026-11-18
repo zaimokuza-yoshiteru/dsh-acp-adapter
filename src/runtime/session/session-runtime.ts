@@ -24,6 +24,7 @@ import { AcpClientError } from '../../protocol/v1/errors.ts'
 import { performance } from 'node:perf_hooks'
 import { generatedContextBlock } from '../text-block-boundary.ts'
 import { ACP_CONFIG_IDENTIFIER_MAX } from '../../contract/config-options.ts'
+import { isOpenCodeQuestion } from '../../agents/compatibility.ts'
 import { isQwenUserQuestion } from '../../domain/policy/qwen-question.ts'
 import { RequestError } from '@agentclientprotocol/sdk'
 import type { QwenTurnEndParams, QwenTurnStartParams, QwenTurnStartResult } from '../../protocol/v1/types.ts'
@@ -149,6 +150,7 @@ export interface AcpSessionRuntimeOptions {
     signal?: AbortSignal,
     hostToolName?: string,
     hostToolCall?: acp.ToolCallUpdate,
+    openCodeQuestion?: true,
   ) => Promise<acp.CreateElicitationResponse>
   /** One-shot diagnostic for optional private capability degradation. */
   readonly onCapabilityDegraded?: (message: string) => void
@@ -1494,6 +1496,7 @@ export class AcpSessionRuntime {
                     signal,
                     hostToolName,
                     hostToolName === undefined ? undefined : toolCall,
+                    isOpenCodeQuestion(connection.agentInfo?.name, params, toolCall) ? true : undefined,
                   ),
                   signal,
                   () => ({ action: 'cancel' as const }),

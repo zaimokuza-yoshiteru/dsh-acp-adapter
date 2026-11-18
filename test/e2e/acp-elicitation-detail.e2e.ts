@@ -13,6 +13,8 @@ import {
 import { launchAdapterWorld, root } from './scaffold.ts'
 import { launchBrowser, newEnglishPage, type TestBrowser } from './browser.ts'
 import { required } from './required.ts'
+import { isOpenCodeQuestion } from '../../src/agents/compatibility.ts'
+import { openCodeQuestionFixture } from '../fixtures/opencode-question.ts'
 
 const provider = 'elicitation-ui-control'
 const model = 'elicitation-ui-model'
@@ -487,10 +489,10 @@ it('renders ACP elicitation detail once in the native question composer', async 
   }
 })
 
-it('preserves independent optional fields and keeps permission Skip as cancellation in the native composer', async () => {
+it('keeps OpenCode custom answers on one page, independent fields separate and permission Skip a cancellation', async () => {
   const host = await launchAdapterWorld()
   let browser: TestBrowser | undefined
-  let mode: 'fields' | 'skip' | 'permission' = 'fields'
+  let mode: 'fields' | 'skip' | 'permission' | 'opencode-choice' | 'opencode-custom' = 'fields'
   let outcome: acp.CreateElicitationResponse | undefined
   const evidence = join(root, '.local/e2e-acp-elicitation-detail', process.env.DSH_E2E_ELECTRON ? 'electron' : 'web')
   mkdirSync(evidence, { recursive: true })
@@ -502,11 +504,15 @@ it('preserves independent optional fields and keeps permission Skip as cancellat
         new ElicitationUiControl(async (request) => {
           const agent = required(host.ctx.agents.get(required(request.sessionId)))
           const permission = mode === 'permission'
+          const openCode = mode.startsWith('opencode-') ? openCodeQuestionFixture() : undefined
           const handler = createAcpNativeElicitationHandler({
             userQuestions: required(host.ctx.get('userQuestions') as AcpNativeElicitationDeps['userQuestions']),
             getAgent: () => agent,
             locale: 'zh-CN',
             ...(permission ? { hostToolName: 'bash' } : {}),
+            ...(openCode && isOpenCodeQuestion('OpenCode', openCode.request, openCode.tool)
+              ? { openCodeQuestion: true }
+              : {}),
           })
           const params: acp.CreateElicitationRequest = {
             requestId: `acp-elicitation-optional-${mode}`,
@@ -533,7 +539,7 @@ it('preserves independent optional fields and keeps permission Skip as cancellat
               required: [],
             },
           }
-          outcome = await handler(params, request.signal)
+          outcome = await handler(openCode?.request ?? params, request.signal)
         }),
       ),
     )
@@ -549,7 +555,7 @@ it('preserves independent optional fields and keeps permission Skip as cancellat
     expect(await page.evaluate(() => window.innerWidth)).toBe(390)
     const card = page.locator('div[data-question-key] > section')
 
-    for (const next of ['fields', 'skip', 'permission'] as const) {
+    for (const next of ['opencode-choice', 'opencode-custom', 'fields', 'skip', 'permission'] as const) {
       mode = next
       outcome = undefined
       const theme = next === 'skip' ? 'dark' : 'light'
@@ -559,12 +565,25 @@ it('preserves independent optional fields and keeps permission Skip as cancellat
       await writeComposerDraft(page, page.locator('[data-composer-input]').first(), `ELICITATION_OPTIONAL_${next}`)
       await page.getByRole('button', { name: /^(?:Send message|发送消息)$/ }).click()
       await card.waitFor()
-      if (next === 'permission') {
+      let expected: acp.CreateElicitationResponse
+      if (next === 'opencode-choice' || next === 'opencode-custom') {
+        expected = { action: 'accept', content: next === 'opencode-choice' ? { q0: 'B' } : { q0_custom: 'My plan' } }
+        await expect.poll(() => card.locator('h2').innerText()).toBe('Plan')
+        if (next === 'opencode-choice') await card.getByRole('radio', { name: 'B', exact: true }).click()
+        else await card.getByPlaceholder('输入你的答案').fill('My plan')
+        expect(await card.locator('h2').innerText()).toBe('Plan')
+        await card.locator('footer button').last().click()
+      } else if (next === 'permission') {
+        expected = { action: 'cancel' }
         await expect.poll(() => card.locator('h2').innerText()).toBe('授权范围')
         expect(await card.getByText('可选', { exact: true }).count()).toBe(0)
         await page.screenshot({ path: join(evidence, 'permission-skip-390-light.png'), animations: 'disabled' })
         await card.getByRole('button', { name: '跳过', exact: true }).click()
       } else {
+        expected = {
+          action: 'accept',
+          content: { plan: 'pro', ...(next === 'fields' ? { plan_custom: '沿用已有部署' } : {}) },
+        }
         await expect.poll(() => card.locator('h2').innerText()).toBe('方案')
         await card.getByText('可选', { exact: true }).waitFor()
         await card.getByRole('radio', { name: '专业版', exact: true }).click()
@@ -579,14 +598,7 @@ it('preserves independent optional fields and keeps permission Skip as cancellat
       await settled
       await card.waitFor({ state: 'hidden' })
       await page.locator('[data-composer-input][contenteditable="true"]').waitFor()
-      expect(outcome).toEqual(
-        next === 'permission'
-          ? { action: 'cancel' }
-          : {
-              action: 'accept',
-              content: { plan: 'pro', ...(next === 'fields' ? { plan_custom: '沿用已有部署' } : {}) },
-            },
-      )
+      expect(outcome).toEqual(expected)
     }
     expect(errors).toEqual([])
   } finally {

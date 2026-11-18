@@ -4309,10 +4309,12 @@ export class AcpProfileAdapter extends LlmAdapter {
         signal?: AbortSignal,
         hostToolName?: string,
         hostToolCall?: acp.ToolCallUpdate,
+        openCodeQuestion?: true,
       ): Promise<acp.CreateElicitationResponse> => {
         const binding = this.resolveQuestions?.(sessionId)
         if (binding?.userQuestions === undefined) return { action: 'cancel' }
         return await createAcpNativeElicitationHandler({
+          ...(openCodeQuestion ? { openCodeQuestion } : {}),
           userQuestions: binding.userQuestions,
           ...(binding.permissionQuestions === undefined ? {} : { permissionQuestions: binding.permissionQuestions }),
           getAgent: binding.getAgent,
