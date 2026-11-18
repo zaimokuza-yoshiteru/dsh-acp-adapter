@@ -231,7 +231,7 @@ it('uses Qwen model-specific reasoning menus and sends the selected effort to th
       await page!.getByRole('menuitemradio', { name, exact: true }).click()
       const confirmation = page!.getByRole('dialog')
       await confirmation
-        .getByRole('heading', { name: 'Existing ACP sessions cannot switch models yet', exact: true })
+        .getByRole('heading', { name: 'Switching ACP models in DSH requires a new session', exact: true })
         .waitFor()
       await confirmation
         .getByRole('button', { name: 'Create an independent session with this model', exact: true })

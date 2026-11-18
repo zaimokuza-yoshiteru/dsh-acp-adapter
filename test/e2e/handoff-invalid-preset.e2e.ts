@@ -47,7 +47,7 @@ it('reuses the exact blank left by an inherited preset failing during model hand
     await page.getByRole('menuitem', { name: /^Model/ }).click()
     await page.getByRole('searchbox', { name: 'Search models…' }).fill('Mock Model B')
     await page.getByRole('menuitemradio', { name: 'Mock Model B', exact: true }).click()
-    const dialog = page.getByRole('dialog', { name: 'Existing ACP sessions cannot switch models yet' })
+    const dialog = page.getByRole('dialog', { name: 'Switching ACP models in DSH requires a new session' })
     await dialog.waitFor()
     // Change the real registry after the user's confirmation and any client-side roster check.
     let requested: SessionId | undefined

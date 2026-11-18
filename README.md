@@ -48,7 +48,7 @@ npx @deepseek-ai/dsh@0.2.2-rc.3 plugin --profile web add @zaimokuza/dsh-acp-adap
 
 > Agent 没有模型目录时，选择 **Agent current configuration** 使用其当前配置。
 >
-> 已开始的 ACP 会话切换模型时，会用原会话的模式新建空白会话。历史和草稿留在原会话。只调整推理强度时可以继续当前会话。
+> 在 DSH 中，已有 ACP 会话改选模型时，你可以保留当前模型，或用原会话的模式另开空白会话。历史和草稿留在原会话。推理强度可以在当前会话调整。
 
 常用 Agent 的启动与登录方式：
 

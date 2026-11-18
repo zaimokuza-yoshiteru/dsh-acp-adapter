@@ -1,4 +1,4 @@
-/** RC.1 cannot safely compact an external Agent's private context on model changes.
+/** DSH cannot compact the private context held by an external Agent.
  * Keep the recorded route usable and offer a new, independent session instead. */
 export function requiresAcpModelSwitchExit(
   previous: { readonly provider: string; readonly model: string } | null | undefined,

@@ -48,7 +48,7 @@ The plugin ships with a snapshot of the [official ACP Agent catalog](https://age
 
 > If an Agent has no model catalog, select **Agent current configuration** to use its current settings.
 >
-> Switching models in an established ACP session opens a blank session in the same mode. Your history and draft stay in the original session. You can adjust reasoning effort without leaving the session.
+> When you select another model in an existing ACP session in DSH, you can keep the current model or start a blank session in the same mode. Your history and draft stay in the original session. You can adjust reasoning effort without leaving it.
 
 Launch and sign-in commands for common Agents:
 

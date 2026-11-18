@@ -435,9 +435,8 @@ const zh = {
   unroutedHistoryUngrouped: '新会话已创建，目前未加入此工作区。',
   unroutedHistoryOpen: '打开已创建的会话',
   unroutedHistoryHint: '要继续这段对话，请在下方选择非 ACP 模型。默认 ACP 智能体需要独立会话。',
-  crossBackendModelSwitchTitle: '已有 ACP 会话暂不支持切换模型',
-  crossBackendModelSwitchDescription:
-    '可保留原模型，或使用 {target} 新建独立会话。新会话不会继承当前 Agent 上下文；原会话的记录和草稿保持不变。',
+  crossBackendModelSwitchTitle: '在 DSH 中切换 ACP 模型需要新会话',
+  crossBackendModelSwitchDescription: '你可以继续使用当前模型，或在空白会话中使用 {target}。对话历史和草稿留在这里。',
   crossBackendKeepModel: '保留当前模型',
   crossBackendNewModelSession: '用所选模型新建独立会话',
   crossBackendTitle: '切换 Agent 需要独立会话',
@@ -922,9 +921,9 @@ const en: Record<AcpLocaleKey, string> = {
   unroutedHistoryOpen: 'Open the created session',
   unroutedHistoryHint:
     'To continue this conversation, choose a non-ACP model below. The default ACP Agent needs a separate session.',
-  crossBackendModelSwitchTitle: 'Existing ACP sessions cannot switch models yet',
+  crossBackendModelSwitchTitle: 'Switching ACP models in DSH requires a new session',
   crossBackendModelSwitchDescription:
-    'Keep the original model, or create an independent session with {target}. The new session will not inherit the current Agent context. The original session history and draft stay unchanged.',
+    'Keep using the current model or start a blank session with {target}. Your conversation history and draft stay here.',
   crossBackendKeepModel: 'Keep the current model',
   crossBackendNewModelSession: 'Create an independent session with this model',
   crossBackendTitle: 'Changing Agents requires an independent session',

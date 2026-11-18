@@ -123,7 +123,7 @@ it('adds an optional ACP preset without replacing defaults or native composition
     await page.getByRole('button', { name: /^Select model, current Mock Model A/ }).click()
     await page.getByRole('menuitem', { name: /^Model/ }).click()
     await page.getByRole('menuitemradio', { name: 'Mock Model B', exact: true }).click()
-    const dialog = page.getByRole('dialog', { name: 'Existing ACP sessions cannot switch models yet' })
+    const dialog = page.getByRole('dialog', { name: 'Switching ACP models in DSH requires a new session' })
     const [created] = await Promise.all([
       page.waitForResponse('**/api/session/create'),
       dialog.getByRole('button', { name: 'Create an independent session with this model' }).click(),

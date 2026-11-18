@@ -216,7 +216,7 @@ it('keeps native Creator mode usable through ACP while installing, toggling and 
     await conversation.getByRole('button', { name: /^Select model, current Mock Model A/ }).click()
     await page.getByRole('menuitem', { name: /^Model/ }).click()
     await page.getByRole('menuitemradio', { name: 'Mock Model B', exact: true }).click()
-    const dialog = page.getByRole('dialog', { name: 'Existing ACP sessions cannot switch models yet', exact: true })
+    const dialog = page.getByRole('dialog', { name: 'Switching ACP models in DSH requires a new session', exact: true })
     const [handoff] = await Promise.all([
       page.waitForResponse('**/api/session/create'),
       dialog.getByRole('button', { name: 'Create an independent session with this model', exact: true }).click(),
