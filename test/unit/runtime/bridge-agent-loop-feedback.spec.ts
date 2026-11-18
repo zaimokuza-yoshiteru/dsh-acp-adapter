@@ -2,7 +2,7 @@ import { NativeToolExecutor } from '@deepseek-ai/dsh-tool-executor-native'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Fiber } from '@deepseek-ai/cordis'
-import LlmRuntime, { createUserMessage, LlmAdapter, ToolCallId } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createUserMessage, LlmAdapter, MessageId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -125,7 +125,7 @@ async function createHarness(sessionId: string) {
     await bridgeGate
     return 'host tool completed'
   })
-  let feedbackMessageId: string | undefined
+  let feedbackMessageId: MessageId | undefined
   ctx.tools.register(
     defineTool({
       name: 'bridge_feedback',
@@ -170,6 +170,18 @@ async function createHarness(sessionId: string) {
     provider: 'bridge-feedback-test',
     model: 'scripted',
   })
+  ctx.tools.register(
+    defineTool({
+      name: 'consume_feedback',
+      description: 'Deliver the pending feedback in the tool result.',
+      parameters: { message_id: { type: 'string', required: true } },
+      output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+      async execute(args) {
+        if (!agent.inbox.remove(MessageId(args.message_id))) throw new Error('Feedback was already removed')
+        return feedbackText
+      },
+    }),
+  )
   const assembly = await ctx.systemPrompt.assemble({ scope: agent })
   const lease = (await createDshToolBridge(
     ctx as never,
@@ -201,6 +213,7 @@ async function createHarness(sessionId: string) {
   const beginBridgePrompt = (signal: AbortSignal) => lease.beginPrompt(signal)
   return {
     ctx,
+    client,
     agent: agent as Agent,
     adapter,
     bridgedExecute,
@@ -221,6 +234,52 @@ function send(agent: Agent, text: string): void {
 }
 
 describe('real AgentLoop and HTTP bridge feedback handoff', () => {
+  it.each([false, true])(
+    'refreshes the handoff after a native tool consumes feedback, remaining=%s',
+    async (remaining) => {
+      const fixture = await createHarness(`bridge-yield-consumed-${remaining}`)
+      fixture.adapter.firstResponse = textResponse('continued unfinished work')
+      const responses: string[] = []
+      fixture.adapter.beforeRequest = async (request, index) => {
+        fixture.beginBridgePrompt(request.signal!)
+        if (index === 0) {
+          responses.push(JSON.stringify(await fixture.invokeBridgeTool()))
+          if (remaining)
+            fixture.agent.inject(
+              createUserMessage({ content: [{ type: 'text', text: 'another input' }], source: { kind: 'user' } }),
+            )
+          responses.push(
+            JSON.stringify(
+              await fixture.client.callTool({
+                name: 'consume_feedback',
+                arguments: { message_id: fixture.feedbackMessageId },
+              }),
+            ),
+          )
+        }
+        responses.push(JSON.stringify(await fixture.client.callTool({ name: 'native_step', arguments: {} })))
+        fixture.lease.endPrompt({ stopReason: 'end_turn' })
+        await fixture.lease.drainPrompt!()
+      }
+
+      send(fixture.agent, 'continue after collecting feedback')
+      await fixture.agent.whenIdle()
+      expect(responses[0]).toContain('End this ACP response now')
+      expect(responses[1]).toContain(feedbackText)
+      expect(responses[1]).toContain(remaining ? 'End this ACP response now' : 'Continue any unfinished work')
+      expect(responses[2]).not.toContain('Continue any unfinished work')
+      expect(responses[2]?.includes('End this ACP response now')).toBe(remaining)
+      expect(fixture.adapter.requests).toHaveLength(remaining ? 2 : 1)
+      expect([fixture.agent.inbox.nextStep, fixture.agent.inbox.nextTurn]).toEqual([[], []])
+      if (remaining) {
+        expect(messageTexts(fixture.adapter.requests[1]!)).toContain('another input')
+        // A yield was still outstanding in the old prompt when DSH claimed the last input.
+        expect(responses[3]).toContain('native step completed')
+        expect(responses[3]).not.toContain('Continue any unfinished work')
+      }
+    },
+  )
+
   it('accepts feedback when the native inject observer throws after inbox append', async () => {
     const fixture = await createHarness('bridge-feedback-observer-throws-after-append')
     fixture.adapter.beforeRequest = async (request, index) => {

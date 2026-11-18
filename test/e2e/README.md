@@ -90,7 +90,7 @@ RC.2 使用原生子代理树展示成员身份、状态与导航，`list_agents
 
 二元一次性集中审批调用子会话原有 pending approval 的回答接口；原生或 ACP 父会话均可使用，不依赖 Teams 开启。Host 核实存活 runtime 的逐层 ownership 与来源路径权限，排除普通独立分支和只读外部子任务投影，并保留原生委派的 `never` 策略。完整多作用域权限请求由原生 root 问题卡代呈，原始 option ID、执行身份和决定记录仍归属子会话；不会缩成一次性选项，也不参与批量允许。普通子会话提问和计划仍保留上游 `DELEGATED_CALLER` 边界。Codex 仅在已核实当前 DSH 工具身份、表单只包含 `persist` 时进入权限专用路径：唯一 `once` 选项使用原生一次性审批，多选项完整代呈。`team-approvals.e2e.ts` 显式设置 `MOCK_TEAM_APPROVAL_ONCE_ONLY=1` 验证原有批量路径；其通过不能替代完整选项专项验收。
 
-RC.2 原生子代理服务拥有创建、完整具名路径、消息和中断，Team 的会话开关只控制共享任务能力。适配器桥接当前实际准入的 `subagent`、`send_message` 及任务工具，不再依赖旧可选 Teams profile、固定九工具目录或 `spawn_teammate`／旧名册 API；调用仍经过 DSH ToolRuntime 的 hooks 和校验。关闭 Team 不应切断已有子会话的审批或管理。HTTP/stdio 服务、临时能力地址随会话生命周期撤销。Devin 要求 `3000.12.43` 或更新版本，通过标准 ACP `session/new`、`session/load` 的 `mcpServers` 接收当前会话的 `dsh` 工具桥；不再注册用户级 MCP、写入启动器或兼容旧版本。CI 固定 `3000.12.43` 验证，工具权限规则不变。Codex 通过关联工具调用的 MCP 审批表单选择仅本次允许。这些兼容处理均不放行普通表单或其他工具。
+RC.2 原生子代理服务拥有创建、完整具名路径、消息和中断，Team 的会话开关只控制共享任务能力。适配器桥接当前实际准入的 `subagent`、`send_message` 及任务工具，不再依赖旧可选 Teams profile、固定九工具目录或 `spawn_teammate`／旧名册 API；调用仍经过 DSH ToolRuntime 的 hooks 和校验。关闭 Team 不应切断已有子会话的审批或管理。HTTP/stdio 服务、临时能力地址随会话生命周期撤销。Devin 要求 `3000.14.30821` 或更新版本，通过标准 ACP `session/new`、`session/load` 的 `mcpServers` 接收当前会话的 `dsh` 工具桥；不再注册用户级 MCP、写入启动器或兼容旧版本。CI 固定 `3000.14.30821` 验证，工具权限规则不变。Codex 通过关联工具调用的 MCP 审批表单选择仅本次允许。这些兼容处理均不放行普通表单或其他工具。
 
 真实 Devin Teams 从原生对话提交任务目标。主会话和成员各自发现 MCP 目录，验收不注入工具 schema，也不在用户提示里说明如何读取目录。验证使用原始一次审批、Host 执行结果与公开活动，拒绝 shell 调用和读取本次目录以外的文件。CLI 有时只在公开 listing 中返回工具名，此时记录可见的原生读取及其隔离路径，保留来源不可逐条关联的限制。`check-devin-live-catalog.mjs` 另经 Standard 会话核对 HTTP/stdio 的完整工具名、schema、描述及目录大小，模型请求数为零。
 
@@ -238,7 +238,7 @@ node scripts/check-devin-live.ts "$(command -v devin)"
 
 诊断日志只覆盖启用后的运行；离线检查不能替代真实端到端验证。之后生成的 trace 无法还原既有运行中调用数量的成因。脚本中的工具准入预算只约束该测试，不保护生产环境。
 
-RC.2 的真实浏览器共享任务验收使用 `live-agents.e2e.ts`，显式设置 `DSH_E2E_LIVE=1 DSH_E2E_LIVE_PROFILES=devin DSH_E2E_LIVE_TEAMS=1 DEVIN_LIVE_AUTH=existing DSH_E2E_LIVE_DEVIN_MODEL=<精确模型>`。它通过原生界面逐项回答本次两个任务和一个成员的原始一次授权，验证依赖任务、成员消息及收到消息后的主会话回复。CLI 发布版本由同一可执行文件的有界 `--version` 取得；ACP 握手版本单独记录，不能混用。
+RC.2 的真实浏览器共享任务验收使用 `live-agents.e2e.ts`，显式设置 `DSH_E2E_LIVE=1 DSH_E2E_LIVE_PROFILES=devin DSH_E2E_LIVE_TEAMS=1 DEVIN_LIVE_AUTH=existing DSH_E2E_LIVE_DEVIN_MODEL=<精确模型>`。它通过原生界面逐项回答本次两个任务和一个成员的原始一次授权，验证依赖任务、成员消息及收到消息后的主会话回复。对于仅含标题的请求，测试驱动仅在 CLI 与 CI 固定版本一致、隔离会话的工具及参数匹配且原生选项逐项匹配时，才代为点击一次授权。选项变化时驱动停止，诊断保留对应阶段。历史审批样本不能作为新版本的真实 Teams 验收。CLI 发布版本由同一可执行文件的有界 `--version` 取得；ACP 握手版本单独记录，不能混用。
 
 在以上设置中加 `DSH_E2E_LIVE_DEVIN_PERMISSIONS=1`，改为单独验收真实子会话的 Allow、Reject、待审批时 Stop 和继续，避免重复执行共享任务。该专项明确使用隔离 Ask 配置，只有各阶段精确的临时 marker 写入属于授权范围；成员创建由测试调用公开原生接口控制，不能据此声称模型自己创建成员。它与旧 `DSH_E2E_LIVE_TEAMS_APPROVAL` 的 native bash sandbox escalation 是不同场景，不互相替代。两项入口均使用临时认证副本、HOME/XDG 和 profile，结束后清理，不修改用户日常配置。
 

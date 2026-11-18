@@ -4,14 +4,11 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { mkdtemp } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
+import { devinCiRelease } from './devin-ci-release.ts'
 
-const version = '3000.12.43'
+const { version, build } = devinCiRelease
 const platform = `${process.platform}-${process.arch}`
-const integrity = {
-  'darwin-arm64': 'sha512-NIoYY2S5zPk89CXB+bn6+76pWOsCd75ajJF6NZZ8AQURcLCz1wGRw76j8DHERRVSluNouz+HmYx2Tg8EIpn7dQ==',
-  'darwin-x64': 'sha512-jzLL8mQDSfwiJwBn5cpId7Y7ilaJCRTjRjXIlmYk6kevEdWY5721O4lvKoLD0w4l59VgjlvUMXWx6Pecxq4tiA==',
-  'win32-x64': 'sha512-nZt7o83MIBYNn1plIIdxqok4NiwNUnKFKwuEQSkpXRafG0IhgvQXXX8OTaDO7u4qrt5bGqqx8zvUQKvcBr/mqQ==',
-}[platform]
+const integrity = devinCiRelease.integrity[platform]
 assert.ok(integrity, `Unsupported Devin CI platform: ${platform}`)
 assert.ok(process.argv[2], 'Pass the disposable CI directory')
 
@@ -30,6 +27,6 @@ const reported = execFileSync(exe, ['version'], {
   encoding: 'utf8',
   timeout: 15_000,
 }).trim()
-assert.equal(reported, `devin ${version} (517d03d73926)`)
+assert.equal(reported, `devin ${version} (${build})`)
 console.error(reported)
 console.log(exe)

@@ -1,3 +1,4 @@
+import { devinCiRelease } from '../../../scripts/devin-ci-release.ts'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Context } from '@deepseek-ai/cordis'
@@ -268,11 +269,11 @@ function fixture(
   }
 }
 
-it('answers the captured title-only request only through the known CLI isolated manual once boundary', async () => {
+it('exercises the pinned CLI manual once contract with a historical title-only fixture', async () => {
   const isolated = vi.fn(async () => {})
   const f = fixture({
     recorded: devinManualPermission,
-    manualTitle: { cliVersion: '3000.12.43', assertIsolatedSessionMcp: isolated },
+    manualTitle: { cliVersion: devinCiRelease.version, assertIsolatedSessionMcp: isolated },
   })
   const response = f.askWithRealBuilder({})
   const native = await f.whenAsked
@@ -302,9 +303,22 @@ it('answers the captured title-only request only through the known CLI isolated 
   ])
 })
 
+it.each(['3000.12.43', '0.0.0-dev', 'unrecognized'])(
+  'requires the pinned CLI release before answering a title-only request (%s)',
+  async (cliVersion) => {
+    const f = fixture({
+      recorded: devinManualPermission,
+      manualTitle: { cliVersion, assertIsolatedSessionMcp: async () => {} },
+    })
+    void f.askWithRealBuilder({})
+    await f.whenAsked
+    await expect(f.driver.answerPending()).rejects.toThrow('LIVE_TEAM_MANUAL_PERMISSION_IDENTITY_UNPROVEN')
+    expect(f.clicks).toEqual([])
+  },
+)
+
 it.each([
   'missing-context',
-  'unknown-version',
   'foreign-registration',
   'foreign-server',
   'wrong-tool',
@@ -354,7 +368,7 @@ it.each([
       ? {}
       : {
           manualTitle: {
-            cliVersion: kind === 'unknown-version' ? '3000.12.44' : '3000.12.43',
+            cliVersion: devinCiRelease.version,
             assertIsolatedSessionMcp: async () => {
               if (kind === 'foreign-registration') throw new Error('LIVE_DEVIN_MANUAL_CONFIG_NOT_ISOLATED')
             },

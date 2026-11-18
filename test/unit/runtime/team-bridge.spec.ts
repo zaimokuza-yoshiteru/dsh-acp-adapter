@@ -719,6 +719,28 @@ describe('session-owned native Teams MCP bridge', () => {
     lease.endPrompt()
   })
 
+  it('preserves an explicit turn conclusion across later tool results after a yield', async () => {
+    const { lease, agent, execute, client } = await setup()
+    const onTurnConcluded = vi.fn()
+    lease.beginPrompt(new AbortController().signal, undefined, undefined, onTurnConcluded)
+    agent.inbox.nextStep.push(
+      createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'pending' }] }),
+    )
+    const call = () => client.callTool({ name: 'list_agents', arguments: {} })
+    expect(JSON.stringify(await call())).toContain('End this ACP response now')
+    execute.mockImplementationOnce(async () => ({
+      content: [{ type: 'text', text: 'finished' }],
+      isError: false,
+      concludesTurn: true,
+    }))
+    const concluded = JSON.stringify(await call())
+    expect(concluded).toContain('This DSH tool requests the end of the current turn')
+    expect(concluded).not.toContain('DSH has queued input')
+    expect(onTurnConcluded).toHaveBeenCalledOnce()
+    agent.inbox.nextStep.splice(0)
+    expect(JSON.stringify(await call())).not.toContain('Continue any unfinished work')
+  })
+
   it('reports only successfully returned prompt-scoped Host tool results as completion evidence', async () => {
     const fixture = await setup()
     cleanup.push(() => fixture.lease.close())
@@ -896,6 +918,7 @@ describe('session-owned native Teams MCP bridge', () => {
       source: { kind: 'repeat-tool-reminder' } as never,
       content: [{ type: 'text', text: 'PRIVATE_REPEAT_REMINDER_BODY' }],
     })
+    agent.inject.mockImplementationOnce((message) => agent.inbox.nextStep.push(message))
     execute.mockImplementationOnce(
       async () =>
         ({
@@ -914,6 +937,9 @@ describe('session-owned native Teams MCP bridge', () => {
     expect(returnedText).toContain('Stop repeating the tool call')
     expect(returnedText).toContain('end this ACP response now')
     expect(returnedText).not.toContain('PRIVATE_REPEAT_REMINDER_BODY')
+    agent.inbox.nextStep.splice(0)
+    const next = await client.callTool({ name: 'list_agents', arguments: {} })
+    expect(JSON.stringify(next)).toContain('Continue any unfinished work')
   })
 
   it('isolates a throwing policy subscriber after injecting tool feedback', async () => {
@@ -1306,6 +1332,13 @@ describe('session-owned native Teams MCP bridge', () => {
         nextStepTeamMessageCount: 1,
       })
       expect(events.find((event) => event.type === 'mcp-handler/returned')).not.toHaveProperty('hostCallId')
+      agent.inbox.nextStep.splice(0)
+      const calls = await Promise.all([
+        client.callTool({ name: 'list_agents', arguments: {} }),
+        client.callTool({ name: 'team_task_list', arguments: {} }),
+      ])
+      expect(calls.map((call) => call.isError)).toEqual([false, false])
+      expect(calls.filter((call) => JSON.stringify(call).includes('Continue any unfinished work'))).toHaveLength(1)
     },
   )
 

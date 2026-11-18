@@ -1,3 +1,4 @@
+import { devinCiRelease } from '../../../scripts/devin-ci-release.ts'
 import { describe, expect, it } from 'vitest'
 import { summarizeRawInputForAudit } from '../../../src/domain/policy/events.ts'
 import type { AcpPermissionDecidedAuditData } from '../../../src/domain/policy/events.ts'
@@ -16,7 +17,7 @@ function fixture() {
     options: asked.options.map((option) => ({ ...option, name: option.name.replaceAll('list_agents', 'write') })),
   })
   const bridge = { ...devinManualPermission.bridge, toolName: 'write' }
-  return { expected, asked, bridge, cliVersion: '3000.12.43' }
+  return { expected, asked, bridge, cliVersion: devinCiRelease.version }
 }
 
 describe('real Devin permission lifecycle scope', () => {

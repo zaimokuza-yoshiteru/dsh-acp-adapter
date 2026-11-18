@@ -38,7 +38,7 @@ The official Registry snapshot is retained unchanged; catalog composition filter
 
 ## Devin version requirement
 
-Use Devin `3000.12.43` or newer; current validation and CI pin `3000.12.43`. The bridge is supplied through standard ACP session `mcpServers`. The adapter no longer runs `devin mcp add`, writes user configuration, or installs a dedicated launcher. Older versions are no longer supported. HTTP loopback routing preserves existing proxy exclusions and adds only `127.0.0.1`.
+This branch supports Devin CLI `3000.14.30821` and later. CI checks the session tool bridge with that pinned version. If you use an older CLI, upgrade to the [latest stable release](https://docs.devin.ai/cli/changelog/stable) and confirm with `devin --version`. The adapter supplies the tool bridge through standard ACP session `mcpServers`. HTTP loopback routing preserves existing proxy exclusions and adds only `127.0.0.1`.
 
 Existing user MCP configuration and launchers are not automatically deleted. Each new session supplies its own bridge; generic stdio transport remains available for Agents without HTTP support. Devin's native permission requests still require a human answer, independently of the removed MCP workaround.
 

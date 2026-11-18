@@ -38,7 +38,7 @@ Qwen 的主动轮次和心跳由协议层管理，Devin 和 Claude 的委派解�
 
 ## Devin 版本要求
 
-Devin 使用 `3000.12.43` 或更新版本；当前验收和 CI 固定 `3000.12.43`。工具桥经标准 ACP 会话级 `mcpServers` 传入，不再调用 `devin mcp add`、写入用户配置或安装专用启动器。旧版本不再支持。HTTP 回环地址沿用现有代理排除项，只追加 `127.0.0.1`。
+本分支支持 Devin CLI `3000.14.30821` 起的版本，CI 固定该版本检查会话工具桥。使用旧版时，请先升级到[最新稳定版](https://docs.devin.ai/cli/changelog/stable)，用 `devin --version` 确认。工具桥经标准 ACP 会话级 `mcpServers` 传入。HTTP 回环地址沿用现有代理排除项，只追加 `127.0.0.1`。
 
 此前安装留下的用户 MCP 配置和启动器不会被自动删除。新版会话直接提供自己的工具桥；通用 stdio 传输仍为不支持 HTTP 的 Agent 保留。Devin 的原生授权请求仍需用户确认，这与旧版 MCP 配置无关。
 

@@ -4,7 +4,7 @@ import type {
   AcpPermissionDecidedAuditData,
 } from '../../src/domain/policy/events.ts'
 import { summarizeRawInputForAudit } from '../../src/domain/policy/events.ts'
-import { exactOnceOption, intactPermissionInput, isKnownDevinManualTitleRequest } from './live-devin-team-scope.ts'
+import { exactOnceOption, intactPermissionInput, matchesPinnedDevinManualRequest } from './live-devin-team-scope.ts'
 
 export type DevinPermissionPhase = 'allow' | 'reject' | 'stop'
 export type MarkerWrite = { readonly file_path: string; readonly content: string }
@@ -28,7 +28,7 @@ export function validateDevinMarkerPermission(input: {
   const identity =
     bridge.structuredIdentityPresent === true && bridge.identitySource === 'devin-meta'
       ? 'devin-meta'
-      : isKnownDevinManualTitleRequest(cliVersion, asked, bridge)
+      : matchesPinnedDevinManualRequest(cliVersion, asked, bridge)
         ? 'known-cli-manual'
         : undefined
   if (identity === undefined) throw new Error('LIVE_DEVIN_PERMISSION_IDENTITY_UNPROVEN')
