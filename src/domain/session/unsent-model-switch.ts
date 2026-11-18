@@ -8,6 +8,8 @@ export const unsentModelSwitchSchema = z.object({
   messageId: z.string().min(1),
   requestId: z.string().min(1),
   bindingKey: z.string().min(1),
+  /** Present only once the native user entry exists and its dispatch never entered the WAL. */
+  committed: z.object({ inputSeq: z.number().int().nonnegative(), dispatchKey: z.string().min(1) }).optional(),
 })
 
 declare module '@deepseek-ai/dsh-session/types' {

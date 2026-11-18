@@ -6,6 +6,8 @@ import { pluginRecordOf, SessionId } from '@deepseek-ai/dsh-session'
 import { RemoteError, type Principal } from '@deepseek-ai/dsh-typert-protocol'
 import { unsentModelSwitchRecord, unsentModelSwitchSchema } from '../../domain/session/unsent-model-switch.ts'
 import { acpCanonicalHash16, modeIntentBindingKey, type AcpSidecar } from '../../persistence/sidecar.ts'
+import { managedModelRetryNotice } from './managed-model-resend.ts'
+import { permitsManagedModelScope } from './managed-model.ts'
 import { readSessionFacts } from './session-facts.ts'
 
 /** A resend re-admits the original Host message; the Agent checks its model again before dispatch. */
@@ -17,6 +19,7 @@ export async function retryModelSwitchInput(
   principal: Principal | undefined,
   authorized: () => boolean,
   signal: AbortSignal,
+  confirmPending?: (profile: string, optionId: string, target: string) => Promise<void>,
 ): Promise<void> {
   const id = SessionId(sessionId)
   const unavailable = () =>
@@ -39,6 +42,17 @@ export async function retryModelSwitchInput(
   if (!parsed.success) throw unavailable()
   const ticket = parsed.data
   let input: UserMessage | undefined
+  if (ticket.committed !== undefined) {
+    if (
+      ticket.committed.inputSeq < observation.inheritedEventCount ||
+      ticket.committed.inputSeq >= failureSeq ||
+      (await sidecar.readDispatch(id, ticket.committed.dispatchKey))
+    )
+      throw unavailable()
+    const event = observation.events[ticket.committed.inputSeq]
+    if (event?.type !== 'user/message' || event.data.id !== ticket.messageId) throw unavailable()
+    input = event.data
+  }
   for (let i = failureSeq - 1; i >= observation.inheritedEventCount && input === undefined; i--) {
     const entry = observation.events[i]
     if (entry?.type === 'agent/inbox/spliced')
@@ -78,7 +92,8 @@ export async function retryModelSwitchInput(
       !authorized() ||
       ctx.get('agents', false)?.get(id) !== agent ||
       ctx.get('sessions', false)?.get(id) !== agent.session ||
-      ctx.get('agentPresets', false)?.composedPreset(agent.ctx) !== 'acp-adapter' ||
+      (ctx.get('agentPresets', false)?.composedPreset(agent.ctx) !== 'acp-adapter' &&
+        !permitsManagedModelScope(ctx, agent, current.model)) ||
       ctx.get('workspaceRegistry', false)?.archivedSessionIds.includes(id) ||
       agent.inbox.nextTurn.length > 0 ||
       agent.inbox.nextStep.length > 0 ||
@@ -91,7 +106,27 @@ export async function retryModelSwitchInput(
       next.model !== current.model
     )
       throw unavailable()
+    if (permitsManagedModelScope(ctx, agent, current.model)) {
+      const intent = await sidecar.readManagedModelIntent(id)
+      if (!intent || modeIntentBindingKey(binding.binding) !== intent.bindingKey) throw unavailable()
+      if (!intent.confirmed) {
+        if (!confirmPending) throw unavailable()
+        await confirmPending(binding.binding.profileId, intent.optionId, intent.target)
+      }
+      signal.throwIfAborted()
+      maintenanceSignal.throwIfAborted()
+      if (
+        !authorized() ||
+        agent.inbox.nextTurn.length ||
+        agent.inbox.nextStep.length ||
+        ctx.get('agents', false)?.get(id) !== agent ||
+        readSessionFacts(ctx, agent.session).unsentModelSwitch?.failureSeq !== failureSeq ||
+        agent.model.current()?.provider !== next.provider ||
+        agent.model.current()?.model !== next.model
+      )
+        throw unavailable()
+    }
     // This single native insertion consumes the ticket synchronously, before another retry can enter.
-    agent.followup(message)
+    agent.followup(ticket.committed ? managedModelRetryNotice(failureSeq) : message)
   })
 }

@@ -430,7 +430,11 @@ async function handleInitialize(msg: MockRequest) {
       : {}),
     agentCapabilities,
     authMethods: [],
-    agentInfo: { name: 'dsh-mock-acp-agent', title: 'DSH Mock ACP Agent', version: '1.0.0' },
+    agentInfo: {
+      name: process.env.MOCK_AGENT_NAME ?? 'dsh-mock-acp-agent',
+      title: 'DSH Mock ACP Agent',
+      version: '1.0.0',
+    },
   })
 }
 

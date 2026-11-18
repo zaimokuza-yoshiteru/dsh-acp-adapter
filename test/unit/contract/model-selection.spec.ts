@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  ACP_AGENT_MANAGED_MODEL_ID,
   ACP_CURRENT_CONFIG_MODEL_ID,
   ACP_MODEL_ROUTE_MAX,
   acpDeclaredModelRoute,
@@ -19,12 +20,15 @@ describe('ACP model routing identities', () => {
     expect(isAcpModelRouteWithinBounds('')).toBe(false)
   })
 
-  it('keeps the current-configuration route distinct from a real Agent value with the same spelling', () => {
-    expect(acpModelSelection(ACP_CURRENT_CONFIG_MODEL_ID)).toEqual({ kind: 'current-config' })
-    const declared = acpDeclaredModelRoute(ACP_CURRENT_CONFIG_MODEL_ID)
-    expect(declared).not.toBe(ACP_CURRENT_CONFIG_MODEL_ID)
-    expect(acpModelSelection(declared)).toEqual({ kind: 'declared-model', value: ACP_CURRENT_CONFIG_MODEL_ID })
-  })
+  it.each([ACP_CURRENT_CONFIG_MODEL_ID, ACP_AGENT_MANAGED_MODEL_ID])(
+    'keeps %s distinct from an identical Agent value',
+    (id) => {
+      expect(acpModelSelection(id)).toEqual({ kind: 'current-config' })
+      const declared = acpDeclaredModelRoute(id)
+      expect(declared).not.toBe(id)
+      expect(acpModelSelection(declared)).toEqual({ kind: 'declared-model', value: id })
+    },
+  )
 
   it.each(['model-a', 'dsh-acp:model:dsh-acp:current-config', 'dsh-acp:vendor-model'])(
     'round-trips the opaque declared value %s exactly once',

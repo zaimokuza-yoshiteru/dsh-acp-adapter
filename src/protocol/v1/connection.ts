@@ -994,9 +994,10 @@ export class AcpClientConnection {
     sessionId: string,
     prompt: acp.ContentBlock[],
     onUpdate?: SessionUpdateListener,
-    options: AcpRpcOptions = {},
+    options: AcpRpcOptions & { readonly beforeDispatch?: () => void } = {},
   ): Promise<acp.PromptResponse> {
     await this.drainPromptHostOperations(sessionId)
+    options.beforeDispatch?.()
     if (onUpdate !== undefined) this.updateListeners.add(onUpdate)
     this.terminalPromptSessionIds.delete(sessionId)
     this.activePromptSessionIds.add(sessionId)

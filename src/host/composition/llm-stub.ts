@@ -5,6 +5,7 @@
 /// <reference types="node" />
 
 import os from 'node:os'
+import { disambiguateModelLabels as disambiguateProbeModels } from '../../contract/model-labels.ts'
 import { LlmAdapter, LlmError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions,
@@ -17,7 +18,7 @@ import type * as acp from '@agentclientprotocol/sdk'
 import { acpProbeConfigKey, acpProbeFresh } from '../../domain/session/agent-config.ts'
 import type { AcpStubAgentConfig } from '../../domain/session/agent-config.ts'
 import { effectiveRuntimeOf, retiredAgentReason } from '../../contract/agent-config.ts'
-import { modelProbeOptions } from '../../agents/compatibility.ts'
+import { modelProbeOptions, supportsAgentManagedModels } from '../../agents/compatibility.ts'
 import { acpConfigOptionsSnapshot } from '../../domain/session/acp-config-options.ts'
 import { acpCanonicalHash16 } from '../../persistence/sidecar.ts'
 import { AcpClientConnection } from '../../protocol/v1/connection.ts'
@@ -33,10 +34,12 @@ import type { AcpSpawnPlanView } from '../../runtime/process/types.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
 import { normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
 import {
+  ACP_AGENT_MANAGED_MODEL_ID,
   ACP_CURRENT_CONFIG_MODEL_ID,
   acpDeclaredModelRoute,
   acpModelConfigOption,
   acpModelSelection,
+  isAcpAgentManagedModel,
 } from '../../contract/model-selection.ts'
 import { redactSecretText } from '../../domain/observability/redaction.ts'
 
@@ -197,25 +200,14 @@ export function reasoningInfoFromConfigOptions(
   }
 }
 
-/** Apply display-only disambiguation after flattening ACP model options.
- * Identity (`id`) and the option value are never changed and names from
- * different profiles are intentionally not compared. */
-export function disambiguateProbeModels(models: readonly LlmModelInfo[]): LlmModelInfo[] {
-  const counts = new Map<string, number>()
-  for (const model of models) counts.set(model.name, (counts.get(model.name) ?? 0) + 1)
-  return models.map((model) => {
-    if ((counts.get(model.name) ?? 0) < 2) return model
-    if (model.id !== model.name) return { ...model, name: `${model.name} · ${model.id}` }
-    const description = model.description?.split(/\r?\n/, 1)[0]?.trim()
-    if (description !== undefined && description.length > 0) {
-      const short = description.length > 80 ? `${description.slice(0, 77)}...` : description
-      return { ...model, name: `${model.name} · ${short}` }
-    }
-    return model
-  })
-}
+export { disambiguateProbeModels }
 
-export function probeModels(provider: string, configOptions: AcpProbeResult['configOptions']): LlmModelInfo[] {
+export function probeModels(
+  provider: string,
+  configOptions: AcpProbeResult['configOptions'],
+  peer?: Pick<AcpProbeResult, 'agentInfo' | 'agentCapabilities'>,
+  profile?: AcpStubAgentConfig,
+): LlmModelInfo[] {
   const option = acpModelConfigOption(configOptions)
   const seen = new Set<string>()
   const models: LlmModelInfo[] = []
@@ -236,9 +228,16 @@ export function probeModels(provider: string, configOptions: AcpProbeResult['con
       })
     }
   }
-  return models.length === 0
-    ? [{ provider, id: ACP_CURRENT_CONFIG_MODEL_ID, name: 'Agent current configuration' }]
-    : disambiguateProbeModels(models)
+  if (models.length === 0) return [{ provider, id: ACP_CURRENT_CONFIG_MODEL_ID, name: 'Agent current configuration' }]
+  const declared = disambiguateProbeModels(models)
+  if (
+    peer?.agentCapabilities?.loadSession === true &&
+    supportsAgentManagedModels(peer.agentInfo?.name, profile) &&
+    option !== undefined &&
+    seen.has(option.currentValue)
+  )
+    declared.push({ provider, id: ACP_AGENT_MANAGED_MODEL_ID, name: 'Agent-managed model' })
+  return declared
 }
 
 /**
@@ -416,6 +415,7 @@ export class AcpStubAdapter extends LlmAdapter {
    * model's reasoning choices. Agents without model-specific discovery keep
    * their original session-scoped snapshot. */
   configOptionsForModel(provider: string, model: string): readonly acp.SessionConfigOption[] | undefined {
+    if (isAcpAgentManagedModel(model)) return undefined
     const catalog = this.currentCatalog(provider)
     if (catalog === undefined) return undefined
     const selection = acpModelSelection(model)
@@ -489,7 +489,7 @@ export class AcpStubAdapter extends LlmAdapter {
               ...(onProcessWarn === undefined ? {} : { onProcessWarn }),
             },
       )
-      const models = probeModels(provider, probe.configOptions)
+      const models = probeModels(provider, probe.configOptions, probe, config)
       const entry = {
         key,
         at: Date.now(),

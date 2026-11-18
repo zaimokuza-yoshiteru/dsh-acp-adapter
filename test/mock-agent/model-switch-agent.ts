@@ -9,6 +9,8 @@ import { waitForFileGate } from './file-gate.ts'
 const directory = process.env.MOCK_SWITCH_DIRECTORY!
 const statePath = (id: string) => join(directory, id + '.json')
 type State = { model: string; history: string[] }
+const splitImageSupport = process.env.OPENCODE_CONFIG_CONTENT !== undefined
+const modelIds = splitImageSupport ? ['fixture/text', 'fixture/vision'] : ['a', 'b']
 const send = (message: object) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n')
 const save = (id: string, state: State) => writeFileSync(statePath(id), JSON.stringify(state))
 const options = (model: string) => [
@@ -18,7 +20,7 @@ const options = (model: string) => [
     category: 'model',
     name: 'Model',
     currentValue: model,
-    options: ['a', 'b'].map((value) => ({ name: value.toUpperCase(), value })),
+    options: modelIds.map((value) => ({ name: value.toUpperCase(), value })),
   },
 ]
 const lifetime = new AbortController()
@@ -33,22 +35,33 @@ input.on('line', async (line) => {
   if (method === 'initialize')
     return result({
       protocolVersion: 1,
-      agentInfo: { name: fault === 'other-agent' ? 'replacement' : 'switch-fixture', version: '1' },
-      agentCapabilities: { loadSession: true },
+      ...(process.env.MOCK_SWITCH_STEERING === 'yes'
+        ? { _meta: { steering: { supported: true, idleBehavior: 'promptRequired' } } }
+        : {}),
+      agentInfo: {
+        name: fault === 'other-agent' ? 'replacement' : (process.env.MOCK_SWITCH_AGENT_NAME ?? 'switch-fixture'),
+        version: '1',
+      },
+      agentCapabilities: { loadSession: true, ...(splitImageSupport ? { promptCapabilities: { image: true } } : {}) },
     })
   const session: string = method === 'session/new' ? randomUUID() : params?.sessionId
   if (typeof session !== 'string' || !/^[a-f0-9-]+$/.test(session)) return fail('Unknown session')
   const log = (data: object) =>
     appendFileSync(join(directory, 'trace'), JSON.stringify({ method, session, pid: process.pid, ...data }) + '\n')
   if (method === 'session/new') {
-    save(session, { model: 'a', history: [] })
+    const model = modelIds[0]!
+    save(session, { model, history: [] })
     log({})
-    return result({ sessionId: session, configOptions: options('a') })
+    return result({ sessionId: session, configOptions: options(model) })
   }
   if (!existsSync(statePath(session))) return fail('The original session is unavailable')
   const state: State = JSON.parse(readFileSync(statePath(session), 'utf8'))
   switch (method) {
     case 'session/load':
+      if (fault === 'refuse-second-lease') {
+        state.model = 'a'
+        save(session, state)
+      }
       log({ model: state.model })
       if (fault === 'unavailable') return fail('The original session could not be loaded')
       if (fault === 'no-snapshot') return result({})
@@ -56,6 +69,11 @@ input.on('line', async (line) => {
     case 'session/set_config_option': {
       const target = params.value
       log({ target, model: state.model, fault })
+      if (fault === 'refuse-second-lease') {
+        const correction = join(directory, 'previous-correction')
+        if (existsSync(correction)) return fail('Cannot restore the target on the final tool connection')
+        writeFileSync(correction, 'confirmed')
+      }
       if (fault === 'refuse') return fail('Requested model refused')
       if (fault === 'unconfirmed') return result({ configOptions: options(state.model) })
       if (fault === 'disconnect-before') process.exit(0)
@@ -71,12 +89,28 @@ input.on('line', async (line) => {
       }
       return result({ configOptions: options(target) })
     }
+    case '_session/steering': {
+      const markers =
+        (params.prompt as { text?: string }[])
+          .map((block) => block.text ?? '')
+          .join(' ')
+          .match(/SWITCH_TEST_[A-Z]+/g) ?? []
+      log({ model: state.model, markers })
+      return result({ outcome: 'injected' })
+    }
     case 'session/prompt': {
       const text = (params.prompt as { text?: string }[]).map((block) => block.text ?? '').join('\n')
-      const markers = text.match(/SWITCH_TEST_[A-Z]+/g) ?? []
-      log({ model: state.model, markers, history: state.history })
+      const markers: string[] = text.match(/SWITCH_TEST_[A-Z]+/g) ?? []
+      const images = (params.prompt as { type: string; data?: string }[]).filter((block) => block.type === 'image')
+      log({
+        model: state.model,
+        markers,
+        history: state.history,
+        ...(images.length ? { images: images.map((block) => block.data) } : {}),
+      })
       state.history.push(...markers)
       save(session, state)
+      if (fault === 'prompt-error') return fail('The selected model rejected the submitted prompt')
       send({
         method: 'session/update',
         params: {
@@ -87,6 +121,20 @@ input.on('line', async (line) => {
           },
         },
       })
+      if (fault.startsWith('hold-steering') && markers.includes('SWITCH_TEST_ACTIVE')) {
+        if (fault === 'hold-steering-drift') {
+          state.model = 'a'
+          save(session, state)
+          send({
+            method: 'session/update',
+            params: {
+              sessionId: session,
+              update: { sessionUpdate: 'config_option_update', configOptions: options('a') },
+            },
+          })
+        }
+        if (!(await waitForFileGate(join(directory, 'finish-steering'), lifetime.signal, 'Steering timed out'))) return
+      }
       return result({ stopReason: 'end_turn' })
     }
     default:

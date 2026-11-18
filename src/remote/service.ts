@@ -51,7 +51,7 @@ import {
   retiredAgentReason,
 } from '../domain/session/agent-config.ts'
 import { ACP_CONFIG_IDENTIFIER_MAX } from '../contract/config-options.ts'
-import { isAcpCurrentConfigModel, isAcpModelRouteWithinBounds } from '../contract/model-selection.ts'
+import { acpModelSelection, isAcpModelRouteWithinBounds } from '../contract/model-selection.ts'
 import { acpProbeConfigKey, acpVersionCompatibility, catalogIdOf } from '../domain/session/agent-config.ts'
 import { registryVersionOf } from '../domain/session/registry-versions.ts'
 import type { AcpAgentConfig } from '../domain/session/agent-config.ts'
@@ -282,7 +282,12 @@ export interface AcpRecoveryAdapterLike {
 export interface AcpAgentSessionControlLike {
   setTeamMemberMode?(sessionId: string, modeId: string): Promise<AcpAgentSessionSnapshotView>
   agentSessionSnapshot(sessionId: string): Promise<AcpAgentSessionSnapshotView>
-  setAgentSessionOption(sessionId: string, request: AcpAgentSessionOptionWrite): Promise<AcpAgentSessionSnapshotView>
+  setAgentSessionOption(
+    sessionId: string,
+    request: AcpAgentSessionOptionWrite,
+    canSelectModel?: () => boolean,
+    signal?: AbortSignal,
+  ): Promise<AcpAgentSessionSnapshotView>
 }
 
 export interface AcpRemoteServiceDeps {
@@ -296,6 +301,7 @@ export interface AcpRemoteServiceDeps {
     principal: Principal | undefined,
     authorized: () => boolean,
     signal: AbortSignal,
+    canSelectModel?: () => boolean,
   ) => Promise<void>
   /** Live runtime ownership; deliberately accepts native as well as ACP parents. */
   approvalChildren?: (parent: string) => readonly AcpApprovalChildView[] | Promise<readonly AcpApprovalChildView[]>
@@ -611,26 +617,21 @@ export class AcpRemoteService extends TypertRemoteService {
   async retryModelSwitchInput(sessionId: string, failureSeq: number, signal: AbortSignal): Promise<void> {
     if (!Number.isSafeInteger(failureSeq) || failureSeq < 0) throw badRequest('Invalid unsent input')
     const principal = principalOf(this.ctx.invocation)
-    const authorized = () => {
-      if (!this.callerCanReadSession(sessionId)) return false
-      if (principal === undefined) return true
-      const access = this.ctx.get('remoteAccess')
-      return (
-        access !== undefined &&
-        'decide' in access &&
-        typeof access.decide === 'function' &&
-        access.decide({
-          principal,
-          action: 'session/prompt',
-          resources: [{ kind: 'session', id: SessionId(sessionId) }],
-        }).kind === 'allow'
-      )
-    }
+    const authorized = () => this.sessionActionAllowed(sessionId, principal, 'session/prompt')
     if (!authorized()) throw acpRemoteFailure('user-rejected', 'Sending input is not authorized for this session')
     await this.requireOwnedSessionAccess(sessionId)
     if (this.resolved.retryModelSwitchInput === undefined)
       throw acpRemoteFailure('config', 'ACP input retry is unavailable')
-    await this.resolved.retryModelSwitchInput(sessionId, failureSeq, principal, authorized, signal)
+    await this.resolved.retryModelSwitchInput(
+      sessionId,
+      failureSeq,
+      principal,
+      authorized,
+      signal,
+      () =>
+        this.sessionActionAllowed(sessionId, principal, 'session/selectModel') &&
+        this.sessionActionAllowed(sessionId, principal, 'dshAcp/setAgentSessionOption'),
+    )
   }
 
   /** Identify this Host's fork journal owner without exposing paths or granting access. */
@@ -1081,6 +1082,22 @@ export class AcpRemoteService extends TypertRemoteService {
   }
 
   /** Global discovery carries only the sessions allowed for this actual Remote caller. */
+  private sessionActionAllowed(
+    sessionId: string,
+    principal: Principal | undefined,
+    action: 'session/prompt' | 'session/selectModel' | 'dshAcp/setAgentSessionOption',
+  ): boolean {
+    if (!this.callerCanReadSession(sessionId)) return false
+    if (principal === undefined) return true
+    const access = this.ctx.get('remoteAccess')
+    return (
+      access !== undefined &&
+      'decide' in access &&
+      typeof access.decide === 'function' &&
+      access.decide({ principal, action, resources: [{ kind: 'session', id: SessionId(sessionId) }] }).kind === 'allow'
+    )
+  }
+
   private callerCanReadSession(sessionId: string): boolean {
     // Direct in-process consumers have no Remote caller. Gateway compositions
     // always mount remoteAccess; an invoked method without it fails closed.
@@ -1276,14 +1293,19 @@ export class AcpRemoteService extends TypertRemoteService {
     }
   }
 
-  @Remote
+  @Remote({ resources: { session: (sessionId) => SessionId(sessionId) } })
   async setAgentSessionOption(
     sessionId: string,
     request: AcpAgentSessionOptionWrite,
+    signal?: AbortSignal,
   ): Promise<AcpAgentSessionSnapshotView> {
+    const principal = principalOf(this.ctx.invocation)
+    const canSelectModel = () =>
+      this.sessionActionAllowed(sessionId, principal, 'session/selectModel') &&
+      this.sessionActionAllowed(sessionId, principal, 'dshAcp/setAgentSessionOption')
     await this.requireOwnedSessionAccess(sessionId)
     const adapter = await this.agentSessionControlFor(sessionId)
-    return await preserveAcpFailure(() => adapter.setAgentSessionOption(sessionId, request))
+    return await preserveAcpFailure(() => adapter.setAgentSessionOption(sessionId, request, canSelectModel, signal))
   }
 
   @Remote
@@ -1558,7 +1580,7 @@ function probeStateView(snapshot: AcpProbeSnapshotLike): AcpAgentStateProbeView 
     ? {
         result: {
           kind: 'ok',
-          modelCount: result.models.filter((model) => !isAcpCurrentConfigModel(model.id)).length,
+          modelCount: result.models.filter((model) => acpModelSelection(model.id).kind === 'declared-model').length,
           hasModelConfigOption: result.hasModelConfigOption === true,
         },
       }
@@ -1589,7 +1611,7 @@ function probeRow(
     return {
       status: 'ok',
       at,
-      modelCount: result.models.filter((model) => !isAcpCurrentConfigModel(model.id)).length,
+      modelCount: result.models.filter((model) => acpModelSelection(model.id).kind === 'declared-model').length,
       authMethods: result.authMethods === undefined ? null : result.authMethods.map(contractAuthMethodOf),
       agentInfo: result.agentInfo == null ? null : { name: result.agentInfo.name, version: result.agentInfo.version },
       capabilities,

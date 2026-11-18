@@ -181,7 +181,18 @@ describe('ACP resources through the published Gateway and Peer', () => {
       { kind: 'acp-resource-test' },
       expect.any(Function),
       expect.any(AbortSignal),
+      expect.any(Function),
     )
+    const canConfirm = h.retryModelSwitchInput.mock.lastCall![5]!
+    expect(canConfirm()).toBe(false)
+    h.hold(['original'], false, [...actions, 'session/prompt', 'session/selectModel'])
+    expect(canConfirm()).toBe(false)
+    h.hold(['original'], false, [...actions, 'session/prompt', 'dshAcp/setAgentSessionOption'])
+    expect(canConfirm()).toBe(false)
+    h.hold(['original'], false, [...actions, 'session/prompt', 'session/selectModel', 'dshAcp/setAgentSessionOption'])
+    expect(canConfirm()).toBe(true)
+    h.hold(['different'], false, [...actions, 'session/prompt', 'session/selectModel', 'dshAcp/setAgentSessionOption'])
+    expect(canConfirm()).toBe(false)
     await h.call(h.owner, 'retryModelSwitchInput', args)
     expect(h.retryModelSwitchInput).toHaveBeenLastCalledWith(
       'original',
@@ -189,6 +200,7 @@ describe('ACP resources through the published Gateway and Peer', () => {
       undefined,
       expect.any(Function),
       expect.any(AbortSignal),
+      expect.any(Function),
     )
   })
   it('discovers a bound ACP grandchild of a cold native lead through the Gateway and SQLite owner gate', async () => {

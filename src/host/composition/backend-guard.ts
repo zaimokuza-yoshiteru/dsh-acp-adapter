@@ -13,6 +13,10 @@ import { unsentModelSwitchRecord } from '../../domain/session/unsent-model-switc
 import { acpAgentIdFromRoute } from '../../domain/session/agent-config.ts'
 import { isAcpPresetModelSwitch, requiresAcpModelSwitchExit } from '../../contract/model-transition.ts'
 
+import { isAcpAgentManagedModel } from '../../contract/model-selection.ts'
+import { managedModelResendSource, readCommittedModelRetry } from './managed-model-resend.ts'
+import { permitsManagedModelScope, managedModelUnavailable } from './managed-model.ts'
+
 export interface AcpBackendGuardOptions {
   readonly sidecar: AcpSidecar
   readonly ownsProvider: (provider: string) => boolean
@@ -68,11 +72,23 @@ async function blockWithRecovery(
 /** Install the additive, scoped request guard without replacing DSH's loop. */
 export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOptions): void {
   ctx.inject(['sessionProjections'], (projectionCtx) => {
-    const claims = new WeakMap<AbortSignal, { turn: number; step: number; messageId: string; requestId: string }>()
-    projectionCtx.on('agent/pre-step', async ({ messages, turn, step, signal }, next) => {
+    const claims = new WeakMap<
+      AbortSignal,
+      {
+        turn: number
+        step: number
+        messageId: string
+        requestId: string
+        committed?: { inputSeq: number; dispatchKey: string }
+        originalBindingKey?: string
+      }
+    >()
+    projectionCtx.on('agent/pre-step', async ({ agent, messages, turn, step, signal }, next) => {
       const decision = await next()
       claims.delete(signal)
-      const inputs = messages.filter((message) => message.source.kind === 'user')
+      const inputs = messages.filter(
+        (message) => message.source.kind === 'user' || message.source.kind === managedModelResendSource,
+      )
       const input = inputs.length === 1 ? inputs[0] : undefined
       if (
         input?.source.kind === 'user' &&
@@ -81,6 +97,22 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
         decision.messages.some((message) => message.id === input.id)
       )
         claims.set(signal, { turn, step, messageId: input.id, requestId: input.source.rpcId })
+      else if (
+        input?.source.kind === managedModelResendSource &&
+        decision.kind === 'enter' &&
+        decision.messages.some((m) => m.id === input.id)
+      ) {
+        const recovered = await readCommittedModelRetry(projectionCtx, agent.session, input.source.failureSeq, signal)
+        if (recovered?.ticket.committed)
+          claims.set(signal, {
+            turn,
+            step,
+            requestId: recovered.ticket.requestId,
+            messageId: recovered.ticket.messageId,
+            committed: recovered.ticket.committed,
+            originalBindingKey: recovered.ticket.bindingKey,
+          })
+      }
       return decision
     })
     projectionCtx.on('agent/request', async (payload, next): Promise<LlmCallConfig> => {
@@ -91,22 +123,34 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
       // A committed request identifies the backend that owns the transcript.
       // agent.model.current() is the future choice and must not stand in for it.
       const previous = session.requestHeader()?.config ?? null
-      if (requiresAcpModelSwitchExit(previous, resolved, options.ownsProvider)) {
+      const managed = targetProfile !== undefined && isAcpAgentManagedModel(resolved.model)
+      if (managed && !permitsManagedModelScope(projectionCtx, payload.agent, resolved.model))
+        throw managedModelUnavailable()
+      const stableManaged = managed && previous?.provider === resolved.provider && previous.model === resolved.model
+      if (stableManaged || requiresAcpModelSwitchExit(previous, resolved, options.ownsProvider)) {
         const presets = projectionCtx.get('agentPresets', false)
         if (
           targetProfile === undefined ||
           options.confirmModelSwitch === undefined ||
           presets === undefined ||
-          !isAcpPresetModelSwitch(previous, resolved, presets.presetForSession(session)) ||
-          presets.composedPreset(payload.agent.ctx) !== 'acp-adapter' ||
-          presets.serviceFor(payload.agent, 'compaction') !== undefined ||
-          payload.agent.ctx.get('compaction', false) !== undefined
+          (!stableManaged &&
+            (!isAcpPresetModelSwitch(previous, resolved, presets.presetForSession(session)) ||
+              presets.composedPreset(payload.agent.ctx) !== 'acp-adapter' ||
+              presets.serviceFor(payload.agent, 'compaction') !== undefined ||
+              payload.agent.ctx.get('compaction', false) !== undefined))
         )
           throw transitionError(
             'ACP_MODEL_SWITCH_UNAVAILABLE',
             'Keep the previous model or open a separate session with the selected model in this DSH mode.',
           )
         const lookup = await options.sidecar.readLatestBinding(session.id)
+        if (
+          stableManaged &&
+          lookup === undefined &&
+          !facts.acpReplaySeen &&
+          (!facts.priorSemanticHistory || session.header.isSeeded)
+        )
+          return resolved
         if (
           lookup?.status !== 'ok' ||
           lookup.binding.profileId !== targetProfile ||
@@ -131,12 +175,18 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
           if (
             claim?.turn === payload.turn &&
             claim.step === payload.step &&
+            (claim.originalBindingKey === undefined ||
+              claim.originalBindingKey === acpCanonicalHash16(modeIntentBindingKey(lookup.binding))) &&
             payload.agent.inbox.nextTurn.length === 0 &&
             payload.agent.inbox.nextStep.length === 0 &&
             projectionCtx.get('sessions', false)?.get(session.id) === session
           )
             appendPluginRecord(session, unsentModelSwitchRecord, {
-              ...claim,
+              turn: claim.turn,
+              step: claim.step,
+              messageId: claim.messageId,
+              requestId: claim.requestId,
+              ...(claim.committed ? { committed: claim.committed } : {}),
               bindingKey: acpCanonicalHash16(modeIntentBindingKey(lookup.binding)),
             })
           throw error

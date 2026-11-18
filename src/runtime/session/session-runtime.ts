@@ -221,6 +221,8 @@ export class AcpPromptNotDispatchedError extends Error {
 
 /** Options for one `prompt()` call. */
 export interface AcpPromptOptions {
+  /** Recheck the admitted input after local Host work has drained and immediately before SDK dispatch. */
+  readonly beforeDispatch?: () => void
   /** Host execution lifetime, distinct from directory/input handoff cancellation. */
   readonly hostBodySignal?: AbortSignal
   /**
@@ -1006,15 +1008,21 @@ export class AcpSessionRuntime {
             if (note.sessionId === sessionId && note.feedback.isCurrentOwner())
               context.push({ type: 'text', text: generatedContextBlock(note.feedback.text) })
           }
-          return await connection.prompt(sessionId, [...context, ...wireContent], (notification) => {
-            // Qwen's discrete "background task completed" line is task state,
-            // not part of the assistant answer.
-            if (connection.agentInfo?.name === QWEN_AGENT_NAME && qwenTaskCompletion(notification) !== undefined) return
-            // Qwen drains its cron queue before answering session/prompt: from
-            // the echoed scheduled prompt on, the stream belongs to that turn.
-            if (notification.sessionId === sessionId && this.liveAgentTurn()?.announced === false) return
-            deliver(notification)
-          })
+          return await connection.prompt(
+            sessionId,
+            [...context, ...wireContent],
+            (notification) => {
+              // Qwen's discrete "background task completed" line is task state,
+              // not part of the assistant answer.
+              if (connection.agentInfo?.name === QWEN_AGENT_NAME && qwenTaskCompletion(notification) !== undefined)
+                return
+              // Qwen drains its cron queue before answering session/prompt: from
+              // the echoed scheduled prompt on, the stream belongs to that turn.
+              if (notification.sessionId === sessionId && this.liveAgentTurn()?.announced === false) return
+              deliver(notification)
+            },
+            promptOptions.beforeDispatch === undefined ? {} : { beforeDispatch: promptOptions.beforeDispatch },
+          )
         } finally {
           this.wirePromptActive = false
         }

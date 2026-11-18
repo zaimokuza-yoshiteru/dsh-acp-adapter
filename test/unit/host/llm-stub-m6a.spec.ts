@@ -7,9 +7,14 @@ import {
   reasoningInfoFromConfigOptions,
 } from '../../../src/host/composition/llm-stub.ts'
 import type { LlmModelInfo } from '@deepseek-ai/dsh-llm'
+import { supportsAgentManagedModels } from '../../../src/agents/compatibility.ts'
 import { acpConfigOptionsSnapshot } from '../../../src/domain/session/acp-config-options.ts'
 import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts'
-import { ACP_CURRENT_CONFIG_MODEL_ID, acpDeclaredModelRoute } from '../../../src/contract/model-selection.ts'
+import {
+  ACP_AGENT_MANAGED_MODEL_ID,
+  ACP_CURRENT_CONFIG_MODEL_ID,
+  acpDeclaredModelRoute,
+} from '../../../src/contract/model-selection.ts'
 
 const config: AcpAgentConfig = { name: 'Test', command: 'agent', args: [], env: {} }
 const effortOption = (
@@ -186,6 +191,33 @@ describe('ACP model display labels', () => {
     ])
   })
 
+  it.each([
+    ['OpenCode', true, 'one', true],
+    ['codebuddy-code', true, 'one', true],
+    ['replacement', true, 'one', false],
+    ['OpenCode', false, 'one', false],
+    ['OpenCode', true, 'missing', false],
+  ] as const)(
+    'offers an explicit managed route only for a restorable, verified peer (%s, %s, %s)',
+    (name, loadSession, currentValue, offered) => {
+      const models = probeModels(
+        'acp-test',
+        [
+          {
+            id: 'engine',
+            name: 'Model',
+            type: 'select',
+            category: 'model',
+            currentValue,
+            options: [{ name: 'One', value: 'one' }],
+          },
+        ],
+        { agentInfo: { name, version: '1' }, agentCapabilities: { loadSession } },
+      )
+      expect(models.map((entry) => entry.id)).toEqual(offered ? ['one', ACP_AGENT_MANAGED_MODEL_ID] : ['one'])
+    },
+  )
+
   it('escapes a real declared model that collides with the host-only current-configuration route', () => {
     const [entry] = probeModels('acp-test', [
       {
@@ -202,6 +234,20 @@ describe('ACP model display labels', () => {
       id: acpDeclaredModelRoute(ACP_CURRENT_CONFIG_MODEL_ID),
       name: 'Actual supplier model',
     })
+  })
+
+  it('recognizes the anonymous CodeBuddy CLI by its launch, while a conflicting peer identity takes precedence', () => {
+    const direct = { command: '/opt/bin/codebuddy', args: ['--acp'] }
+    const registry = {
+      command: 'npx.cmd',
+      args: ['-y', '@tencent-ai/codebuddy-code@2.184.0', '--acp'],
+      runtime: 'codebuddy' as const,
+    }
+    expect(supportsAgentManagedModels(undefined, direct)).toBe(true)
+    expect(supportsAgentManagedModels(undefined, registry)).toBe(true)
+    expect(supportsAgentManagedModels('another-agent', direct)).toBe(false)
+    expect(supportsAgentManagedModels(undefined, { ...registry, args: ['-y', 'another-package', '--acp'] })).toBe(false)
+    expect(supportsAgentManagedModels(undefined, { ...registry, command: 'arbitrary-wrapper' })).toBe(false)
   })
 })
 

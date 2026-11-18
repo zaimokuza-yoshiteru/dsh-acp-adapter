@@ -9,6 +9,8 @@ export const ACP_MODEL_ROUTE_MAX = ACP_CONFIG_IDENTIFIER_MAX + DECLARED_PREFIX.l
 
 /** Host routing identity for using the Agent's current configuration, never an ACP model value. */
 export const ACP_CURRENT_CONFIG_MODEL_ID = `${ROUTE_PREFIX}current-config`
+/** Explicit opt-in for a main conversation whose model is selected on its ACP session. */
+export const ACP_AGENT_MANAGED_MODEL_ID = `${ROUTE_PREFIX}agent-managed`
 
 export type AcpModelSelection =
   { readonly kind: 'current-config' } | { readonly kind: 'declared-model'; readonly value: string }
@@ -32,9 +34,13 @@ export function isAcpCurrentConfigModel(model: string): boolean {
   return model === ACP_CURRENT_CONFIG_MODEL_ID
 }
 
+export function isAcpAgentManagedModel(model: string): boolean {
+  return model === ACP_AGENT_MANAGED_MODEL_ID
+}
+
 /** Decode the routing identity once; an Agent value equal to the current-config token stays a real value. */
 export function acpModelSelection(model: string): AcpModelSelection {
-  if (isAcpCurrentConfigModel(model)) return { kind: 'current-config' }
+  if (isAcpCurrentConfigModel(model) || isAcpAgentManagedModel(model)) return { kind: 'current-config' }
   const encoded = model.startsWith(DECLARED_PREFIX) ? model.slice(DECLARED_PREFIX.length) : undefined
   return {
     kind: 'declared-model',

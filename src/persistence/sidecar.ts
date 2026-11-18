@@ -183,6 +183,8 @@ export interface AcpDispatchRecord {
     readonly acceptedMessageIds: readonly string[]
     /** Absent on rows written by older pre-release builds. */
     readonly projectionFiltered?: boolean
+    /** Pre-dispatch ACP selection on a managed route, independent of completion and usage. */
+    readonly confirmedAgentModel?: string
   }
 }
 
@@ -269,6 +271,29 @@ export interface AcpBindingAgentInfo {
 export interface AcpModeIntent {
   readonly bindingKey: string
   readonly modeId: string
+}
+
+/** Most recent completed turn on one model within an exact ACP binding. */
+export interface AcpManagedModelTurn {
+  readonly model: string
+  /** Zero for a model that has only produced a failed response. */
+  readonly ordinal: number
+  readonly failureOrdinal?: number | null
+  /** Occupancy from this exact successful prompt, or null when none was observed. */
+  readonly used: number | null
+  /** Most recent window observed on this model in this binding. */
+  readonly size: number | null
+  readonly costAmount?: number | null
+  readonly costCurrency?: string | null
+}
+
+/** A confirmed target is the contract for every later dispatch on this binding. */
+export interface AcpManagedModelIntent {
+  readonly revision: number
+  readonly bindingKey: string
+  readonly optionId: string
+  readonly target: string
+  readonly confirmed: boolean
 }
 
 /** A member's unapplied model intent belongs to one exact ACP binding. */
@@ -592,7 +617,12 @@ export interface AcpSidecar {
    */
   append(sessionId: SessionId, entry: AcpSidecarEntryInput): Promise<void>
   /** Commit a confirmed cwd fork against its exact durable parent and fork intent. */
-  commitDirectoryFork(sessionId: SessionId, parent: AcpBindingData, replacement: AcpBindingData): Promise<void>
+  commitDirectoryFork(
+    sessionId: SessionId,
+    parent: AcpBindingData,
+    replacement: AcpBindingData,
+    model?: { readonly id: string; readonly value: string },
+  ): Promise<void>
   /** Persist the dispatch uncertainty before crossing the ACP process boundary. */
   beginDispatch(record: AcpDispatchRecord): Promise<void>
   /** Mark a previously durable dispatch complete; idempotent for settled rows. */
@@ -601,6 +631,10 @@ export interface AcpSidecar {
   readDispatch(sessionId: SessionId, key: string): Promise<AcpDispatchRecord | undefined>
   /** Clear a user-reviewed dispatch, or an exact key proven not to have crossed the RPC boundary. */
   clearDispatch(sessionId: SessionId, key?: string): Promise<void>
+  recordManagedModelTurn(sessionId: SessionId, bindingKey: string, turn: AcpManagedModelTurn): Promise<void>
+  recordManagedModelFailure(sessionId: SessionId, bindingKey: string, model: string, ordinal: number): Promise<void>
+  clearManagedModelFailures(sessionId: SessionId, bindingKey: string, throughOrdinal: number): Promise<void>
+  readManagedModelTurns(sessionId: SessionId, bindingKey: string): Promise<AcpManagedModelTurn[]>
   /** Upsert one external ACP activity, preserving its first-seen sequence. */
   upsertActivity(record: AcpActivityInput): Promise<AcpActivityRecord>
   /** Opening snapshot, ordered by stable first-seen activity sequence. */
@@ -682,6 +716,12 @@ export interface AcpSidecar {
    */
   writeOptionSnapshot(sessionId: SessionId, snapshot: AcpOptionsSnapshotRecord): Promise<void>
   /** Pending user selection, scoped to an exact ACP binding. */
+  readManagedModelIntent(sessionId: SessionId): Promise<AcpManagedModelIntent | undefined>
+  changeManagedModelIntent(
+    sessionId: SessionId,
+    next: Omit<AcpManagedModelIntent, 'revision'>,
+    previous?: AcpManagedModelIntent,
+  ): Promise<AcpManagedModelIntent>
   readModeIntent(sessionId: SessionId): Promise<AcpModeIntent | undefined>
   writeModeIntent(sessionId: SessionId, intent: AcpModeIntent): Promise<void>
   clearModeIntent(sessionId: SessionId, intent: AcpModeIntent): Promise<void>
@@ -930,6 +970,24 @@ CREATE TABLE IF NOT EXISTS audit (
   PRIMARY KEY (dsh_session_id, record_id)
 ) STRICT;
 CREATE UNIQUE INDEX IF NOT EXISTS audit_session_seq ON audit(dsh_session_id, seq);
+CREATE TABLE IF NOT EXISTS managed_model_turns (
+  dsh_session_id TEXT NOT NULL,
+  binding_key TEXT NOT NULL,
+  model TEXT NOT NULL,
+  ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+  failure_ordinal INTEGER,
+  used INTEGER,
+  size INTEGER,
+  cost_amount REAL,
+  cost_currency TEXT,
+  PRIMARY KEY (dsh_session_id, binding_key, model)
+) STRICT;
+CREATE TABLE IF NOT EXISTS managed_model_failure_acknowledgements (
+  dsh_session_id TEXT NOT NULL,
+  binding_key TEXT NOT NULL,
+  through_ordinal INTEGER NOT NULL CHECK (through_ordinal >= 0),
+  PRIMARY KEY (dsh_session_id, binding_key)
+) STRICT;
 CREATE UNIQUE INDEX IF NOT EXISTS audit_session_dedupe ON audit(dsh_session_id, dedupe_key) WHERE dedupe_key IS NOT NULL;
 CREATE TABLE IF NOT EXISTS bindings (
   dsh_session_id TEXT PRIMARY KEY,
@@ -938,6 +996,14 @@ CREATE TABLE IF NOT EXISTS bindings (
   acp_session_id TEXT,
   payload TEXT NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS managed_model_intents (
+  dsh_session_id TEXT PRIMARY KEY,
+  binding_key TEXT NOT NULL,
+  option_id TEXT NOT NULL,
+  target TEXT NOT NULL,
+  confirmed INTEGER NOT NULL CHECK (confirmed IN (0, 1)),
+  revision INTEGER NOT NULL DEFAULT 1
+);
 CREATE TABLE IF NOT EXISTS mode_intents (
   dsh_session_id TEXT PRIMARY KEY,
   binding_key TEXT NOT NULL,
@@ -1206,6 +1272,8 @@ class SidecarStore implements AcpSidecar {
         (db.prepare('PRAGMA table_info(dispatch_ledger)').all() as Array<{ name?: string }>).map((row) => row.name),
       )
       if (!dispatchColumns.has('provenance')) db.exec('ALTER TABLE dispatch_ledger ADD COLUMN provenance TEXT')
+      if (!tableColumns(db, 'managed_model_intents').has('revision'))
+        db.exec('ALTER TABLE managed_model_intents ADD COLUMN revision INTEGER NOT NULL DEFAULT 1')
       const memberModelColumns = new Set(
         (db.prepare('PRAGMA table_info(member_model_selections)').all() as Array<{ name?: string }>).map(
           (row) => row.name,
@@ -1727,12 +1795,32 @@ class SidecarStore implements AcpSidecar {
     }
   }
 
-  async commitDirectoryFork(sessionId: SessionId, parent: AcpBindingData, replacement: AcpBindingData): Promise<void> {
+  async commitDirectoryFork(
+    sessionId: SessionId,
+    parent: AcpBindingData,
+    replacement: AcpBindingData,
+    model?: { readonly id: string; readonly value: string },
+  ): Promise<void> {
     assertSafeSessionId(sessionId)
     this.drainQueue()
     const time = this.now()
     this.transaction(() => {
       this.insertInTransaction(sessionId, { kind: 'binding', time, data: replacement }, parent)
+      // Move only this verified parent's choice. A fork that does not report the selected
+      // model needs a fresh user confirmation before any message may reach the child.
+      this.ensureDb()
+        .prepare(
+          'UPDATE managed_model_intents SET binding_key = ?, revision=revision+1, option_id = COALESCE(?, option_id), confirmed = CASE WHEN option_id = ? AND target = ? THEN confirmed ELSE 0 END WHERE dsh_session_id = ? AND binding_key = ?',
+        )
+        .run(
+          modeIntentBindingKey(replacement),
+          model?.id ?? null,
+          model?.id ?? null,
+          model?.value ?? null,
+          sessionId,
+          modeIntentBindingKey(parent),
+        )
+
       this.insertInTransaction(sessionId, {
         kind: 'session-fork',
         time,
@@ -1763,6 +1851,12 @@ class SidecarStore implements AcpSidecar {
       throw new TypeError('dsh-acp dispatch key must be 1..1024 characters')
     if (record.provider.length === 0 || record.model.length === 0 || !Number.isSafeInteger(record.createdAt))
       throw new TypeError('dsh-acp dispatch record is malformed')
+    const selected = record.provenance?.confirmedAgentModel
+    if (
+      selected !== undefined &&
+      (typeof selected !== 'string' || !selected || selected.length > ACP_CONFIG_IDENTIFIER_MAX)
+    )
+      throw new TypeError('Invalid confirmed ACP model')
     const provenance = record.provenance === undefined ? null : JSON.stringify(record.provenance)
     if (provenance !== null && provenance.length > 32_768)
       throw new TypeError('dsh-acp dispatch provenance exceeds 32 KiB')
@@ -1854,7 +1948,16 @@ class SidecarStore implements AcpSidecar {
     if (typeof row.provenance === 'string') {
       try {
         const parsed = JSON.parse(row.provenance)
-        if (isPlainObject(parsed)) provenance = parsed as AcpDispatchRecord['provenance']
+        if (isPlainObject(parsed)) {
+          if (
+            parsed.confirmedAgentModel !== undefined &&
+            (typeof parsed.confirmedAgentModel !== 'string' ||
+              !parsed.confirmedAgentModel ||
+              parsed.confirmedAgentModel.length > ACP_CONFIG_IDENTIFIER_MAX)
+          )
+            delete parsed.confirmedAgentModel
+          provenance = parsed as AcpDispatchRecord['provenance']
+        }
       } catch {
         /* malformed provenance is omitted from diagnostics */
       }
@@ -2357,7 +2460,13 @@ class SidecarStore implements AcpSidecar {
     try {
       this.transaction(() => {
         this.upsertRecoveryState(validated)
-        if (options?.clearDispatch === true) this.stmtDeleteDispatch?.run(validated.dshSessionId)
+        if (options?.clearDispatch === true) {
+          this.stmtDeleteDispatch?.run(validated.dshSessionId)
+          if (validated.lastUserAction === 'rebind-blank')
+            this.ensureDb()
+              .prepare('DELETE FROM managed_model_intents WHERE dsh_session_id=?')
+              .run(validated.dshSessionId)
+        }
       })
       return Promise.resolve()
     } catch (error: unknown) {
@@ -2522,6 +2631,163 @@ class SidecarStore implements AcpSidecar {
     if (db === undefined) return 0
     const row = this.stmtMaxSeq?.get(sessionId) as { max_seq?: number | bigint | null } | undefined
     return Number(row?.max_seq ?? 0)
+  }
+
+  async recordManagedModelTurn(sessionId: SessionId, bindingKey: string, turn: AcpManagedModelTurn): Promise<void> {
+    assertSafeSessionId(sessionId)
+    if (
+      !bindingKey ||
+      bindingKey.length > ACP_MEMBER_BINDING_KEY_MAX ||
+      !turn.model ||
+      turn.model.length > ACP_CONFIG_IDENTIFIER_MAX ||
+      !Number.isSafeInteger(turn.ordinal) ||
+      turn.ordinal < 1 ||
+      (turn.used === null) !== (turn.size === null) ||
+      (turn.used !== null && (!Number.isSafeInteger(turn.used) || turn.used < 0)) ||
+      (turn.size !== null && (!Number.isSafeInteger(turn.size) || turn.size <= 0))
+    )
+      throw new TypeError('Invalid ACP managed model turn')
+    this.ensureDb()
+      .prepare(
+        `
+      INSERT INTO managed_model_turns (dsh_session_id, binding_key, model, ordinal, used, size, cost_amount, cost_currency)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (dsh_session_id, binding_key, model) DO UPDATE SET
+        ordinal = excluded.ordinal, used = excluded.used, size = COALESCE(excluded.size, managed_model_turns.size),
+        cost_amount = excluded.cost_amount, cost_currency = excluded.cost_currency
+      WHERE excluded.ordinal > managed_model_turns.ordinal
+    `,
+      )
+      .run(
+        sessionId,
+        bindingKey,
+        turn.model,
+        turn.ordinal,
+        turn.used,
+        turn.size,
+        turn.costAmount ?? null,
+        turn.costCurrency ?? null,
+      )
+  }
+
+  async readManagedModelTurns(sessionId: SessionId, bindingKey: string): Promise<AcpManagedModelTurn[]> {
+    assertSafeSessionId(sessionId)
+    return (this.openIfExists()
+      ?.prepare(
+        `SELECT model, ordinal, used, size, cost_amount AS costAmount, cost_currency AS costCurrency,
+          CASE WHEN failure_ordinal > COALESCE(through_ordinal, 0) THEN failure_ordinal END AS failureOrdinal
+        FROM managed_model_turns LEFT JOIN managed_model_failure_acknowledgements USING (dsh_session_id, binding_key)
+        WHERE dsh_session_id = ? AND binding_key = ? ORDER BY ordinal DESC`,
+      )
+      .all(sessionId, bindingKey) ?? []) as unknown as AcpManagedModelTurn[]
+  }
+
+  async recordManagedModelFailure(
+    sessionId: SessionId,
+    bindingKey: string,
+    model: string,
+    ordinal: number,
+  ): Promise<void> {
+    assertSafeSessionId(sessionId)
+    if (
+      !model ||
+      model.length > ACP_CONFIG_IDENTIFIER_MAX ||
+      !Number.isSafeInteger(ordinal) ||
+      ordinal <= 0 ||
+      !bindingKey ||
+      bindingKey.length > ACP_MEMBER_BINDING_KEY_MAX
+    )
+      throw new TypeError('Invalid ACP failed model turn')
+    this.ensureDb()
+      .prepare(
+        `
+      INSERT INTO managed_model_turns (dsh_session_id, binding_key, model, ordinal, failure_ordinal)
+      VALUES (?, ?, ?, 0, ?)
+      ON CONFLICT (dsh_session_id, binding_key, model) DO UPDATE SET failure_ordinal = excluded.failure_ordinal
+      WHERE excluded.failure_ordinal > COALESCE(managed_model_turns.failure_ordinal, 0)
+    `,
+      )
+      .run(sessionId, bindingKey, model, ordinal)
+  }
+
+  async clearManagedModelFailures(sessionId: SessionId, bindingKey: string, throughOrdinal: number): Promise<void> {
+    assertSafeSessionId(sessionId)
+    if (
+      !bindingKey ||
+      bindingKey.length > ACP_MEMBER_BINDING_KEY_MAX ||
+      !Number.isSafeInteger(throughOrdinal) ||
+      throughOrdinal < 0
+    )
+      throw new TypeError('Invalid ACP model failure acknowledgement')
+    this.ensureDb()
+      .prepare(
+        `
+      INSERT INTO managed_model_failure_acknowledgements VALUES (?, ?, ?)
+      ON CONFLICT (dsh_session_id, binding_key) DO UPDATE SET through_ordinal = excluded.through_ordinal
+      WHERE excluded.through_ordinal > managed_model_failure_acknowledgements.through_ordinal
+    `,
+      )
+      .run(sessionId, bindingKey, throughOrdinal)
+  }
+
+  async readManagedModelIntent(sessionId: SessionId): Promise<AcpManagedModelIntent | undefined> {
+    assertSafeSessionId(sessionId)
+    const row = this.openIfExists()
+      ?.prepare(
+        'SELECT binding_key, option_id, target, confirmed,revision FROM managed_model_intents WHERE dsh_session_id = ?',
+      )
+      .get(sessionId) as
+      { binding_key: string; option_id: string; target: string; confirmed: number; revision: number } | undefined
+    return row === undefined
+      ? undefined
+      : {
+          bindingKey: row.binding_key,
+          optionId: row.option_id,
+          target: row.target,
+          confirmed: row.confirmed === 1,
+          revision: row.revision,
+        }
+  }
+
+  async changeManagedModelIntent(
+    sessionId: SessionId,
+    next: Omit<AcpManagedModelIntent, 'revision'>,
+    previous?: AcpManagedModelIntent,
+  ): Promise<AcpManagedModelIntent> {
+    assertSafeSessionId(sessionId)
+    if (
+      !next.bindingKey ||
+      next.bindingKey.length > ACP_MEMBER_BINDING_KEY_MAX ||
+      !next.optionId ||
+      next.optionId.length > ACP_CONFIG_IDENTIFIER_MAX ||
+      !next.target ||
+      next.target.length > ACP_CONFIG_IDENTIFIER_MAX ||
+      (previous !== undefined && next.bindingKey !== previous.bindingKey)
+    )
+      throw new Error('Invalid ACP model intent')
+    const db = this.ensureDb()
+    const revision = (previous?.revision ?? 0) + 1
+    if (!Number.isSafeInteger(revision)) throw new Error('Invalid ACP model selection revision')
+    const result =
+      previous === undefined
+        ? db
+            .prepare('INSERT OR IGNORE INTO managed_model_intents VALUES (?, ?, ?, ?, ?, ?)')
+            .run(sessionId, next.bindingKey, next.optionId, next.target, Number(next.confirmed), revision)
+        : db
+            .prepare(
+              'UPDATE managed_model_intents SET option_id=?, target=?, confirmed=?, revision=? WHERE dsh_session_id=? AND binding_key=? AND revision=?',
+            )
+            .run(
+              next.optionId,
+              next.target,
+              Number(next.confirmed),
+              revision,
+              sessionId,
+              previous.bindingKey,
+              previous.revision,
+            )
+    if (result.changes !== 1) throw new Error('ACP model selection has changed')
+    return { ...next, revision }
   }
 
   async readModeIntent(sessionId: SessionId): Promise<AcpModeIntent | undefined> {

@@ -47,7 +47,7 @@ function optionalBundleDirectory(bundle: OptionalBundle): string {
 
 /** Install through real profile bundles so ConfigEditor owns writable configuration. */
 export async function launchAdapterWorld({
-  adapterDirectory = root,
+  adapterDirectory = process.env.DSH_E2E_ADAPTER_DIRECTORY ?? root,
   teams = false,
   timedAskUser,
   teamMembers,

@@ -15,6 +15,11 @@ import {
 } from '../../domain/session/session-facts.ts'
 import { currentModelContextSnapshots } from '../../domain/session/model-context-snapshots.ts'
 
+import { appendPluginRecord } from '@deepseek-ai/dsh-session'
+import { unsentModelSwitchRecord } from '../../domain/session/unsent-model-switch.ts'
+import { readCommittedModelRetry } from './managed-model-resend.ts'
+import { permitsManagedModelScope } from './managed-model.ts'
+
 declare module '@deepseek-ai/cordis' {
   interface Context {
     acpSessionFacts: AcpSessionFacts
@@ -27,7 +32,7 @@ const unroutedHistoryView: AcpExecutionView = { externalSubagent: false, complet
 
 const acpExecutionProjection = {
   key: 'acpExecution',
-  stateVersion: 6,
+  stateVersion: 7,
   stateSchema: sessionFactsSchema,
   init: (_header, inheritedEventCount) => initialSessionFacts(inheritedEventCount),
   apply: applySessionFact,
@@ -95,6 +100,24 @@ export function acpSessionView(
   const factsOf = readFacts ?? sessionFactsReader(ctx)
   return {
     identity: session,
+    readCommittedModelRetry: (seq, signal) => readCommittedModelRetry(ctx, session, seq, signal),
+    recordUndispatchedModelInput: (ticket) => {
+      const agent = ctx.get('agents', false)?.get(session.id)
+      if (
+        agent?.session === session &&
+        agent.inbox.nextTurn.length === 0 &&
+        agent.inbox.nextStep.length === 0 &&
+        ctx.get('sessions', false)?.get(session.id) === session
+      )
+        appendPluginRecord(session, unsentModelSwitchRecord, ticket)
+    },
+    managedModelRoute: (provider) => {
+      const agent = ctx.get('agents', false)?.get(session.id)
+      const route = agent?.model.current()
+      return (
+        agent?.session === session && route?.provider === provider && permitsManagedModelScope(ctx, agent, route.model)
+      )
+    },
     header: session.header,
     inheritedEventCount: session.inheritedEventCount,
     get workingDirectory() {

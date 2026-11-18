@@ -4,7 +4,11 @@ import type { AcpMemberModelSelection, AcpSidecar } from '../../persistence/side
 import { modeIntentBindingKey } from '../../persistence/sidecar.ts'
 import type { AcpProfileAdapter } from '../composition/profile-adapter.ts'
 import { normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
-import { ACP_CURRENT_CONFIG_MODEL_ID, acpDeclaredModelRoute } from '../../contract/model-selection.ts'
+import {
+  ACP_CURRENT_CONFIG_MODEL_ID,
+  acpDeclaredModelRoute,
+  isAcpAgentManagedModel,
+} from '../../contract/model-selection.ts'
 import type {} from '@deepseek-ai/dsh-session-query'
 import { localSubagentIdentity } from '../subagent/tree.ts'
 import { requiresAcpModelSwitchExit } from '../../contract/model-transition.ts'
@@ -171,7 +175,9 @@ export function createMemberModels(ctx: Context, { sidecar, adapterFor }: Member
   return {
     facts,
     async catalog(provider: string) {
-      return (await llm.listModels(provider)).map((model) => ({ id: model.id, name: model.name }))
+      return (await llm.listModels(provider))
+        .filter((model) => !isAcpAgentManagedModel(model.id))
+        .map((model) => ({ id: model.id, name: model.name }))
     },
     async save(id: string, provider: string, model: string, authorize: () => void) {
       const binding = await sidecar.readLatestBinding(id as never)

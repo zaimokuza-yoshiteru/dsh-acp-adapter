@@ -8,7 +8,11 @@ import { modeIntentBindingKey } from '../../../src/persistence/sidecar.ts'
 import { createMemberModels } from '../../../src/host/teams/member-models.ts'
 import { createTeamManagement } from '../../../src/host/teams/management.ts'
 import type { AcpConfigOption } from '../../../src/contract/remote.ts'
-import { ACP_CURRENT_CONFIG_MODEL_ID, acpDeclaredModelRoute } from '../../../src/contract/model-selection.ts'
+import {
+  ACP_AGENT_MANAGED_MODEL_ID,
+  ACP_CURRENT_CONFIG_MODEL_ID,
+  acpDeclaredModelRoute,
+} from '../../../src/contract/model-selection.ts'
 
 const contexts: Context[] = []
 
@@ -89,6 +93,7 @@ async function harness(options: HarnessOptions = {}) {
     listModels: vi.fn(async () => [
       { id: 'model-default', name: 'Default' },
       { id: 'model-next', name: 'Next' },
+      { id: ACP_AGENT_MANAGED_MODEL_ID, name: 'Agent-managed model' },
     ]),
     resolveCallConfig: vi.fn(async ({ provider, model }: { provider: string; model: string }) => ({
       provider,

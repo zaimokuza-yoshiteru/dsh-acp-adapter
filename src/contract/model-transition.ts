@@ -1,4 +1,4 @@
-import { isAcpCurrentConfigModel, isAcpModelRouteWithinBounds } from './model-selection.ts'
+import { acpModelSelection, isAcpModelRouteWithinBounds } from './model-selection.ts'
 
 type ModelRoute = { readonly provider: string; readonly model: string }
 
@@ -15,8 +15,8 @@ export function isAcpPresetModelSwitch(
     previous.model !== next.model &&
     isAcpModelRouteWithinBounds(previous.model) &&
     isAcpModelRouteWithinBounds(next.model) &&
-    !isAcpCurrentConfigModel(previous.model) &&
-    !isAcpCurrentConfigModel(next.model)
+    acpModelSelection(previous.model).kind === 'declared-model' &&
+    acpModelSelection(next.model).kind === 'declared-model'
   )
 }
 

@@ -1,5 +1,51 @@
 import type * as acp from '@agentclientprotocol/sdk'
 import { isDeepStrictEqual } from 'node:util'
+import { ACP_CONFIG_IDENTIFIER_MAX } from '../contract/config-options.ts'
+
+interface OpenCodeDeclaredModel {
+  readonly context?: number
+  readonly imageInput?: boolean
+}
+
+function object(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined
+}
+
+/** Only read numeric limits and input modalities for the exact advertised ids.
+ * Other OpenCode settings can include credentials and never leave this function. */
+export function openCodeInlineModelFacts(
+  content: string,
+  models: ReadonlySet<string>,
+): ReadonlyMap<string, OpenCodeDeclaredModel> {
+  const result = new Map<string, OpenCodeDeclaredModel>()
+  if (!content || content.length > 1_048_576) return result
+  let config: unknown
+  try {
+    config = JSON.parse(content)
+  } catch {
+    return result
+  }
+  const providers = object(object(config)?.provider)
+  if (!providers) return result
+  for (const id of models) {
+    const boundary = id.indexOf('/')
+    if (id.length > ACP_CONFIG_IDENTIFIER_MAX || boundary < 1) continue
+    const provider = object(providers[id.slice(0, boundary)])
+    const model = object(object(provider?.models)?.[id.slice(boundary + 1)])
+    const context = object(model?.limit)?.context
+    const inputs = object(model?.modalities)?.input
+    const modalities =
+      Array.isArray(inputs) && inputs.length > 0 && inputs.every((x) => typeof x === 'string') ? inputs : undefined
+    if (model)
+      result.set(id, {
+        ...(typeof context === 'number' && Number.isSafeInteger(context) && context > 0 ? { context } : {}),
+        ...(modalities ? { imageInput: modalities.includes('image') } : {}),
+      })
+  }
+  return result
+}
 
 /** OpenCode 2's question tool expands each prompt into a select and a custom
  * answer carrier. Recognize only its exact projection of the live tool input. */
