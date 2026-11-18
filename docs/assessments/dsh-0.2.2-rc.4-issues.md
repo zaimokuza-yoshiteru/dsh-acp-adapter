@@ -15,7 +15,7 @@
 
 ## PR #79 的贡献与合入情况
 
-NateScarlet 在 [PR #79](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/pull/79) 提交了 RC.1 适配代码，覆盖批量工具调用、逐步工具准入、PTC 的 `run_code`、投影和成员模型恢复。#74、#77 和 #78 都早于这份 PR。当前主线通过独立实现覆盖了这些主要功能，PR 的五个原始提交没有合入。作者后来[回复了三项逐行审阅](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/pull/79#issuecomment-6937855420)，公开记录中尚无维护者对这些修改的处理结论。
+NateScarlet 在 [PR #79](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/pull/79) 提交了 RC.1 适配代码，覆盖批量工具调用、逐步工具准入、PTC 的 `run_code`、投影和成员模型恢复。#74、#77 和 #78 都早于这份 PR。当前主线通过独立实现覆盖了这些主要功能，PR 的五个原始提交没有合入。11 月 17 日，作者账户[回复了三项逐行审阅并请求复核](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/pull/79#issuecomment-6937855420)。11 月 18 日，作者自行关闭了 PR。公开讨论中没有维护者对这五个提交的最终反馈。
 
 有一处值得保留区别。工具热重载时，PR 允许在 schema 相同的情况下重新取得新工具实现。主线保留已接纳的调用和其他工具，替换后的实现需经过新连接准入。投影注册和停启时序由现有实现及回归覆盖。[工具替换回归](../../test/unit/runtime/team-bridge.spec.ts) · [投影回归](../../test/unit/host/session-facts-projection.spec.ts)
 
