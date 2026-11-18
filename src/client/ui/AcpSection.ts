@@ -93,16 +93,26 @@ function Loaded({
   useEffect(() => {
     const trigger = addTrigger.current
     if (!addMenuOpen || trigger === null) return
-    // CSS hides a portaled menu when its anchor is fully clipped. Close it so
-    // a subsequent Tab cannot select the previously focused, invisible row.
-    const observer = new IntersectionObserver(([entry]) => {
-      if (entry === undefined || entry.intersectionRatio > 0) return
+    const close = () => {
       if (addFooter.current?.closest('[role="menu"]')?.contains(trigger.ownerDocument.activeElement))
         trigger.focus({ preventScroll: true })
       setAddMenuOpen(false)
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry?.intersectionRatio === 0) close()
     })
     observer.observe(trigger)
-    return () => observer.disconnect()
+    // The native portal follows its scrolling anchor even when the card already fills
+    // the window. Dismiss on panel scroll while leaving the menu's own scrollport alone.
+    const onScroll = (event: Event) => {
+      if (event.target instanceof Node && event.target.contains(trigger)) close()
+    }
+    const doc = trigger.ownerDocument
+    doc.addEventListener('scroll', onScroll, true)
+    return () => {
+      observer.disconnect()
+      doc.removeEventListener('scroll', onScroll, true)
+    }
   }, [addMenuOpen])
   // Opening the panel reads saved health facts; only an explicit recheck probes.
   useEffect(() => {

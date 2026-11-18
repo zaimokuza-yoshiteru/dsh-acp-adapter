@@ -7,7 +7,9 @@ Find installation commands, release dates, and package checksums on [GitHub Rele
 ## Unreleased
 
 - 适配 DSH `0.2.2-rc.4`。ACP Agent 拒绝继续时，提示会说明下次请求会跳过本轮内容。
+- 在插件详情中滚动页面会收起打开的 Agent 目录，避免列表移出小屏。
 - Support DSH `0.2.2-rc.4`. When an ACP Agent refuses to continue, the message explains which turn it will skip on the next request.
+- Scrolling the plugin details page dismisses the open Agent catalog so its entries stay reachable on small screens.
 
 ## 0.2.2-rc.3.1
 

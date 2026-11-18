@@ -117,7 +117,17 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     }
     await addButton.click()
     await menu.waitFor({ state: 'visible' })
-    await addButton.evaluate((element) => element.scrollIntoView({ block: 'end' }))
+    // Scrolling the settings panel can move the CSS-anchored card beyond the window.
+    // The trigger stays visible and can immediately reopen it at its new position.
+    const beforeScroll = required(await addButton.boundingBox(), 'catalog trigger before panel scroll')
+    await addButton.evaluate((button) => button.scrollIntoView({ block: 'center' }))
+    await menu.waitFor({ state: 'detached' })
+    const afterScroll = required(await addButton.boundingBox(), 'catalog trigger after panel scroll')
+    expect(afterScroll.y).not.toBe(beforeScroll.y)
+    expect(afterScroll.y).toBeGreaterThanOrEqual(0)
+    expect(afterScroll.y + afterScroll.height).toBeLessThanOrEqual(500)
+    expect(await addButton.evaluate((button) => button === document.activeElement)).toBe(true)
+    await addButton.click()
     await expectCatalogMenuFits(menu)
     await page.screenshot({ path: join(evidence, 'menu-after-scroll.png'), animations: 'disabled' })
     await page.keyboard.press('Escape')
