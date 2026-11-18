@@ -507,6 +507,7 @@ export async function createDshToolBridge(
     accepting: boolean
     remoteOutcomeKnown: boolean
     externallyAborted: boolean
+    handoff: 'none' | 'yield' | 'concluded'
   }
   type PendingFeedback = {
     readonly context: unknown
@@ -1175,6 +1176,7 @@ export async function createDshToolBridge(
           if (diagnosticBase !== undefined) diagnosticHandlerBase = diagnosticBase
           const queuedTeamMessage = definition.name === 'wait_agent' && agent.inbox.nextStep.some(isPendingPeerMessage)
           if (queuedTeamMessage) {
+            if (callPrompt.handoff !== 'concluded') callPrompt.handoff = 'yield'
             const text = DEFERRED_WAIT_TEXT
             if (diagnosticEnabled && diagnosticBase !== undefined) {
               // This is an MCP-level deferred error, not a Host call; omit hostCallId and host-execute events.
@@ -1300,9 +1302,6 @@ export async function createDshToolBridge(
           } catch {
             // A UI/control subscriber cannot prevent tool feedback from entering the native inbox.
           }
-          const repeatToolReminderPending = additionalContexts.some((context) =>
-            hasSourceKind(context, 'repeat-tool-reminder'),
-          )
           const content = await toolContent(
             result.content,
             bodySignal,
@@ -1357,28 +1356,43 @@ export async function createDshToolBridge(
             directory.isLive()
           )
             onTurnConcluded?.()
-          if (batch.concluded)
+          // A tool can fold queued input into its result. Read the native inbox at return time,
+          // after async content conversion, and only retract guidance issued by this prompt.
+          const nextStep = agent.inbox.nextStep
+          const shouldYield = !batch.concluded && callPrompt.handoff !== 'concluded' && nextStep.length > 0
+          const repeatToolReminderPending =
+            shouldYield &&
+            additionalContexts.some(
+              (context) =>
+                hasSourceKind(context, 'repeat-tool-reminder') && nextStep.some((message) => message.id === context.id),
+            )
+          if (batch.concluded) {
+            callPrompt.handoff = 'concluded'
             content.push({
               type: 'text',
               text: generatedContextBlock(
                 'This DSH tool requests the end of the current turn. Finish this ACP response now without further tool calls.',
               ),
             })
-          if (repeatToolReminderPending)
+          } else if (shouldYield) {
+            callPrompt.handoff = 'yield'
             content.push({
               type: 'text',
               text: generatedContextBlock(
-                'DSH has queued feedback because this tool was repeated. Stop repeating the tool call and end this ACP response now so DSH can deliver the pending feedback. Then continue based on that feedback.',
+                repeatToolReminderPending
+                  ? 'DSH has queued feedback because this tool was repeated. Stop repeating the tool call and end this ACP response now so DSH can deliver the pending feedback. Then continue based on that feedback.'
+                  : 'DSH has queued input for your next step. End this ACP response now with a brief progress update, without a final answer; DSH will deliver the pending input and continue the turn.',
               ),
             })
-          // Do not steal or duplicate inbox messages. Only the native loop claims them.
-          if (agent.inbox.nextStep.length > 0 && !repeatToolReminderPending)
+          } else if (callPrompt.handoff === 'yield') {
+            callPrompt.handoff = 'none'
             content.push({
               type: 'text',
               text: generatedContextBlock(
-                'DSH has queued input for your next step. End this ACP response now with a brief progress update, without a final answer; DSH will deliver the pending input and continue the turn.',
+                'DSH no longer has queued input for this step. Continue any unfinished work in this ACP response.',
               ),
             })
+          }
           if (diagnosticEnabled && diagnosticBase !== undefined)
             collectLiveDiagnostic(() => {
               const returnInbox = diagnosticInboxCounts(agent)
@@ -1395,7 +1409,7 @@ export async function createDshToolBridge(
                 inboxSnapshotStage: returnInbox === undefined ? ('unavailable' as const) : ('handler-return' as const),
                 additionalContextsCount: additionalContexts.length,
                 repeatReminderContextCount,
-                pendingYieldAppended: agent.inbox.nextStep.length > 0 && !repeatToolReminderPending,
+                pendingYieldAppended: shouldYield && !repeatToolReminderPending,
                 concludesTurnReminderAppended: batch.concluded,
                 durationMs: Math.max(0, Math.round(performance.now() - dispatchStartedAt)),
                 handlerIsError,
@@ -1509,6 +1523,7 @@ export async function createDshToolBridge(
         accepting: true,
         remoteOutcomeKnown: false,
         externallyAborted: false,
+        handoff: 'none',
       }
     },
     endPrompt(options) {
