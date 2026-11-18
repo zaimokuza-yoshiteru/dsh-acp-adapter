@@ -106,7 +106,7 @@ it('keeps native search and reasoning usable while model changes offer an indepe
     await page.getByRole('menuitemradio', { name: 'Mock Model B', exact: true }).waitFor()
     await search.press('ArrowDown')
     await search.press('Enter')
-    const dialog = page.getByRole('dialog', { name: 'Switching ACP models in DSH requires a new session', exact: true })
+    const dialog = page.getByRole('dialog', { name: 'Use this model in a new session', exact: true })
     await dialog.waitFor()
     await dialog.getByText(/blank session with .*Mock Model B.*history and draft stay here/).waitFor()
     await page.getByRole('button', { name: /^Select model, current Mock Model A/ }).waitFor()
@@ -123,7 +123,7 @@ it('keeps native search and reasoning usable while model changes offer an indepe
       await capture(page, `model-switch-390-${theme}.png`)
     }
     await host.ctx.settings.replace('locale', { preference: 'zh' })
-    const zhDialog = page.getByRole('dialog', { name: '在 DSH 中切换 ACP 模型需要新会话', exact: true })
+    const zhDialog = page.getByRole('dialog', { name: '新建会话以使用这个模型', exact: true })
     await zhDialog.getByText(/在空白会话中使用 .*Mock Model B.*对话历史和草稿留在这里/).waitFor()
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     await capture(page, 'model-switch-390-zh.png')

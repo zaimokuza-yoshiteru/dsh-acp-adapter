@@ -25,6 +25,7 @@ vi.mock('react', () => ({
 }))
 
 import { UnroutedHistoryDock } from '../../../src/client/ui/UnroutedHistoryDock.ts'
+import { UnsentModelSwitchInput } from '../../../src/client/ui/UnsentModelSwitchInput.ts'
 import { AcpAgentControl } from '../../../src/client/ui/AcpAgentControl.ts'
 import { AcpRecoveryDock } from '../../../src/client/ui/AcpRecoveryDock.ts'
 import type { IndependentSessionOutcome } from '../../../src/client/coordinator/native-session-navigation.ts'
@@ -404,4 +405,32 @@ it('offers only available model and creation actions in an imported history', ()
   grants(h.state, 'lead', [])
   expect(keys(h.imported())).toContain('unroutedHistoryCreateOnly')
   expect(keys(h.imported())).toContain('crossBackendContinue')
+})
+
+it('shows a resend action only for a failed switch with permission to send, and submits its ticket once', async () => {
+  const { state } = setup()
+  const remote = { retryModelSwitchInput: vi.fn(async () => ({ ok: true })) }
+  const render = (failureSeq?: number) => {
+    seed([])
+    return UnsentModelSwitchInput({
+      sessionId: 'lead',
+      useAccess: (action: string) => state.resource('session', 'lead', action).getSnapshot(),
+      useProjection: (_key: string, select: (value: object) => unknown) =>
+        select(failureSeq === undefined ? {} : { unsentModelSwitch: { failureSeq } }),
+      useSession: (select: (value: object) => unknown) => select({ running: false }),
+      remote,
+      t: (key: string) => key,
+    } as never)
+  }
+  for (const action of ['session/prompt', 'dshAcp/retryModelSwitchInput']) {
+    grants(state, 'lead', [action])
+    expect(render(42)).toBeNull()
+  }
+  grants(state, 'lead', ['session/prompt', 'dshAcp/retryModelSwitchInput'])
+  expect(render()).toBeNull()
+  const element = render(42) as Tree
+  const button = recoveryButton((element.type as (props: object) => unknown)(element.props), 'resendUnsentMessage')
+  const retry = button.props.onClick as () => Promise<void>
+  await Promise.all([retry(), retry()])
+  expect(remote.retryModelSwitchInput).toHaveBeenCalledExactlyOnceWith('lead', 42)
 })

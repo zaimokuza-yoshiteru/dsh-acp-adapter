@@ -1,14 +1,37 @@
-/** DSH cannot compact the private context held by an external Agent.
- * Keep the recorded route usable and offer a new, independent session instead. */
+import { isAcpCurrentConfigModel, isAcpModelRouteWithinBounds } from './model-selection.ts'
+
+type ModelRoute = { readonly provider: string; readonly model: string }
+
+/** Only two explicit model choices can be confirmed against the live ACP session. */
+export function isAcpPresetModelSwitch(
+  previous: ModelRoute | null | undefined,
+  next: ModelRoute,
+  preset: unknown,
+): boolean {
+  return (
+    preset === 'acp-adapter' &&
+    previous != null &&
+    previous.provider === next.provider &&
+    previous.model !== next.model &&
+    isAcpModelRouteWithinBounds(previous.model) &&
+    isAcpModelRouteWithinBounds(next.model) &&
+    !isAcpCurrentConfigModel(previous.model) &&
+    !isAcpCurrentConfigModel(next.model)
+  )
+}
+
+/** Other presets keep the native compaction boundary and independent-session handoff. */
 export function requiresAcpModelSwitchExit(
-  previous: { readonly provider: string; readonly model: string } | null | undefined,
-  next: { readonly provider: string; readonly model: string },
+  previous: ModelRoute | null | undefined,
+  next: ModelRoute,
   ownsProvider: (provider: string) => boolean,
+  preset?: unknown,
 ): boolean {
   return (
     previous != null &&
     previous.provider === next.provider &&
     previous.model !== next.model &&
-    ownsProvider(next.provider)
+    ownsProvider(next.provider) &&
+    !isAcpPresetModelSwitch(previous, next, preset)
   )
 }

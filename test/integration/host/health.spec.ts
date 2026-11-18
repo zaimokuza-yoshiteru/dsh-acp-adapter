@@ -410,6 +410,7 @@ describe('AcpRemoteService current public surface', () => {
       'recoveryFollow',
       'recoverySnapshot',
       'registerNativeFork',
+      'retryModelSwitchInput',
       'retryOriginal',
       'setAgentSessionOption',
       'setTeamMemberMode',

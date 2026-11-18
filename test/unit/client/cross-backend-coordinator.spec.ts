@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { SessionCreateError } from '@deepseek-ai/dsh-api-session-controller/client'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { AcpOwnedRoutesView } from '../../../src/contract/remote.ts'
+import { ACP_CURRENT_CONFIG_MODEL_ID } from '../../../src/contract/model-selection.ts'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import {
   CrossBackendCoordinator,
@@ -37,6 +38,7 @@ function fixture(
   options: {
     sessionId?: string
     row?: { blank: boolean; cwd?: string | null; agentPreset?: string }
+    livePreset?: string
     projection?: { lastUsed: Selection | null; next: Selection | null }
   } = {},
 ) {
@@ -57,7 +59,13 @@ function fixture(
       },
     },
   })
-  const bindings = new Map([[sessionId, { session: { projections: { faceOf: () => projection } } }]])
+  const preset = observable(options.livePreset)
+  const bindings = new Map([
+    [
+      sessionId,
+      { session: { projections: { faceOf: (key: string) => (key === 'agentPreset' ? preset : projection) } } },
+    ],
+  ])
   const sessionBinding = (id: string) => bindings.get(id)
   const main = observable({ retainedBy: { mainView: 1 } })
   const childReadable = observable(true)
@@ -517,6 +525,43 @@ describe('cross-backend coordinator', () => {
     )
     expect(f.sessions.open).toHaveBeenCalledTimes(1)
     stop()
+  })
+
+  it('keeps the native pending selection until the ACP preset confirms a same-Agent switch', async () => {
+    const used = { provider: 'acp-codex', model: 'old' }
+    const next = { ...used, model: 'new' }
+    const other = { provider: 'acp-devin', model: 'other' }
+    const f = fixture({
+      livePreset: 'acp-adapter',
+      row: { blank: false, agentPreset: 'standard' },
+      projection: { lastUsed: used, next: used },
+    })
+    const stop = f.coordinator.start()
+    f.projection.set({ lastUsed: used, next })
+    await settle()
+    expect(f.coordinator.getSnapshot().pending).toBeNull()
+    expect(f.remote.session.selectModel).not.toHaveBeenCalled()
+    expect(f.sessions.create).not.toHaveBeenCalled()
+    f.projection.set({ lastUsed: used, next: other })
+    await settle()
+    expect(f.coordinator.getSnapshot().pending?.ticket).toMatchObject({ sourceSelection: next, targetSelection: other })
+    expect(f.remote.session.selectModel).toHaveBeenCalledWith({ sessionId: 'session-1', ...next })
+    stop()
+  })
+
+  it('retains the independent-session handoff for non-ACP presets and unconfirmed model identities', () => {
+    const route = { provider: 'acp-codex', model: 'a' }
+    const next = { ...route, model: 'b' }
+    for (const preset of [undefined, 'standard', 'cordis', 'ptc', 'minimal', 'custom'])
+      expect(shouldConfirmBackendTransition({ lastUsed: route, next, blank: false, preset }, owns)).toBe(true)
+    const current = { ...route, model: ACP_CURRENT_CONFIG_MODEL_ID }
+    for (const [source, target] of [
+      [route, current],
+      [current, next],
+    ] as const)
+      expect(
+        shouldConfirmBackendTransition({ lastUsed: source, next: target, blank: false, preset: 'acp-adapter' }, owns),
+      ).toBe(true)
   })
 
   it('keeps reasoning-only changes and unowned routes outside the model-switch exit', () => {

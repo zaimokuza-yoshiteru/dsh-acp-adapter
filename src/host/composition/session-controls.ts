@@ -476,7 +476,7 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
     return true
   }
 
-  private async serializeSessionControlWrite<T>(
+  async serializeSessionControlWrite<T>(
     sessionId: string,
     operation: (owner: object | undefined) => Promise<T>,
   ): Promise<T> {

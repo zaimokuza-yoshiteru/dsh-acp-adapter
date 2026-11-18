@@ -38,6 +38,7 @@ import { resolveSubprocessSeam } from './subprocess.ts'
 import { AcpRemoteService } from '../../remote/service.ts'
 import { auditTimelineRowOf } from './audit-row.ts'
 import { installAcpBackendGuard } from './backend-guard.ts'
+import { retryModelSwitchInput } from './retry-model-switch-input.ts'
 import { createNativeForkRegistrar } from './native-fork.ts'
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import { installExternalChildCatalog } from '../subagent/catalog-publication.ts'
@@ -267,7 +268,16 @@ export async function installInstalledProfileRegistry(
   const log = createAcpLogger(ctx.logger)
   const sidecar = installAcpSidecar(ctx)
   const profileAdapters = new Map<string, AcpProfileAdapter>()
-  if (sidecar !== undefined) installAcpBackendGuard(ctx, { sidecar, ownsProvider })
+  if (sidecar !== undefined)
+    installAcpBackendGuard(ctx, {
+      sidecar,
+      ownsProvider,
+      confirmModelSwitch: async (profileId, sessionId, owner, binding, target, signal) => {
+        const adapter = profileAdapters.get(profileId)
+        if (adapter === undefined) throw new Error('The selected ACP Agent is no longer available.')
+        await adapter.confirmModelSwitch(sessionId, owner, binding, target, signal)
+      },
+    })
   // The additive composition has no AgentLoop constructor to hand this seam
   // down. Resolve the host-owned service at the composition boundary instead;
   // keeping the explicit option is useful for isolated tests and embedders.
@@ -529,7 +539,19 @@ export async function installInstalledProfileRegistry(
         nativeForkScope = { ok: false, error }
       }
     }
+    const retryLifetime = new AbortController()
+    ctx.effect(() => () => retryLifetime.abort())
     new AcpRemoteService(ctx, {
+      retryModelSwitchInput: (id, seq, principal, authorized, signal) =>
+        retryModelSwitchInput(
+          ctx,
+          sidecar,
+          id,
+          seq,
+          principal,
+          authorized,
+          AbortSignal.any([signal, retryLifetime.signal]),
+        ),
       nativeForkScope: () => {
         if (nativeForkScope === undefined) throw new Error('ACP fork scope has not been initialized')
         if (!nativeForkScope.ok) throw nativeForkScope.error

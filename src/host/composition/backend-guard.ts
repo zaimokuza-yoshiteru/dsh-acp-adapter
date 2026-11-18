@@ -2,14 +2,28 @@ import type { Context } from '@deepseek-ai/cordis'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-session-projection'
+import type {} from '@deepseek-ai/dsh-agent-preset-registry'
+import type {} from '@deepseek-ai/dsh-compaction'
+import type {} from '@deepseek-ai/dsh-api-session-controller/types'
+import { appendPluginRecord } from '@deepseek-ai/dsh-session'
 import { readSessionFacts } from './session-facts.ts'
-import type { AcpSidecar, AcpBindingLookup } from '../../persistence/sidecar.ts'
+import type { AcpSidecar, AcpBindingData, AcpBindingLookup } from '../../persistence/sidecar.ts'
+import { acpCanonicalHash16, modeIntentBindingKey } from '../../persistence/sidecar.ts'
+import { unsentModelSwitchRecord } from '../../domain/session/unsent-model-switch.ts'
 import { acpAgentIdFromRoute } from '../../domain/session/agent-config.ts'
-import { requiresAcpModelSwitchExit } from '../../contract/model-transition.ts'
+import { isAcpPresetModelSwitch, requiresAcpModelSwitchExit } from '../../contract/model-transition.ts'
 
 export interface AcpBackendGuardOptions {
   readonly sidecar: AcpSidecar
   readonly ownsProvider: (provider: string) => boolean
+  readonly confirmModelSwitch?: (
+    profileId: string,
+    sessionId: string,
+    owner: object,
+    binding: AcpBindingData,
+    target: LlmCallConfig,
+    signal: AbortSignal,
+  ) => Promise<void>
 }
 
 function transitionError(
@@ -54,6 +68,21 @@ async function blockWithRecovery(
 /** Install the additive, scoped request guard without replacing DSH's loop. */
 export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOptions): void {
   ctx.inject(['sessionProjections'], (projectionCtx) => {
+    const claims = new WeakMap<AbortSignal, { turn: number; step: number; messageId: string; requestId: string }>()
+    projectionCtx.on('agent/pre-step', async ({ messages, turn, step, signal }, next) => {
+      const decision = await next()
+      claims.delete(signal)
+      const inputs = messages.filter((message) => message.source.kind === 'user')
+      const input = inputs.length === 1 ? inputs[0] : undefined
+      if (
+        input?.source.kind === 'user' &&
+        'rpcId' in input.source &&
+        decision.kind === 'enter' &&
+        decision.messages.some((message) => message.id === input.id)
+      )
+        claims.set(signal, { turn, step, messageId: input.id, requestId: input.source.rpcId })
+      return decision
+    })
     projectionCtx.on('agent/request', async (payload, next): Promise<LlmCallConfig> => {
       const resolved = await next()
       const session = payload.agent.session
@@ -62,11 +91,58 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
       // A committed request identifies the backend that owns the transcript.
       // agent.model.current() is the future choice and must not stand in for it.
       const previous = session.requestHeader()?.config ?? null
-      if (requiresAcpModelSwitchExit(previous, resolved, options.ownsProvider))
-        throw transitionError(
-          'ACP_MODEL_SWITCH_UNAVAILABLE',
-          'This ACP session cannot change models on this Host. Restore its previous model or start an independent session with the selected model; the existing Agent context is unchanged.',
+      if (requiresAcpModelSwitchExit(previous, resolved, options.ownsProvider)) {
+        const presets = projectionCtx.get('agentPresets', false)
+        if (
+          targetProfile === undefined ||
+          options.confirmModelSwitch === undefined ||
+          presets === undefined ||
+          !isAcpPresetModelSwitch(previous, resolved, presets.presetForSession(session)) ||
+          presets.composedPreset(payload.agent.ctx) !== 'acp-adapter' ||
+          presets.serviceFor(payload.agent, 'compaction') !== undefined ||
+          payload.agent.ctx.get('compaction', false) !== undefined
         )
+          throw transitionError(
+            'ACP_MODEL_SWITCH_UNAVAILABLE',
+            'Keep the previous model or open a separate session with the selected model in this DSH mode.',
+          )
+        const lookup = await options.sidecar.readLatestBinding(session.id)
+        if (
+          lookup?.status !== 'ok' ||
+          lookup.binding.profileId !== targetProfile ||
+          lookup.binding.provider !== resolved.provider
+        )
+          throw transitionError(
+            'ACP_BACKEND_RECOVERY_REQUIRED',
+            'Restore the original ACP session before switching models.',
+          )
+        try {
+          await options.confirmModelSwitch(
+            targetProfile,
+            String(session.id),
+            session,
+            lookup.binding,
+            resolved,
+            payload.signal,
+          )
+          payload.signal.throwIfAborted()
+        } catch (error) {
+          const claim = claims.get(payload.signal)
+          if (
+            claim?.turn === payload.turn &&
+            claim.step === payload.step &&
+            payload.agent.inbox.nextTurn.length === 0 &&
+            payload.agent.inbox.nextStep.length === 0 &&
+            projectionCtx.get('sessions', false)?.get(session.id) === session
+          )
+            appendPluginRecord(session, unsentModelSwitchRecord, {
+              ...claim,
+              bindingKey: acpCanonicalHash16(modeIntentBindingKey(lookup.binding)),
+            })
+          throw error
+        }
+        return resolved
+      }
       const previousProfile = acpAgentIdFromRoute(previous?.provider ?? '')
       if (previous !== null && previousProfile !== undefined && !options.ownsProvider(previous.provider)) {
         // Route names can be reused by a different plugin after a profile is

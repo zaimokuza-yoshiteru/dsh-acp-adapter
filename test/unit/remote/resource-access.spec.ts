@@ -46,6 +46,7 @@ const actions: readonly RemoteAccessAction[] = [
   'dshAcp/backendOf',
   'dshAcp/registerNativeFork',
   'dshAcp/nativeForkScope',
+  'dshAcp/retryModelSwitchInput',
 ]
 
 const member: AcpTeamMemberView = {
@@ -82,6 +83,7 @@ async function fixture(
   }))
   const backend = vi.fn(async () => 'acp-test')
   const nativeFork = vi.fn(async () => {})
+  const retryModelSwitchInput = vi.fn<NonNullable<AcpRemoteServiceDeps['retryModelSwitchInput']>>(async () => {})
   const nativeForkScope = vi.fn(() => '11111111-1111-4111-8111-111111111111')
   const approvalChildren = vi.fn(async (): Promise<readonly AcpApprovalChildView[]> => [
     {
@@ -105,6 +107,7 @@ async function fixture(
   new AcpRemoteService(ctx, {
     registry: { agents: () => new Map(), probeCacheFor: () => undefined },
     nativeFork,
+    retryModelSwitchInput,
     nativeForkScope,
     checkExecutable: async () => true,
     queryVersion: async () => null,
@@ -121,10 +124,10 @@ async function fixture(
   })
   const owner: PeerScope = new Connection.Peer(ctx, { principal: { kind: 'owner' } })
   const restricted: PeerScope = new Connection.Peer(ctx, { principal: { kind: 'acp-resource-test' } })
-  const hold = (sessions: readonly string[], global = false) => {
+  const hold = (sessions: readonly string[], global = false, sessionActions = actions) => {
     held = [
       ...sessions.map((id): RemoteAccessBinding => ({
-        role: { name: 'acp-test-session', resource: 'session', actions },
+        role: { name: 'acp-test-session', resource: 'session', actions: sessionActions },
         resource: { kind: 'session', id: SessionId(id) },
       })),
       ...(global
@@ -151,12 +154,43 @@ async function fixture(
     approvalChildren,
     backend,
     bindings,
+    retryModelSwitchInput,
     nativeFork,
     nativeForkScope,
   }
 }
 
 describe('ACP resources through the published Gateway and Peer', () => {
+  it('requires both retry and native prompt grants on the same session and passes the actual caller', async () => {
+    const h = await fixture()
+    const args = { sessionId: 'original', failureSeq: 17 }
+    h.hold(['different'], false, [...actions, 'session/prompt'])
+    await expect(h.call(h.restricted, 'retryModelSwitchInput', args)).rejects.toMatchObject({
+      code: 'remote-access/denied',
+    })
+    h.hold(['original'])
+    await expect(h.call(h.restricted, 'retryModelSwitchInput', args)).rejects.toMatchObject({
+      code: 'dsh-acp/user-rejected',
+    })
+    expect(h.retryModelSwitchInput).not.toHaveBeenCalled()
+    h.hold(['original'], false, [...actions, 'session/prompt'])
+    await h.call(h.restricted, 'retryModelSwitchInput', args)
+    expect(h.retryModelSwitchInput).toHaveBeenCalledWith(
+      'original',
+      17,
+      { kind: 'acp-resource-test' },
+      expect.any(Function),
+      expect.any(AbortSignal),
+    )
+    await h.call(h.owner, 'retryModelSwitchInput', args)
+    expect(h.retryModelSwitchInput).toHaveBeenLastCalledWith(
+      'original',
+      17,
+      undefined,
+      expect.any(Function),
+      expect.any(AbortSignal),
+    )
+  })
   it('discovers a bound ACP grandchild of a cold native lead through the Gateway and SQLite owner gate', async () => {
     using dir = mkdtempDisposableSync(join(tmpdir(), 'acp-mixed-team-'))
     const sidecar = createAcpSidecar({ root: dir.path })

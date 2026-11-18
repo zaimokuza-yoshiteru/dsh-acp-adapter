@@ -40,7 +40,7 @@
 import os from 'node:os'
 import type { Context } from '@deepseek-ai/cordis'
 import { LlmError } from '@deepseek-ai/dsh-llm'
-import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import { Remote, RemoteError, TypertRemoteService, principalOf, type Principal } from '@deepseek-ai/dsh-typert-protocol'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-api-remote-access'
 import type * as acp from '@agentclientprotocol/sdk'
@@ -290,6 +290,13 @@ export interface AcpRemoteServiceDeps {
   nativeForkScope?: () => string
   /** Accept an explicit source only after the native child prefix is verified. */
   nativeFork?: (sessionId: string, sourceSessionId: string, atSeq: number) => Promise<void>
+  retryModelSwitchInput?: (
+    sessionId: string,
+    failureSeq: number,
+    principal: Principal | undefined,
+    authorized: () => boolean,
+    signal: AbortSignal,
+  ) => Promise<void>
   /** Live runtime ownership; deliberately accepts native as well as ACP parents. */
   approvalChildren?: (parent: string) => readonly AcpApprovalChildView[] | Promise<readonly AcpApprovalChildView[]>
   teamManagement?: {
@@ -505,6 +512,7 @@ function firstLine(text: string): string | null {
 interface ResolvedDeps {
   readonly nativeForkScope: AcpRemoteServiceDeps['nativeForkScope']
   readonly nativeFork: AcpRemoteServiceDeps['nativeFork']
+  readonly retryModelSwitchInput: AcpRemoteServiceDeps['retryModelSwitchInput']
   readonly approvalChildren: AcpRemoteServiceDeps['approvalChildren']
   readonly teamManagement: AcpRemoteServiceDeps['teamManagement']
 
@@ -560,6 +568,7 @@ export class AcpRemoteService extends TypertRemoteService {
     this.resolved = {
       nativeForkScope: deps.nativeForkScope,
       nativeFork: deps.nativeFork,
+      retryModelSwitchInput: deps.retryModelSwitchInput,
       registry: deps.registry,
       approvalChildren: deps.approvalChildren,
       teamManagement: deps.teamManagement,
@@ -595,6 +604,33 @@ export class AcpRemoteService extends TypertRemoteService {
       projectedSubagentIds: deps.projectedSubagentIds ?? null,
       imageInputAvailable: deps.imageInputAvailable ?? false,
     }
+  }
+
+  /** Resend one previously admitted message to its original ACP session. */
+  @Remote({ resources: { session: (sessionId) => SessionId(sessionId) } })
+  async retryModelSwitchInput(sessionId: string, failureSeq: number, signal: AbortSignal): Promise<void> {
+    if (!Number.isSafeInteger(failureSeq) || failureSeq < 0) throw badRequest('Invalid unsent input')
+    const principal = principalOf(this.ctx.invocation)
+    const authorized = () => {
+      if (!this.callerCanReadSession(sessionId)) return false
+      if (principal === undefined) return true
+      const access = this.ctx.get('remoteAccess')
+      return (
+        access !== undefined &&
+        'decide' in access &&
+        typeof access.decide === 'function' &&
+        access.decide({
+          principal,
+          action: 'session/prompt',
+          resources: [{ kind: 'session', id: SessionId(sessionId) }],
+        }).kind === 'allow'
+      )
+    }
+    if (!authorized()) throw acpRemoteFailure('user-rejected', 'Sending input is not authorized for this session')
+    await this.requireOwnedSessionAccess(sessionId)
+    if (this.resolved.retryModelSwitchInput === undefined)
+      throw acpRemoteFailure('config', 'ACP input retry is unavailable')
+    await this.resolved.retryModelSwitchInput(sessionId, failureSeq, principal, authorized, signal)
   }
 
   /** Identify this Host's fork journal owner without exposing paths or granting access. */

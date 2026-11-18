@@ -37,6 +37,7 @@ import { AcpActivityJournalHub } from './data/activity-journal.ts'
 import { AcpUiFeedback, followAcpQuestionLimitations, type AcpUiOutcome } from './data/feedback.ts'
 import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import { UnroutedHistoryDock } from './ui/UnroutedHistoryDock.ts'
+import { UnsentModelSwitchInput } from './ui/UnsentModelSwitchInput.ts'
 import { CrossBackendCoordinator } from './coordinator/cross-backend-coordinator.ts'
 import { AcpNativeForkCoordinator, type NativeForkFailure } from './coordinator/native-fork.ts'
 import { createNativeForkJournal } from './coordinator/native-fork-journal.ts'
@@ -463,6 +464,18 @@ async function registerUi(ctx: ClientContext): Promise<void> {
         },
         UnroutedHistoryDock,
       ),
+    ),
+  )
+  ctx.slots.inject('conversation.input.dock', () =>
+    ctx.slots.register(
+      {
+        name: 'conversation.input.dock',
+        id: 'dsh-acp-unsent-model-switch',
+        order: 87,
+        locale: 'acpActivity',
+        inject: () => ({ remote: acpRemote }),
+      },
+      UnsentModelSwitchInput,
     ),
   )
   ctx.slots.inject('conversation.input.dock', () =>

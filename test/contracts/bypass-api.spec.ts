@@ -75,6 +75,7 @@ const PINNED_REMOTE_METHODS: readonly string[] = [
   'registerNativeFork',
   'nativeForkScope',
   'retryOriginal',
+  'retryModelSwitchInput',
   'setAgentSessionOption',
   'setTeamMemberMode',
   'setTeamMemberModel',

@@ -92,6 +92,21 @@ function structuredProviderErrorKind(error: unknown): 'resource_exhausted' | 'un
 /** Deliberately protocol-local: runtime restoration does not own persistence. */
 export interface AcpRuntimeBindingRef {
   readonly agentSessionId: string
+  readonly agent?: { readonly name?: string }
+  readonly protocolVersion?: number
+  readonly requireFreshConfig?: boolean
+}
+
+function assertBoundAgent(
+  binding: AcpRuntimeBindingRef,
+  agent: acp.Implementation | null | undefined,
+  version: number | undefined,
+): void {
+  if (
+    (binding.protocolVersion !== undefined && binding.protocolVersion !== version) ||
+    (binding.agent?.name !== undefined && binding.agent.name !== agent?.name)
+  )
+    throw new Error('The ACP connection does not match the Agent recorded for this session')
 }
 export interface AcpRuntimeConfig {
   readonly command: string
@@ -711,6 +726,7 @@ export class AcpSessionRuntime {
     if (this.sessionId !== undefined) {
       if (this.sessionId !== binding.agentSessionId)
         throw new Error('ACP binding session id does not match the active runtime')
+      assertBoundAgent(binding, this.agentInfo, this.protocolVersion)
       return 'reused'
     }
     return await this.restoreCold(binding, signal, onReplay)
@@ -779,11 +795,15 @@ export class AcpSessionRuntime {
     await this.initialize(signal)
     const connection = this.connection
     if (connection === undefined) throw new Error('ACP connection is not started')
+    assertBoundAgent(binding, connection.agentInfo, connection.protocolVersion)
     const caps = connection.agentCapabilities
     const mcpServers = this.mcpLease?.servers ?? []
     const rpcOptions = signal === undefined ? {} : { signal }
     this.replayHandler = onReplay
     this.restoringSessionId = binding.agentSessionId
+    // A cancelled runtime may retain its last controls for passive display.
+    // Only this load's response or same-session updates can confirm a switch.
+    if (binding.requireFreshConfig) this.configSnapshot = undefined
     try {
       if (caps?.sessionCapabilities?.resume != null) {
         const response = await connection.resumeSession(

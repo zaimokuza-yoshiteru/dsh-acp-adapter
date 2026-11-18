@@ -27,14 +27,23 @@ const unroutedHistoryView: AcpExecutionView = { externalSubagent: false, complet
 
 const acpExecutionProjection = {
   key: 'acpExecution',
-  stateVersion: 5,
+  stateVersion: 6,
   stateSchema: sessionFactsSchema,
   init: (_header, inheritedEventCount) => initialSessionFacts(inheritedEventCount),
   apply: applySessionFact,
   wire: {
-    viewSchema: z.object({ externalSubagent: z.boolean(), completedWithoutModel: z.literal(true).optional() }),
+    viewSchema: z.object({
+      externalSubagent: z.boolean(),
+      completedWithoutModel: z.literal(true).optional(),
+      unsentModelSwitch: z.object({ failureSeq: z.number() }).optional(),
+    }),
     view(state) {
       if (state.externalSubagent) return externalRecordView
+      if (!state.turnOpen && state.unsentModelSwitch !== undefined)
+        return {
+          externalSubagent: false,
+          unsentModelSwitch: { failureSeq: state.unsentModelSwitch.failureSeq },
+        }
       return state.completedWithoutModel &&
         state.soleRequestProvider === null &&
         !state.turnOpen &&

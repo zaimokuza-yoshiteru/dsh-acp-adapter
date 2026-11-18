@@ -4,12 +4,14 @@ import type { AcpActivityPresentation } from '../policy/activity-presentation.ts
 import { acpReplayPayloadOf, acpReplayPayloadSchema } from './acp-replay-payload.ts'
 import type { ModelContextSnapshot } from './model-context-snapshots.ts'
 import { EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER } from '../../contract/external-subagent.ts'
+import { unsentModelSwitchRecord, unsentModelSwitchSchema } from './unsent-model-switch.ts'
 
 export interface SessionEventLike {
   readonly type: string
   /** Exact native inherited prefix length; absence must not be inferred as an empty seed. */
   readonly inheritedEventCount?: number
   readonly seq: number
+  readonly ignorable?: boolean
   readonly data: unknown
 }
 
@@ -36,6 +38,7 @@ export const sessionFactsSchema = z.object({
   acpReplaySeen: z.boolean(),
   /** The only provider this session's own requests were routed to; null before any, '' once they differ. */
   soleRequestProvider: z.string().nullable(),
+  unsentModelSwitch: unsentModelSwitchSchema.extend({ failureSeq: z.number().int().nonnegative() }).optional(),
 })
 export type SessionFacts = z.infer<typeof sessionFactsSchema>
 
@@ -58,6 +61,22 @@ export function initialSessionFacts(inheritedEventCount = 0): SessionFacts {
 /** One committed event; unrelated events retain identity and no transcript is cached. */
 export function applySessionFact(previous: SessionFacts, event: SessionEventLike): SessionFacts {
   let state = previous
+  if (
+    state.unsentModelSwitch !== undefined &&
+    ['turn/start', 'agent/inbox/spliced', 'user/message', 'request/header', 'working-directory/change'].includes(
+      event.type,
+    )
+  )
+    state = { ...state, unsentModelSwitch: undefined }
+  if (event.type === unsentModelSwitchRecord && event.ignorable === true && state.inheritedRemaining === 0) {
+    const data = unsentModelSwitchSchema.safeParse(event.data)
+    if (
+      data.success &&
+      state.turnOpen &&
+      state.openSteps.some(({ turn, step }) => turn === data.data.turn && step === data.data.step)
+    )
+      return { ...state, unsentModelSwitch: { ...data.data, failureSeq: event.seq } }
+  }
   if (state.inheritedRemaining > 0)
     state = {
       ...state,
