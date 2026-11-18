@@ -2,7 +2,7 @@ export const MAX_DEVIN_LIVE_DISPATCH_ATTEMPTS = 16
 
 export type DevinLiveActorRole = 'lead' | 'teammate' | 'unknown'
 export type DevinLivePhase = 'initial' | 'mailbox' | 'followup' | 'unknown'
-export type DevinLiveToolKind = 'spawn_teammate' | 'send_message' | 'wait_agent' | 'bash' | 'other'
+export type DevinLiveToolKind = 'subagent' | 'send_message' | 'wait_agent' | 'bash' | 'other'
 
 export interface DevinLiveToolBudget {
   dispatchAttempts: number
@@ -53,7 +53,7 @@ export function recordDevinLiveToolAttempt(
     violation = 'LIVE_FOLLOWUP_TOOL_CALL_UNEXPECTED'
   } else if (event.role === 'lead' && event.tool === 'send_message') {
     violation = 'LIVE_LEAD_MESSAGE_UNEXPECTED'
-  } else if (event.role === 'lead' && event.tool === 'spawn_teammate') {
+  } else if (event.role === 'lead' && event.tool === 'subagent') {
     const count = (budget.leadSpawnsBySession.get(event.sessionKey) ?? 0) + 1
     budget.leadSpawnsBySession.set(event.sessionKey, count)
     if (count > 1) violation = 'LIVE_LEAD_SPAWN_BUDGET_EXCEEDED'

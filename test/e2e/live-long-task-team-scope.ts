@@ -43,13 +43,12 @@ export function permitsTeamReviewTool(tool: string, raw: unknown, scope: TeamRev
         )
       )
     }
-    case 'spawn_teammate':
+    case 'subagent':
       return (
         lead &&
-        keys(args, ['name', 'description', 'prompt', 'context']) &&
+        keys(args, ['name', 'description', 'prompt']) &&
         members.some((name) => args.name === name && assignment(name, args.prompt)) &&
-        text(args.description) &&
-        (args.context === undefined || args.context === 'fresh')
+        text(args.description)
       )
     case 'team_task_create':
       return (
@@ -96,9 +95,9 @@ export function permitsTeamReviewTool(tool: string, raw: unknown, scope: TeamRev
       )
     case 'send_message':
       return (
-        keys(args, ['target', 'message']) &&
+        keys(args, ['agent', 'message']) &&
         text(args.message) &&
-        (lead ? members.includes(args.target as (typeof members)[number]) : args.target === 'lead')
+        (lead ? members.includes(args.agent as (typeof members)[number]) : args.agent === 'lead')
       )
     case 'list_agents':
       return Object.keys(args).length === 0

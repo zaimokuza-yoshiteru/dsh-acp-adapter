@@ -43,6 +43,9 @@ export default defineConfig({
       '@deepseek-ai/dsh-api-gateway/client': fileURLToPath(
         new URL('./node_modules/@deepseek-ai/dsh-api-gateway/lib/types/client/index.js', import.meta.url),
       ),
+      '@deepseek-ai/dsh-api-session-controller/client': fileURLToPath(
+        new URL('./node_modules/@deepseek-ai/dsh-api-session-controller/lib/types/client/index.js', import.meta.url),
+      ),
       // React 与 UI primitives 由宿主模块表提供。普通测试使用元素树替身；
       // 真实渲染、effects 和交互由加载已构建插件的浏览器 E2E 验证。
       '@deepseek-ai/dsh-client-ui-primitives': fileURLToPath(new URL('./test/ui-primitives-stub.mjs', import.meta.url)),

@@ -98,26 +98,11 @@
   border-top: 0.5px solid var(--dsw-alias-border-l1);
 }
 
-.choiceCopy {
+.choiceExplanation {
   flex: 1;
   min-width: 0;
-}
-
-.choiceLabel,
-.choiceExplanation {
   margin: 0;
   overflow-wrap: anywhere;
-}
-
-.choiceLabel {
-  color: var(--dsw-alias-label-primary);
-  font-size: 13px;
-  line-height: 18px;
-  font-weight: 500;
-}
-
-.choiceExplanation {
-  margin-top: 2px;
   color: var(--dsw-alias-label-secondary);
   font-size: 12px;
   line-height: 18px;
@@ -166,4 +151,13 @@
     align-items: flex-start;
     flex-direction: column;
   }
+}
+
+.historySurface {
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
+  flex-wrap: wrap;
+}
+
+.historySurface .summaryText {
+  flex-basis: 17em;
 }

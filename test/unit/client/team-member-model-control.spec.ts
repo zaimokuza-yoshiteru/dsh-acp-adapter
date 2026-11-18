@@ -23,10 +23,21 @@ it('keeps the cached catalog while replacing current, pending and writable facts
       { id: 'model-b', name: 'B' },
     ],
     writable: true,
+    unavailableReason: 'model-switch' as const,
   }
   const next = reconcileMemberModelView(
     previous,
     member({ model: 'model-c', pendingModel: null, modelWritable: false }),
   )
   expect(next).toEqual({ ...previous, currentModel: 'model-c', pendingModel: null, writable: false })
+})
+
+it('publishes first-request model refusal from member facts and clears it only on an explicit null', () => {
+  const initial = { currentModel: 'model-a', pendingModel: null, models: [], writable: true }
+  const used = reconcileMemberModelView(initial, member({ modelUnavailableReason: 'model-switch' }))!
+  expect(used.unavailableReason).toBe('model-switch')
+  expect(reconcileMemberModelView(used, member())?.unavailableReason).toBe('model-switch')
+  expect(reconcileMemberModelView(used, member({ modelUnavailableReason: null }))).not.toHaveProperty(
+    'unavailableReason',
+  )
 })

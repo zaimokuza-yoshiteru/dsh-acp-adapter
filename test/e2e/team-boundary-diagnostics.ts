@@ -1,3 +1,4 @@
+import { treeMember } from './subagent-tree.ts'
 import { createHash } from 'node:crypto'
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -50,7 +51,7 @@ export function teamBoundaryDiagnostics(directory: string, signal: AbortSignal) 
     attach(host: AdapterWorld, setupRequestIds: () => ReadonlySet<string>) {
       inspect = () => ({
         owners: host.ctx.agents.list().map((agent) => {
-          const member = host.ctx.agentTeams.tryMembership(agent)
+          const member = treeMember(host.ctx, agent)
           return {
             id: agent.id,
             status: agent.status,

@@ -72,6 +72,8 @@ const PINNED_REMOTE_METHODS: readonly string[] = [
   'rebindRecoveryBlank',
   'recoveryFollow',
   'recoverySnapshot',
+  'registerNativeFork',
+  'nativeForkScope',
   'retryOriginal',
   'setAgentSessionOption',
   'setTeamMemberMode',

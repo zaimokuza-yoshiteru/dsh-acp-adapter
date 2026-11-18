@@ -36,7 +36,7 @@ export interface AcpAgentStateProbeView {
         readonly modelCount: number
         /**
          * configOptions 是否含 `category=model` 项（configOptions-only 目录
-         * 口径——kimi 的 legacy `models` 恒空，目录只经 configOptions 提供；此项在场
+         * 口径——generic 的 legacy `models` 恒空，目录只经 configOptions 提供；此项在场
          * 即视为有目录）。消费处由缓存条目的同名字段收窄，恒有定义。
          */
         readonly hasModelConfigOption: boolean
@@ -69,6 +69,6 @@ export function deriveAcpAgentState(input: AcpAgentStateInput): AcpAgentConfigSt
     return probe.result.failureKind === 'auth_required' ? 'auth-required' : 'unavailable'
   }
   // initialize/session 探测成功只证明协议运行时可用。Agent 可以在未登录时仍
-  // 返回模型目录（Kimi 实证），也可以在已登录时不返回目录；二者均不能推导 auth。
+  // 返回模型目录（Agents 实证），也可以在已登录时不返回目录；二者均不能推导 auth。
   return 'ready'
 }

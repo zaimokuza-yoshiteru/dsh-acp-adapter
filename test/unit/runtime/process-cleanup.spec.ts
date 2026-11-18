@@ -17,6 +17,39 @@ function handle(overrides: Partial<AcpSubprocessHandle> = {}): AcpSubprocessHand
 }
 
 describe('host-managed process cleanup', () => {
+  it('still terminates and reports an unconfirmed exit when the Host warning sink throws', async () => {
+    const fallback = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const child = handle({
+      waitForExit: vi.fn(async () => {
+        throw new Error('observation unavailable')
+      }),
+    })
+    const proc = new AcpAgentProcess(
+      {
+        argv: ['fixture'],
+        cwd: process.cwd(),
+        env: {},
+        subprocess: { spawn: () => child, resolveExecutable: async (command) => command },
+      },
+      {
+        eofGraceMs: 0,
+        exitWaitMs: 10,
+        onProcessWarn: () => {
+          throw new Error('logger withdrawn')
+        },
+      },
+    )
+    try {
+      await proc.close()
+      expect(child.terminate).toHaveBeenCalledOnce()
+      expect(proc.isCleanupConfirmed).toBe(false)
+      expect(fallback).toHaveBeenCalledWith(expect.stringContaining('not confirmed'))
+      expect(fallback.mock.calls.flat().join(' ')).not.toContain('logger withdrawn')
+    } finally {
+      fallback.mockRestore()
+    }
+  })
+
   it.each(['exit', 'provider failure'])('cleans surviving range members after command %s', async (outcome) => {
     let terminated = false
     const child = handle({

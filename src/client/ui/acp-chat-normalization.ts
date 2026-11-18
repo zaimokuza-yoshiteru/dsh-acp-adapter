@@ -288,9 +288,9 @@ export function normalizeAcpChatNodes(
     // is ambiguous instead of repeating rows under every step.
     const window = owners.get(windowKey) === 1 ? windows.get(windowKey) : undefined
     const journalReady = window !== undefined && !window.unavailable
-    // A committed ACP response remains a reply when a later native step admits
-    // an automatic notification. The native finalNode, not content or the last
-    // step in a Turn, establishes that this response was actually committed.
+    // A committed response keeps its final record even before its journal loads.
+    // Native ChatNodeSeat owns whether earlier replies fold with the process,
+    // according to ui-chat.foldedReplies; projection must not override placement.
     const committedReply = data.settled === true && node.data.finalNode?.messageId !== undefined
     // Keep the additive journal fallback until its sidecar is available. A
     // persisted response can still retain its native reply seat independently.
@@ -359,7 +359,6 @@ export function normalizeAcpChatNodes(
         ...node,
         key,
         id: key,
-        ...(committedReply && start === answer ? { groupTree: 'turn' as const } : {}),
         data: {
           ...message,
           blocks: group,

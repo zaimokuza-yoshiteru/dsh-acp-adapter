@@ -11,6 +11,7 @@ interface RegistryAgent {
   readonly name: string
   readonly version?: string | undefined
   readonly website?: string | undefined
+  readonly repository?: string | undefined
   readonly distribution?:
     | {
         readonly npx?:
@@ -51,7 +52,6 @@ const executableEntries = (executablesJson as { readonly entries: { readonly [id
 const LOGIN_HINTS: Readonly<Partial<Record<AcpAgentId, string>>> = {
   devin: 'devin auth login',
   codex: 'codex login',
-  kimi: 'kimi login',
   claude: 'claude',
   // The public CLI starts the interactive CodeBuddy session with `codebuddy`;
   // its ACP guide documents `--acp` as the server mode, not a separate login command.
@@ -59,7 +59,10 @@ const LOGIN_HINTS: Readonly<Partial<Record<AcpAgentId, string>>> = {
 }
 
 /** Known installed CLI names for binary distributions; never archive paths. */
-const INSTALLED_BINARY_COMMANDS: Readonly<Record<string, string>> = { devin: 'devin', kimi: 'kimi' }
+const INSTALLED_BINARY_COMMANDS: Readonly<Record<string, string>> = {
+  devin: 'devin',
+  'claude-acp': 'claude-agent-acp',
+}
 
 /** Curated adapter regression/live-smoke coverage, not certification of registry versions.
  * Keep this explicit: adding a runtime binding does not establish verification.
@@ -68,7 +71,6 @@ const VERIFIED_ADAPTER_IDS: readonly string[] = [
   'devin',
   'codebuddy-code',
   'codex-acp',
-  'kimi',
   'claude-acp',
   'antigravity-acp',
   'qwen-code',
@@ -106,6 +108,7 @@ function installHintOf(agent: RegistryAgent): string {
   if (distribution?.binary !== undefined) {
     return (
       agent.website ??
+      agent.repository ??
       Object.entries(distribution.binary)
         .map(([platform, entry]) => `${platform}: ${entry?.archive ?? ''}`)
         .join('\n')
@@ -128,6 +131,8 @@ export function buildCatalogEntries(
 ): AcpCatalogEntry[] {
   const entries: AcpCatalogEntry[] = []
   for (const agent of registryAgents) {
+    // Keep the official snapshot intact while excluding the retired preset.
+    if (agent.id === 'kimi' || agent.id === 'kimi-code') continue
     const executable = executableEntries[agent.id]
     const runtime = runtimeForCatalogId(agent.id)
     const command =

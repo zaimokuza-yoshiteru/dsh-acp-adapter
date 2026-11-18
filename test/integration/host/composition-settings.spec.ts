@@ -12,7 +12,7 @@ import { acpSettingsSchema } from '../../../src/host/composition/installed-profi
 import type { AcpSettings } from '../../../src/host/composition/installed-profile-registry.ts'
 import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts'
 import { createAcpSidecar } from '../../../src/persistence/sidecar.ts'
-import type { AcpBindingData } from '../../../src/persistence/sidecar.ts'
+import type { AcpBindingData, AcpSidecar } from '../../../src/persistence/sidecar.ts'
 
 type Watcher = (next: AcpSettings, previous: AcpSettings) => void | Promise<void>
 
@@ -56,6 +56,27 @@ class SettingsDocument {
 
 function agent(name: string, command: string): AcpAgentConfig {
   return { name, command, args: ['acp'], env: {} }
+}
+
+async function seedCodexBinding(persisted: AcpSidecar, sessionId: string): Promise<void> {
+  const binding: AcpBindingData = {
+    provider: 'acp-codex',
+    agentSessionId: `agent-${sessionId}`,
+    profileId: 'codex',
+    canonicalCwd: '/tmp/work',
+    launchFingerprint: { command: 'codex-acp', args: ['acp'], envKeys: [] },
+    agent: { name: 'Codex', version: '1.6.2' },
+    protocolVersion: 1,
+    capabilityHash: 'a1b2c3d4e5f60708',
+    configHash: '0817f6e5d4c3b2a1',
+    generation: 1,
+    bindingEpoch: 1,
+    committedPromptOrdinal: 0,
+    historyBaseSeq: 0,
+    establishedAt: Date.now(),
+    dshCommittedSeq: 0,
+  }
+  await persisted.append(SessionId(sessionId), { kind: 'binding', data: binding })
 }
 
 describe('real Cordis ACP composition settings lifecycle', () => {
@@ -123,10 +144,11 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       ctx.provide('sessionController', { resolveAgent })
       const childId = SessionId('evicted-policy-member')
       let rosterPresent = true
-      ctx.provide('agentTeams', {
-        tryMembership: (candidate: object) =>
-          candidate === lead ? { id: 'evicted-policy-team', role: 'lead', root: lead } : undefined,
-        listMembers: () => [{ id: childId, role: 'teammate', status: rosterPresent ? 'inactive' : 'failed' }],
+      ctx.provide('subagents', {
+        rootOf: (candidate: object) => (candidate === lead ? lead : undefined),
+        namesOf: () => ({ self: 'lead' }),
+        listDescendants: async () =>
+          rosterPresent ? [{ kind: 'child', id: childId, parentId: lead.id, mode: 'continuable' }] : [],
       })
       const fiber = ctx.plugin({
         name: 'composition-cold-policy-test',
@@ -138,28 +160,8 @@ describe('real Cordis ACP composition settings lifecycle', () => {
         toolApprovalPolicy(sessionId: string): Promise<{ policy: 'auto' | 'ask'; source: string; editable: boolean }>
         setToolApprovalPolicy(sessionId: string, request: { policy: 'auto' | 'ask' }): Promise<unknown>
       }
-      const seedBinding = async (sessionId: string): Promise<void> => {
-        const binding: AcpBindingData = {
-          provider: 'acp-codex',
-          agentSessionId: `agent-${sessionId}`,
-          profileId: 'codex',
-          canonicalCwd: '/tmp/work',
-          launchFingerprint: { command: 'codex-acp', args: ['acp'], envKeys: [] },
-          agent: { name: 'Codex', version: '1.6.2' },
-          protocolVersion: 1,
-          capabilityHash: 'a1b2c3d4e5f60708',
-          configHash: '0817f6e5d4c3b2a1',
-          generation: 1,
-          bindingEpoch: 1,
-          committedPromptOrdinal: 0,
-          historyBaseSeq: 0,
-          establishedAt: Date.now(),
-          dshCommittedSeq: 0,
-        }
-        await persisted.append(sessionId as never, { kind: 'binding', data: binding })
-      }
-      await seedBinding(lead.id)
-      await seedBinding(childId)
+      await seedCodexBinding(persisted, lead.id)
+      await seedCodexBinding(persisted, childId)
       await remote.setToolApprovalPolicy(lead.id, { policy: 'ask' })
 
       const child = ctx.sessions.prepare(childId, { meta: { origin: 'subagent', parentSession: lead.id } })
@@ -196,7 +198,7 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       const detachFork = ctx.sessions.enter(fork)
       ctx.sessions.announce(fork)
       detachFork()
-      await seedBinding(forkId)
+      await seedCodexBinding(persisted, forkId)
       await expect(remote.toolApprovalPolicy(forkId)).resolves.toMatchObject({
         policy: 'ask',
         source: 'session',
@@ -239,7 +241,7 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       expect(ctx.sessions.get(nativeId)).toBeUndefined()
       await expectNoChildPolicy()
 
-      await seedBinding('evicted-policy-binding-only')
+      await seedCodexBinding(persisted, 'evicted-policy-binding-only')
       await expect(remote.toolApprovalPolicy('evicted-policy-binding-only')).rejects.toThrow(
         'ACP_TOOL_APPROVAL_SESSION_UNAVAILABLE',
       )
@@ -295,17 +297,30 @@ describe('real Cordis ACP composition settings lifecycle', () => {
     const liveSessions = new Map<
       string,
       {
-        header: { origin?: string; parentSession?: string }
+        id?: string
+        isOwnSeq?: (seq: number) => boolean
+        header: { id?: string; origin?: string; parentSession?: string }
         facts: unknown
         permissions: unknown
         requestHeader?: () => { config: { provider: string } }
       }
     >()
     ctx.provide('sessions', { get: (id: string) => liveSessions.get(id) })
-    const liveAgents = new Map<string, { id: string; options: { provider: string } }>()
+    const liveAgents = new Map<
+      string,
+      { id: string; options: { provider: string }; model: { current(): { provider: string; model: string } } }
+    >()
     const memberships = new Map<object, { id: string; role: 'lead' | 'teammate'; root: object }>()
     const agentResolutionCalls: string[] = []
-    ctx.provide('agents', { get: (id: string) => liveAgents.get(id), list: () => [...liveAgents.values()] })
+    ctx.provide('agents', {
+      get: (id: string) => {
+        const agent = liveAgents.get(id)
+        if (agent !== undefined && !Object.hasOwn(agent, 'session'))
+          Object.defineProperty(agent, 'session', { get: () => liveSessions.get(id) })
+        return agent
+      },
+      list: () => [...liveAgents.values()],
+    })
     ctx.provide('sessionController', {
       resolveAgent: async (id: string) => {
         agentResolutionCalls.push(id)
@@ -315,15 +330,32 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       },
     })
     let rosterFailure: Error | undefined
-    ctx.provide('agentTeams', {
-      tryMembership: (agent: object) => memberships.get(agent),
-      listMembers: (lead: object) => {
+    ctx.provide('subagents', {
+      rootOf: (agent: object) => memberships.get(agent)?.root ?? agent,
+      namesOf: (agent: { id: string }) => ({ self: agent.id }),
+      listDescendants: async (rootId: string) => {
         if (rosterFailure !== undefined) throw rosterFailure
         return [...memberships.entries()]
-          .filter(([, membership]) => membership.role === 'teammate' && membership.root === lead)
-          .map(([agent]) => ({ id: (agent as { id: string }).id, role: 'teammate' as const }))
+          .filter(([, membership]) => membership.role === 'teammate' && membership.root === liveAgents.get(rootId))
+          .map(([agent]) => ({
+            kind: 'child',
+            id: (agent as { id: string }).id,
+            parentId: rootId,
+            mode: 'continuable',
+          }))
       },
     })
+    const nativeSnapshot = ctx.sessionProjections.snapshot.bind(ctx.sessionProjections)
+    vi.spyOn(ctx.sessionProjections, 'snapshot').mockImplementation(((session: any, keys?: any) =>
+      session.facts === undefined
+        ? nativeSnapshot(session, keys)
+        : {
+            values: {
+              subagent:
+                session.header.origin === 'subagent' ? { seq: 0, mode: 'continuable', label: session.id } : null,
+              acpExecution: { externalSubagent: false },
+            },
+          }) as never)
     // Use the actual host subprocess seam shape.  The health service and the
     // ACP probe must share this seam; otherwise a successful probe can still
     // be reported as executable=false/version=null by the Remote constructor.
@@ -379,18 +411,21 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       inject: [...inject],
       apply: (scope: Context) => {
         settings.onChange = () => scope.emit('loader/volatile-update', [])
-        apply(scope, settings.config)
+        return apply(scope, settings.config)
       },
     })
     await fiber.await()
 
     expect(routeCalls).toEqual([['acp-codex']])
     const remote = ctx.get('dshAcp' as never) as unknown as {
+      ownedProviderRoutes(): Promise<{ generations: Record<string, string> }>
       health(request?: unknown): Promise<{ providers: Array<{ id: string }> }>
       activitySnapshot(sessionId: string, request?: unknown): Promise<unknown>
       toolApprovalPolicy(sessionId: string): Promise<{ policy: 'auto' | 'ask'; source: string; editable: boolean }>
       setToolApprovalPolicy(sessionId: string, request: { policy: 'auto' | 'ask' }): Promise<unknown>
     }
+    const initialRegistration = (await remote.ownedProviderRoutes()).generations['acp-codex']
+    expect(initialRegistration).toEqual(expect.any(String))
     // Opening Settings is cache-only: it may resolve executable presence but
     // must not spawn either an ACP probe or a `--version` helper.
     await expect(remote.health()).resolves.toMatchObject({
@@ -408,32 +443,14 @@ describe('real Cordis ACP composition settings lifecycle', () => {
     })
     expect(versionTerminations).toBe(1)
     failVersionProvider = false
+    await settings.replace({ agents: { codex: agent('Renamed', 'codex-acp') } })
+    expect((await remote.ownedProviderRoutes()).generations['acp-codex']).toBe(initialRegistration)
 
     // The parent SessionStore is intentionally empty in this fixture. A
     // persisted activity owner must still be readable after a cold reload;
     // arbitrary sessions without either live or durable ownership remain
     // denied by the composition's activityAccess gate.
     const persisted = createAcpSidecar({ root: path.join(home, 'dsh-acp') })
-    const seedAcpBinding = async (sessionId: string): Promise<void> => {
-      const binding: AcpBindingData = {
-        provider: 'acp-codex',
-        agentSessionId: `agent-${sessionId}`,
-        profileId: 'codex',
-        canonicalCwd: '/tmp/work',
-        launchFingerprint: { command: 'codex-acp', args: ['acp'], envKeys: [] },
-        agent: { name: 'Codex', version: '1.6.2' },
-        protocolVersion: 1,
-        capabilityHash: 'a1b2c3d4e5f60708',
-        configHash: '0817f6e5d4c3b2a1',
-        generation: 1,
-        bindingEpoch: 1,
-        committedPromptOrdinal: 0,
-        historyBaseSeq: 0,
-        establishedAt: Date.now(),
-        dshCommittedSeq: 0,
-      }
-      await persisted.append(sessionId as never, { kind: 'binding', data: binding })
-    }
     await persisted.upsertActivity({
       dshSessionId: 'cold-parent',
       ownerDshSessionId: 'cold-parent',
@@ -452,7 +469,7 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       activities: [{ activityId: 'cold-tool', presentation: 'Ran pwd' }],
     })
     await expect(remote.activitySnapshot('unrelated-session')).rejects.toThrow('not authorized')
-    await seedAcpBinding('policy-no-session')
+    await seedCodexBinding(persisted, 'policy-no-session')
     await expect(remote.toolApprovalPolicy('policy-no-session')).rejects.toThrow(
       'ACP_TOOL_APPROVAL_SESSION_UNAVAILABLE',
     )
@@ -462,15 +479,21 @@ describe('real Cordis ACP composition settings lifecycle', () => {
     // session ownership, and live Team membership (not a bridge callback stub).
     const addSession = (id: string, parentSession?: string): void => {
       liveSessions.set(id, {
-        header: { ...(parentSession === undefined ? { origin: 'native' } : { parentSession }) },
+        id,
+        isOwnSeq: () => true,
+        header: { id, ...(parentSession === undefined ? { origin: 'native' } : { parentSession }) },
         facts: {},
         permissions: {},
         requestHeader: () => ({ config: { provider: 'acp-codex' } }),
       })
-      liveAgents.set(id, { id, options: { provider: 'acp-codex' } })
+      liveAgents.set(id, {
+        id,
+        options: { provider: 'acp-codex' },
+        model: { current: () => ({ provider: 'acp-codex', model: 'test-model' }) },
+      })
     }
     addSession('policy-root')
-    await seedAcpBinding('policy-root')
+    await seedCodexBinding(persisted, 'policy-root')
     await expect(remote.toolApprovalPolicy('policy-root')).resolves.toMatchObject({
       policy: 'auto',
       source: 'session',
@@ -486,15 +509,21 @@ describe('real Cordis ACP composition settings lifecycle', () => {
     await remote.setToolApprovalPolicy('policy-root', { policy: 'ask' })
 
     const lead = liveAgents.get('policy-root')!
-    const teammate = liveAgents.get('policy-member') ?? { id: 'policy-member', options: { provider: 'acp-codex' } }
+    const teammate = liveAgents.get('policy-member') ?? {
+      id: 'policy-member',
+      options: { provider: 'acp-codex' },
+      model: { current: () => ({ provider: 'acp-codex', model: 'test-model' }) },
+    }
     liveAgents.set(teammate.id, teammate)
     liveSessions.set(teammate.id, {
-      header: { origin: 'subagent', parentSession: lead.id },
+      id: teammate.id,
+      isOwnSeq: () => true,
+      header: { id: teammate.id, origin: 'subagent', parentSession: lead.id },
       facts: {},
       permissions: {},
       requestHeader: () => ({ config: { provider: 'acp-codex' } }),
     })
-    await seedAcpBinding(teammate.id)
+    await seedCodexBinding(persisted, teammate.id)
     const teamId = 'policy-team'
     memberships.set(lead, { id: teamId, role: 'lead', root: lead })
     memberships.set(teammate, { id: teamId, role: 'teammate', root: lead })
@@ -569,6 +598,14 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       editable: true,
     })
 
+    await settings.replace({ agents: { codex: agent('Codex', 'replacement-acp') } })
+    const replacement = (await remote.ownedProviderRoutes()).generations['acp-codex']
+    expect(replacement).toEqual(expect.any(String))
+    expect(replacement).not.toBe(initialRegistration)
+    await settings.replace({ agents: {} })
+    expect((await remote.ownedProviderRoutes()).generations).toEqual({})
+    await settings.replace({ agents: { codex: agent('Codex', 'replacement-acp') } })
+    expect((await remote.ownedProviderRoutes()).generations['acp-codex']).not.toBe(replacement)
     await settings.replace({ agents: { devin: agent('Devin', 'devin') } })
     expect(routeCalls).toContainEqual(['acp-codex'])
     expect(routeCalls).toContainEqual(['acp-devin'])

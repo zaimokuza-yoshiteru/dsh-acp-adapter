@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 
 export const E2E_SHARD_COUNT = 3
 export const NATIVE_PARITY_FILE = 'test/e2e/native-parity.e2e.ts'
-export const NATIVE_PARITY_PROFILES = ['claude', 'codex', 'devin', 'kimi'] as const
+export const NATIVE_PARITY_PROFILES = ['claude', 'codex', 'devin'] as const
 
 // Approximate seconds from the full CI run. Unknown files are included with a
 // default weight; this balances runners without maintaining a coverage allowlist.
@@ -36,7 +36,7 @@ export function nativeParityProfiles(value: string | undefined): string[] {
     new Set(selected).size !== selected.length ||
     selected.some((profile) => !NATIVE_PARITY_PROFILES.some((known) => known === profile))
   ) {
-    throw new Error('Native parity profiles must be a nonempty, unique subset of claude,codex,devin,kimi')
+    throw new Error('Native parity profiles must be a nonempty, unique subset of claude,codex,devin')
   }
   return selected
 }
@@ -51,6 +51,7 @@ export function createE2eShards(files: readonly string[]): E2eShard[] {
   )
   units.sort(
     (left, right) =>
+      Number(right.profile !== undefined) - Number(left.profile !== undefined) ||
       right.weight - left.weight ||
       `${left.file}:${left.profile ?? ''}`.localeCompare(`${right.file}:${right.profile ?? ''}`),
   )

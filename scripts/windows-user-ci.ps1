@@ -28,25 +28,9 @@ pnpm typecheck
 pnpm test --no-file-parallelism
 pnpm build
 }
-# Test the actual consumer, not only that our registration succeeds. No login/model calls.
-$devinVersion = if ($env:DEVIN_TEST_VERSION) { $env:DEVIN_TEST_VERSION } else { '3000.10.31' }
-$devinSha = switch ($devinVersion) {
-  '3000.10.31' { '2752bc02ca6ff5fa55031d5dac6a6886e5bcca9e37edeb05fde635a240ced89f' }
-  '3000.11.3' { 'dded69a40dc54012612eda47e0935f2fb394b97cd38cb4d7d84b1e1d71c5f7ea' }
-  '3000.3.27' { '254c8085137474d883cf6a6309ed98269fe4489cb83c67722d8b2279e443e11c' }
-  default { throw 'Unsupported Devin test version' }
-}
-$devinZip = Join-Path $AuditRoot 'devin.zip'
-Invoke-WebRequest -Uri "https://static.devin.ai/cli/$devinVersion/devin-$devinVersion-x86_64-pc-windows.zip" -OutFile $devinZip
-if ((Get-FileHash -Algorithm SHA256 $devinZip).Hash.ToLowerInvariant() -ne $devinSha) { throw 'Devin archive integrity mismatch' }
-$devinRoot = Join-Path $AuditRoot 'devin'
-Expand-Archive -Path $devinZip -DestinationPath $devinRoot
-$devinExe = @(Get-ChildItem $devinRoot -Recurse -Filter devin.exe)
-if ($devinExe.Count -ne 1) { throw 'Expected one Devin executable' }
-$actualVersion = & $devinExe[0].FullName version
-Write-Output $actualVersion
-if (!$actualVersion.StartsWith("devin $devinVersion (")) { throw 'Devin executable version mismatch' }
-node scripts/check-devin-mcp.ts $devinExe[0].FullName ([Environment]::GetFolderPath('ApplicationData'))
+# Test actual session-supplied MCP discovery without login or model calls.
+$devinExe = node scripts/install-ci-devin.mjs $AuditRoot
+node scripts/check-devin-mcp.ts $devinExe ([Environment]::GetFolderPath('ApplicationData'))
 if ($Live) {
   if (!$env:WINDSURF_API_KEY) { throw 'Missing DEVIN_CLI_TOKEN Secret in ordinary-user process' }
   if ($DevinTestModel -cne 'swe-2-high') { throw 'Missing configured Devin test model in ordinary-user process' }
@@ -56,7 +40,7 @@ if ($Live) {
   $env:DEVIN_LIVE_TRACE_DIR = Join-Path $AuditRoot 'devin-live-diagnostics'
   New-Item -ItemType Directory -Path $env:DEVIN_LIVE_TRACE_DIR -Force | Out-Null
   $env:DEVIN_TEST_MODEL = $DevinTestModel
-  node scripts/check-devin-live.ts $devinExe[0].FullName
+  node scripts/check-devin-live.ts $devinExe
 } else {
   npm pack --ignore-scripts
 }

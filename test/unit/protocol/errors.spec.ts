@@ -11,7 +11,7 @@ import {
 } from '../../../src/protocol/v1/errors.ts'
 import type { AcpErrorKind } from '../../../src/protocol/v1/types.ts'
 
-const CORRELATION_ID_PATTERN = /^acperr-\d{8}T\d{6}Z-[0-9a-z]+-[0-9a-f]{6}$/
+const CORRELATION_ID_PATTERN = /^acperr-\d{8}T\d{6}Z-[0-9a-f]{32}$/
 
 const ALL_KINDS: readonly AcpErrorKind[] = [
   'spawn-failure',
@@ -87,11 +87,12 @@ describe(' 错误 taxonomy', () => {
 
 describe(' correlation id', () => {
   it('生成规则确定性：注入 now/random 后 id 逐字节确定', () => {
-    const id = newAcpCorrelationId(new Date('2026-08-20T18:47:52.308Z'), Buffer.from('9f3a2b', 'hex'))
-    expect(id).toMatch(/^acperr-20260820T184752Z-[0-9a-z]+-9f3a2b$/)
+    const random = Buffer.from('9f3a2b04d67e846aaf036126c174e857', 'hex')
+    const id = newAcpCorrelationId(new Date('2026-08-20T18:47:52.308Z'), random)
+    expect(id).toBe('acperr-20260820T184752Z-9f3a2b04d67e846aaf036126c174e857')
   })
 
-  it('缺省生成：形状匹配且同批生成互不相同（序号+随机防撞）', () => {
+  it('缺省生成：形状匹配且同批生成互不相同（128 bit 随机值）', () => {
     const ids = new Set(Array.from({ length: 64 }, () => newAcpCorrelationId()))
     for (const id of ids) expect(id).toMatch(CORRELATION_ID_PATTERN)
     expect(ids.size).toBe(64)

@@ -1,6 +1,7 @@
 import { expect, it, vi } from 'vitest'
+import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import { SlotCore } from '@deepseek-ai/dsh-client-ui-slots'
-import { followNativeTeamUi } from '../../../src/client/ui/native-team-ui-lifecycle.ts'
+import { followNativeSubagentUi } from '../../../src/client/ui/native-team-ui-lifecycle.ts'
 
 const Native = () => null
 function declareConversation(slots: SlotCore): () => void {
@@ -9,7 +10,7 @@ function declareConversation(slots: SlotCore): () => void {
       name: 'root',
       children: {
         'conversation.session.header.actions': { kind: 'list', scope: 'session' },
-        'conversation.session.header.utilities': { kind: 'list', scope: 'session' },
+        'shell.overlay': { kind: 'list', scope: 'root' },
         'conversation.input.dock': { kind: 'list', scope: 'session' },
       },
     } as never,
@@ -17,13 +18,23 @@ function declareConversation(slots: SlotCore): () => void {
   )
 }
 function nativeTeam(slots: SlotCore): () => void {
-  return slots.register({ name: 'conversation.session.header.actions', id: 'agent-team' }, Native)
+  return slots.register(
+    {
+      name: 'conversation.session.header.actions',
+      id: 'subagent-catalog',
+      children: {
+        'conversation.session.header.actions.subagent.footer': { kind: 'list', scope: 'session' },
+      },
+    },
+    ({ renderSlot }: PropsRenderSlots<'conversation.session.header.actions.subagent.footer'>) =>
+      renderSlot('conversation.session.header.actions.subagent.footer', {}),
+  )
 }
 function fixture(slots: SlotCore) {
   const released = vi.fn()
   const mount = vi.fn(() => {
     const management = slots.register(
-      { name: 'conversation.session.header.utilities', id: 'acp-team-management' },
+      { name: 'conversation.session.header.actions.subagent.footer', id: 'acp-settings' },
       Native,
     )
     return () => {
@@ -32,25 +43,23 @@ function fixture(slots: SlotCore) {
     }
   })
   const active = () =>
-    [...slots.entries('conversation.session.header.utilities'), ...slots.entries('conversation.input.dock')].map(
-      (entry) => entry.options.id,
-    )
+    slots.entries('conversation.session.header.actions.subagent.footer').map((entry) => entry.options.id)
   return { mount, released, active }
 }
 
-it('follows default off, late enable, hot disable and remount without a user setting', async () => {
+it('follows native catalog late mount, hot disable and remount without a second entry', async () => {
   const slots = new SlotCore()
   const releaseRoot = declareConversation(slots)
   const { mount, released, active } = fixture(slots)
-  const stop = followNativeTeamUi(slots, mount)
-  const unrelated = slots.register({ name: 'conversation.session.header.actions', id: 'subagent-catalog' }, Native)
+  const stop = followNativeSubagentUi(slots, mount)
+  const unrelated = slots.register({ name: 'conversation.session.header.actions', id: 'unrelated' }, Native)
   await Promise.resolve()
   expect(mount).not.toHaveBeenCalled()
   expect(active()).toEqual([])
 
   let releaseTeam = nativeTeam(slots)
   await Promise.resolve()
-  expect(active()).toEqual(['acp-team-management'])
+  expect(active()).toEqual(['acp-settings'])
   unrelated()
   await Promise.resolve()
   expect(mount).toHaveBeenCalledTimes(1)
@@ -61,7 +70,7 @@ it('follows default off, late enable, hot disable and remount without a user set
 
   releaseTeam = nativeTeam(slots)
   await Promise.resolve()
-  expect(active()).toEqual(['acp-team-management'])
+  expect(active()).toEqual(['acp-settings'])
   expect(mount).toHaveBeenCalledTimes(2)
   stop()
   stop()
@@ -80,14 +89,14 @@ it('replaces controls when the native owner is hot replaced within one notificat
   const releaseRoot = declareConversation(slots)
   const releaseTeam = nativeTeam(slots)
   const { mount, released, active } = fixture(slots)
-  const stop = followNativeTeamUi(slots, mount)
+  const stop = followNativeSubagentUi(slots, mount)
   expect(mount).toHaveBeenCalledTimes(1)
   releaseTeam()
   const replacement = nativeTeam(slots)
   await Promise.resolve()
   expect(released).toHaveBeenCalledTimes(1)
   expect(mount).toHaveBeenCalledTimes(2)
-  expect(active()).toEqual(['acp-team-management'])
+  expect(active()).toEqual(['acp-settings'])
   stop()
   replacement()
   releaseRoot()
@@ -98,7 +107,7 @@ it('releases subscriptions and controls when the native conversation declaration
   let releaseRoot = declareConversation(slots)
   nativeTeam(slots)
   const { mount, released, active } = fixture(slots)
-  const stop = followNativeTeamUi(slots, mount)
+  const stop = followNativeSubagentUi(slots, mount)
   releaseRoot()
   await Promise.resolve()
   expect(active()).toEqual([])
@@ -107,7 +116,7 @@ it('releases subscriptions and controls when the native conversation declaration
   nativeTeam(slots)
   await Promise.resolve()
   expect(mount).toHaveBeenCalledTimes(2)
-  expect(active()).toEqual(['acp-team-management'])
+  expect(active()).toEqual(['acp-settings'])
   stop()
   releaseRoot()
 })

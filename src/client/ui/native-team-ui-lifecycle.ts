@@ -2,8 +2,8 @@ import type { SlotCore, StoredEntry } from '@deepseek-ai/dsh-client-ui-slots'
 
 const TEAM_ACTION_SLOT = 'conversation.session.header.actions'
 
-/** Follow the official Team UI owner; cached rosters do not imply it is enabled. */
-export function followNativeTeamUi(
+/** Follow the native subagent catalog owner; a cached roster does not keep its UI alive. */
+export function followNativeSubagentUi(
   slots: Pick<SlotCore, 'entries' | 'subscribe'>,
   mount: () => () => void,
 ): () => void {
@@ -12,7 +12,7 @@ export function followNativeTeamUi(
   let unmount: (() => void) | undefined
   const reconcile = (): void => {
     if (stopped) return
-    const next = slots.entries(TEAM_ACTION_SLOT).find((entry) => entry.options.id === 'agent-team')
+    const next = slots.entries(TEAM_ACTION_SLOT).find((entry) => entry.options.id === 'subagent-catalog')
     if (next === owner) return
     owner = next
     const previous = unmount

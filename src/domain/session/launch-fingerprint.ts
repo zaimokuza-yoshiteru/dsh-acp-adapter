@@ -24,8 +24,8 @@
 
 import { createHash } from 'node:crypto'
 import { effectiveRuntimeOf, type AcpStubAgentConfig } from './agent-config.ts'
-import { executableOverrideEnvFor } from './agent-compatibility.ts'
-import { ACP_NATIVE_DATA_HOME_ENV_KEYS, ACP_NATIVE_XDG_ENV_KEYS } from '../policy/sandbox.ts'
+import { executableOverrideEnvFor } from '../../agents/compatibility.ts'
+import { ACP_NATIVE_XDG_ENV_KEYS } from '../policy/sandbox.ts'
 import { acpCanonicalHash16, type AcpLaunchFingerprint } from '../../persistence/sidecar.ts'
 
 /** {@link acpLaunchFingerprint} 的输入。 */
@@ -74,7 +74,9 @@ export async function acpLaunchEnvironment(input: AcpLaunchEnvironmentInput): Pr
   return { ...input.config.env }
 }
 
-const NATIVE_STATE_ENV_KEYS = ['HOME', ...ACP_NATIVE_DATA_HOME_ENV_KEYS, ...ACP_NATIVE_XDG_ENV_KEYS]
+// Persisted identity format: preserve the retired slot and original ordering so
+// existing bindings retain their hash. This grants no access or launch override.
+const NATIVE_STATE_ENV_KEYS = ['HOME', 'CODEX_HOME', 'KIMI_CODE_HOME', 'CLAUDE_CONFIG_DIR', ...ACP_NATIVE_XDG_ENV_KEYS]
 
 function nativeStateEnvFingerprint(
   env: Readonly<Record<string, string | undefined>>,

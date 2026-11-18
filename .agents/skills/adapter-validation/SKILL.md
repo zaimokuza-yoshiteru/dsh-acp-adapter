@@ -30,4 +30,4 @@ Separate protocol/routing correctness, the test's requested behavior, its budget
 
 Report exact commands, input identity, results and missing coverage. Do not describe skipped/pending checks, an eventual retry success or historical live evidence as a current pass.
 
-Adapted from DSH [`dsh-pre-push-checks`](https://github.com/deepseek-ai/deepseek-harness/blob/1600d8a1e140dcde43a1a0941940a0480712c011/.agents/skills/dsh-pre-push-checks/SKILL.md) and [`dsh-ci-test-reliability`](https://github.com/deepseek-ai/deepseek-harness/blob/1600d8a1e140dcde43a1a0941940a0480712c011/.agents/skills/dsh-ci-test-reliability/SKILL.md).
+Adapted from DSH [`dsh-pre-push-checks`](https://github.com/deepseek-ai/deepseek-harness/blob/ddac96760b6edf8fa0fe17cbdcf0b512f4c12b2c/.agents/skills/dsh-pre-push-checks/SKILL.md) and [`dsh-ci-test-reliability`](https://github.com/deepseek-ai/deepseek-harness/blob/ddac96760b6edf8fa0fe17cbdcf0b512f4c12b2c/.agents/skills/dsh-ci-test-reliability/SKILL.md).

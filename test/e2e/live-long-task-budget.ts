@@ -70,7 +70,7 @@ export function admitLongTaskTool(
     return failClosed(budget, 'LONG_TASK_TOTAL_DISPATCH_BUDGET')
   if (budget.sceneDispatches[input.scene] >= LONG_TASK_BUDGET.sceneDispatches)
     return failClosed(budget, 'LONG_TASK_SCENE_DISPATCH_BUDGET')
-  if (input.toolName === 'spawn_teammate') {
+  if (input.toolName === 'subagent') {
     if (budget.spawnAttempts >= LONG_TASK_BUDGET.spawnAttempts) return failClosed(budget, 'LONG_TASK_SPAWN_BUDGET')
     budget.spawnAttempts += 1
   }

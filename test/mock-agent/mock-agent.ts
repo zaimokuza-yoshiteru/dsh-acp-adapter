@@ -19,24 +19,6 @@ import { regressionTurn } from './regression-turn.ts'
 import fs from 'node:fs'
 import { join } from 'node:path'
 
-// Native CLI registration fixture; real executable coverage lives in check-devin-mcp/live.
-const mcpIndex = process.argv.indexOf('mcp')
-if (mcpIndex >= 0) {
-  const file = join(process.env.HOME ?? process.cwd(), '.mock-devin-mcp.json')
-  const action = process.argv[mcpIndex + 1]
-  if (action === 'get') {
-    if (!fs.existsSync(file)) {
-      console.error("Error: Server 'dsh' not found")
-      process.exit(1)
-    }
-    const args = JSON.parse(fs.readFileSync(file, 'utf8')) as string[]
-    console.log(`Server: dsh\n    Command: ${args.join(' ')}`)
-  } else if (action === 'add') {
-    fs.writeFileSync(file, JSON.stringify(process.argv.slice(process.argv.indexOf('--') + 1)))
-  } else process.exit(1)
-  process.exit(0)
-}
-
 const FIXED_TIMESTAMP = '2026-01-01T00:00:00.000Z'
 
 const KNOWN_SCENARIOS = new Set([
@@ -131,7 +113,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 // ---------- scenario 行为谓词 ----------
 const fullCaps = () => state.scenario !== 'minimal-caps'
-const hasConfigOptions = () => state.scenario !== 'minimal-caps' && state.scenario !== 'no-config-options'
+const hasConfigOptions = () =>
+  state.scenario !== 'minimal-caps' &&
+  state.scenario !== 'no-config-options' &&
+  process.env.MOCK_NO_CONFIG_OPTIONS !== '1'
 const MODEL_THOUGHT_LEVELS: Record<string, unknown> = (() => {
   try {
     const parsed = JSON.parse(process.env.MOCK_MODEL_THOUGHT_LEVELS ?? '{}')
@@ -210,9 +195,11 @@ function freshConfigOptions() {
     },
     {
       id: 'model',
-      name: 'Model',
+      name: process.env.MOCK_MODEL_OPTION_CATEGORY === undefined ? 'Model' : 'Agent choice',
       description: 'AI model to use',
-      category: 'model',
+      ...(process.env.MOCK_MODEL_OPTION_CATEGORY === 'absent'
+        ? {}
+        : { category: process.env.MOCK_MODEL_OPTION_CATEGORY ?? 'model' }),
       type: 'select',
       currentValue: MODEL_OPTIONS[0].value,
       options: MODEL_OPTIONS,
@@ -368,6 +355,12 @@ const PERMISSION_OPTIONS = [
 ]
 
 // ---------- 会话 ----------
+function nextSessionId(): string {
+  // Multi-process scenarios compare identities even after a plugin restart.
+  if (process.env.MOCK_UNIQUE_SESSION_IDS === '1') return `mock-session-${globalThis.crypto.randomUUID()}`
+  return `mock-session-${++state.sessionSeq}`
+}
+
 function createSession(id: string, cwd: string) {
   const session: MockSession = {
     id,
@@ -442,9 +435,6 @@ async function handleInitialize(msg: MockRequest) {
 }
 
 function sessionMcpServers(msg: MockRequest): NonNullable<MockSession['mcpServers']> {
-  if (process.env.MOCK_PROFILE === 'devin' && process.env.DSH_ACP_TEAM_MCP_URL) {
-    return [{ name: 'dsh', type: 'http', url: process.env.DSH_ACP_TEAM_MCP_URL, headers: [] }]
-  }
   return msg.params?.mcpServers ?? []
 }
 
@@ -459,7 +449,7 @@ async function handleSessionNew(msg: MockRequest) {
   }
   const delay = intEnv('MOCK_SESSION_NEW_DELAY_MS', 0)
   if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay))
-  const session = createSession(`mock-session-${++state.sessionSeq}`, msg.params?.cwd ?? '/mock/cwd')
+  const session = createSession(nextSessionId(), msg.params?.cwd ?? '/mock/cwd')
   session.mcpServers = sessionMcpServers(msg)
   // 对齐 devin 实测流量（research/probe-output.log L55-58 先于 session/new 响应）：
   // 先主动推厂商扩展通知 + config_option_update + current_mode_update 快照，再回响应
@@ -521,7 +511,7 @@ function handleSessionFork(msg: MockRequest) {
   const parent = getSession(msg)
   if (!parent) return
   if (!ADVERTISE_FORK) return respondError(msg.id, -32601, 'Method not found: session/fork')
-  const child = createSession(`mock-session-${++state.sessionSeq}`, msg.params?.cwd ?? parent.cwd)
+  const child = createSession(nextSessionId(), msg.params?.cwd ?? parent.cwd)
   child.configOptions = parent.configOptions ? JSON.parse(JSON.stringify(parent.configOptions)) : null
   child.modes = parent.modes ? JSON.parse(JSON.stringify(parent.modes)) : null
   log(`session/fork parent=${parent.id} child=${child.id}`)

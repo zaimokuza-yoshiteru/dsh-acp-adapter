@@ -76,7 +76,7 @@ it('changes captured compatible members once and never includes other profiles o
     isCurrent: () => true,
     members: async () => [
       member('a'),
-      member('other', { profileId: 'kimi' }),
+      member('other', { profileId: 'generic' }),
       member('running', { status: 'running' }),
       member('late'),
     ],
@@ -149,7 +149,7 @@ it('rejects a profile change while a snapshot request is in flight', async () =>
       mode: 'plan',
       isCurrent: () => true,
       members: async () => [member('a')],
-      snapshot: async () => snapshot({ profileId: 'kimi' }),
+      snapshot: async () => snapshot({ profileId: 'generic' }),
       write,
     }),
   ).toMatchObject({ applied: 0, skipped: 1, failed: 0 })

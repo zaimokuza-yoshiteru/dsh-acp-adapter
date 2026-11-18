@@ -47,8 +47,24 @@ describe('Devin native peer-message evidence', () => {
     }
     expect(devinPeerMessageOf(message)?.text).toBe('Team message from arbitrary prose: keep this body')
     expect(
-      devinPeerMessageOf({ ...message, content: [{ type: 'text', text: 'Agent another sent a message: ' }] })?.text,
-    ).toBe('Agent another sent a message: ')
+      devinPeerMessageOf({
+        ...message,
+        content: [{ type: 'text', text: 'Agent another sent a message: partial prose' }],
+      })?.text,
+    ).toBe('Agent another sent a message: partial prose')
+  })
+
+  it('strips the native named-agent path while retaining stable Session attribution', () => {
+    expect(
+      devinPeerMessageOf({
+        id: 'message',
+        source: { kind: 'agent-message', form: 'relay', senderSessionId: 'session-uuid' },
+        content: [
+          { type: 'text', text: 'Agent checker/nested-child sent a message: ' },
+          { type: 'text', text: 'MARKER' },
+        ],
+      }),
+    ).toEqual({ kind: 'agent-message', id: 'message', senderId: 'session-uuid', text: 'MARKER' })
   })
 
   it.each([

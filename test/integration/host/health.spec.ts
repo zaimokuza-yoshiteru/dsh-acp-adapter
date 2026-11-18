@@ -74,6 +74,66 @@ describe('AcpRemoteService current public surface', () => {
     })
   })
 
+  it('publishes registered routes separately from saved settings and historical bindings', async () => {
+    let registered = ['acp-acp-custom']
+    const { instance } = service({
+      registry: { ...registry(), registeredProviders: () => registered },
+      bindingFacts: {
+        countBoundSessions: async () => 1,
+        listBoundProviders: async () => ['acp-removed', 'acp-removed', 'native-provider'],
+      },
+    })
+    await expect(instance.ownedProviderRoutes()).resolves.toEqual({
+      providers: ['acp-acp-custom'],
+      historicalProviders: ['acp-removed'],
+    })
+    registered = []
+    await expect(instance.ownedProviderRoutes()).resolves.toEqual({
+      providers: [],
+      historicalProviders: ['acp-removed'],
+    })
+  })
+
+  it('reports retained retired profiles without launching or probing them, including explicit rechecks', async () => {
+    const probe = vi.fn(async () => [])
+    const checkExecutable = vi.fn(async () => true)
+    const queryVersion = vi.fn(async () => '1.0.0')
+    const configurations: Record<string, AcpAgentConfig> = {
+      kimi: { name: 'Old legacy', command: 'kimi', args: [], env: {} },
+      renamed: { name: 'Old explicit', command: 'kimi', args: [], env: {}, runtime: 'kimi' },
+      generic: { name: 'Generic', command: 'generic', args: [], env: {} },
+    }
+    const { instance } = service({
+      registry: {
+        agents: () => new Map(Object.entries(configurations)),
+        probeCacheFor: () => ({ probeSnapshot: () => undefined, invalidateProbe: vi.fn(), listModels: probe }),
+      },
+      checkExecutable,
+      queryVersion,
+    })
+    for (const agentId of ['kimi', 'renamed']) {
+      const result = await instance.health({ recheck: true, agentId })
+      expect(result.providers).toMatchObject([
+        { id: agentId, state: 'unavailable', unavailableReason: 'agent-retired', probe: { status: 'never', at: null } },
+      ])
+    }
+    expect(probe).not.toHaveBeenCalled()
+    expect(checkExecutable).not.toHaveBeenCalled()
+    expect(queryVersion).not.toHaveBeenCalled()
+    await instance.health({ recheck: true, agentId: 'generic' })
+    expect(probe).toHaveBeenCalledOnce()
+    expect(checkExecutable).toHaveBeenCalledOnce()
+    expect(queryVersion).toHaveBeenCalledOnce()
+  })
+
+  it('reports a Host version mismatch with health, and nothing when versions agree', async () => {
+    expect(await service().instance.health()).not.toHaveProperty('hostVersion')
+    const mismatch = { adapter: '0.2.2-rc.1.1', required: '0.2.2-rc.1', running: '0.2.2-rc.2' }
+    await expect(service({ hostVersion: () => mismatch }).instance.health()).resolves.toMatchObject({
+      hostVersion: { required: '0.2.2-rc.1', running: '0.2.2-rc.2' },
+    })
+  })
+
   it('health recheck is targeted and does not expose authentication RPCs', async () => {
     const { instance } = service()
     await expect(instance.health({ recheck: true, agentId: 'devin' })).resolves.toMatchObject({
@@ -185,7 +245,11 @@ describe('AcpRemoteService current public surface', () => {
         hasLiveAgent: () => live,
       },
     })
-    await expect(instance.backendOf('s1')).resolves.toEqual({ state: 'established', provider: 'acp-devin' })
+    await expect(instance.backendOf('s1')).resolves.toEqual({
+      state: 'established',
+      provider: 'acp-devin',
+      acpBinding: true,
+    })
     expect(readHeader).not.toHaveBeenCalled()
     bound = undefined
     header = 'acp-codex'
@@ -299,7 +363,11 @@ describe('AcpRemoteService current public surface', () => {
 
     // backendOf is also the native/blank backend query used before ACP model
     // selection, so a native session without an ACP durable owner stays valid.
-    await expect(instance.backendOf('foreign')).resolves.toEqual({ state: 'established', provider: 'acp-devin' })
+    await expect(instance.backendOf('foreign')).resolves.toEqual({
+      state: 'established',
+      provider: 'acp-devin',
+      acpBinding: true,
+    })
     expect(readBinding).toHaveBeenCalledOnce()
 
     let storageAvailable = false
@@ -335,11 +403,13 @@ describe('AcpRemoteService current public surface', () => {
       'backendOf',
       'boundSessions',
       'health',
+      'nativeForkScope',
       'ownedProviderRoutes',
       'projectedSubagentIds',
       'rebindRecoveryBlank',
       'recoveryFollow',
       'recoverySnapshot',
+      'registerNativeFork',
       'retryOriginal',
       'setAgentSessionOption',
       'setTeamMemberMode',

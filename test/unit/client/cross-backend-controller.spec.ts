@@ -26,7 +26,7 @@ function operations(order: string[], overrides: Partial<CrossBackendOperations> 
     }),
     createDestination: vi.fn(async ({ sessionId }) => {
       order.push(`create:${sessionId}`)
-      return { published: true }
+      return { sessionId }
     }),
     selectDestination: vi.fn(async () => {
       order.push('select')
@@ -70,7 +70,7 @@ describe('CrossBackendTransactionController', () => {
       createDestination: vi.fn(async ({ sessionId }) => {
         createAttempt += 1
         order.push(`create:${sessionId}`)
-        return { published: true }
+        return { sessionId }
       }),
       selectDestination: vi.fn(async () => {
         selectAttempt += 1

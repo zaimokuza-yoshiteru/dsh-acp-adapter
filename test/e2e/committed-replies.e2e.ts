@@ -10,7 +10,7 @@ import { required } from './required.ts'
 import type { ObservedEvent } from './types.ts'
 import type { Page } from 'playwright'
 
-it('retains a committed report through a native settlement follow-up, folding, file preview and reload', async () => {
+it('keeps committed reports under native all/final folding, file preview and reload', async () => {
   const host = await launchAdapterWorld({
     ...(process.env.DSH_E2E_ADAPTER_DIRECTORY === undefined
       ? {}
@@ -21,8 +21,7 @@ it('retains a committed report through a native settlement follow-up, folding, f
   const events: ObservedEvent[] = []
   const errors: string[] = []
   const id = 'committed-replies'
-  const baseline = process.env.DSH_E2E_REPLY_BASELINE === '1'
-  const evidence = join(root, '.local/native-progressive-fix-20261021/committed-replies', baseline ? 'before' : 'after')
+  const evidence = join(root, '.local/native-folded-replies', process.env.DSH_E2E_ELECTRON ? 'electron' : 'web')
   mkdirSync(evidence, { recursive: true })
   const gate = join(host.workspaceCwd, `${id}-commit`)
   const pathEvidence = join(host.workspaceCwd, `${id}-path.json`)
@@ -38,7 +37,11 @@ it('retains a committed report through a native settlement follow-up, folding, f
   })
   host.ctx.on('session/event', (session, event) => events.push({ sessionId: session.id, ...event }))
   try {
-    await host.ctx.settings.replace('ui-chat', { transcriptView: 'standard', collapseTiming: 'completion' })
+    await host.ctx.settings.replace('ui-chat', {
+      transcriptView: 'standard',
+      collapseTiming: 'completion',
+      foldedReplies: 'all',
+    })
     await host.ctx.settings.replace('dsh-acp-adapter', {
       agents: {
         codex: {
@@ -96,9 +99,9 @@ it('retains a committed report through a native settlement follow-up, folding, f
     const sessionId = await settled
     const receipt = page.getByText(`LATE_RECEIPT_${id}`, { exact: true })
     await receipt.waitFor()
-    const control = page.locator('[data-turn-process="1"]')
+    const control = page.locator('[data-turn-process="1"]').last()
     await expect.poll(() => control.getAttribute('aria-expanded')).toBe('false')
-    await expect.poll(() => report.isVisible()).toBe(!baseline)
+    await expect.poll(() => report.isVisible()).toBe(true)
     expect(await report.count()).toBe(1)
     expect(await receipt.count()).toBe(1)
     const log = events.filter((event) => event.sessionId === sessionId)
@@ -110,7 +113,6 @@ it('retains a committed report through a native settlement follow-up, folding, f
       join(evidence, 'default-collapse.json'),
       JSON.stringify(
         {
-          baseline,
           reportVisible: await report.isVisible(),
           receiptVisible: await receipt.isVisible(),
           processCollapsed: (await control.getAttribute('aria-expanded')) === 'false',
@@ -120,12 +122,6 @@ it('retains a committed report through a native settlement follow-up, folding, f
         2,
       ),
     )
-    if (baseline) {
-      await control.click()
-      await report.waitFor()
-      await page.screenshot({ path: join(evidence, 'expanded-report.png'), fullPage: true })
-      return
-    }
     const reportSeat = report.locator('xpath=ancestor::*[@data-chat-node-key][1]')
     const originalKey = await reportSeat.getAttribute('data-chat-node-key')
     expect(await reportSeat.getAttribute('data-turn-process-member')).toBeNull()
@@ -162,18 +158,53 @@ it('retains a committed report through a native settlement follow-up, folding, f
     await receipt.waitFor()
     expect(await reportSeat.getAttribute('data-chat-node-key')).toBe(originalKey)
 
+    // Native final-only folding hides the earlier committed reply, but opening
+    // the process recovers it with the same key and mounted DOM node.
+    const mountedReport = required(await report.elementHandle())
+    await host.ctx.settings.replace('ui-chat', {
+      transcriptView: 'standard',
+      collapseTiming: 'completion',
+      foldedReplies: 'final',
+    })
+    await expect.poll(() => report.isVisible()).toBe(false)
+    expect(await receipt.isVisible()).toBe(true)
+    expect(await reportSeat.getAttribute('data-turn-process-member')).toBe('true')
+    expect(await reportSeat.getAttribute('data-chat-node-key')).toBe(originalKey)
+    expect(await mountedReport.evaluate((element) => element.isConnected)).toBe(true)
+    await control.click()
+    await report.waitFor()
+    expect(await mountedReport.evaluate((element) => element.isConnected)).toBe(true)
+    await control.click()
+    await expect.poll(() => report.isVisible()).toBe(false)
+    await page.reload()
+    await receipt.waitFor()
+    await expect.poll(() => report.isVisible()).toBe(false)
+    expect(await reportSeat.getAttribute('data-chat-node-key')).toBe(originalKey)
+    await page.screenshot({ path: join(evidence, 'final-only-restored.png'), fullPage: true })
+
     // These are the existing Host settings, exercised without new UI options.
     for (const transcriptView of ['compact', 'standard', 'detailed', 'verbose']) {
       for (const collapseTiming of ['completion', 'next-input']) {
-        await host.ctx.settings.replace('ui-chat', { transcriptView, collapseTiming })
-        await expect.poll(() => report.isVisible()).toBe(true)
-        expect(await receipt.isVisible()).toBe(true)
-        expect(await report.count()).toBe(1)
-        expect(await reportSeat.getAttribute('data-chat-node-key')).toBe(originalKey)
-        await page.screenshot({ path: join(evidence, `${transcriptView}-${collapseTiming}.png`), fullPage: true })
+        for (const foldedReplies of ['all', 'final']) {
+          await host.ctx.settings.replace('ui-chat', { transcriptView, collapseTiming, foldedReplies })
+          if (transcriptView !== 'verbose' && (await control.getAttribute('aria-expanded')) === 'true')
+            await control.click()
+          await expect.poll(() => report.isVisible()).toBe(foldedReplies === 'all' || transcriptView === 'verbose')
+          expect(await receipt.isVisible()).toBe(true)
+          expect(await report.count()).toBe(1)
+          expect(await reportSeat.getAttribute('data-chat-node-key')).toBe(originalKey)
+          await page.screenshot({
+            path: join(evidence, `${transcriptView}-${collapseTiming}-${foldedReplies}.png`),
+            fullPage: true,
+          })
+        }
       }
     }
-    await host.ctx.settings.replace('ui-chat', { transcriptView: 'standard', collapseTiming: 'next-input' })
+    await host.ctx.settings.replace('ui-chat', {
+      transcriptView: 'standard',
+      collapseTiming: 'next-input',
+      foldedReplies: 'all',
+    })
     await writeComposerDraft(page, page.locator('[data-composer-input]').first(), `E2E_COMMITTED_NEXT ${id}`)
     const nextSettled = host.whenTurnSettled(30_000)
     void nextSettled.catch(() => {})

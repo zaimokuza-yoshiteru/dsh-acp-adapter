@@ -93,13 +93,13 @@ it('times out the native timed question and steers its late answer into the acti
     }
     recordToolCall(callId, args)
 
-    const pending = await host.ctx.tools.execute({
-      callId,
-      name: 'ask_user_question',
-      arguments: args,
-      agent,
-      signal: new AbortController().signal,
-    })
+    const pending = await host.ctx.tools
+      .execute({
+        calls: [{ type: 'tool-call', id: callId, name: 'ask_user_question', arguments: JSON.stringify(args) }],
+        agent,
+        signal: new AbortController().signal,
+      })
+      .then((batch) => required(batch.results[0]).result)
     expect(pending.isError).toBe(false)
     if (pending.isError) throw pending.error
     expect(pending.value).toMatchObject({ pending: true, callId })
@@ -152,13 +152,13 @@ it('times out the native timed question and steers its late answer into the acti
     const cancelId = ToolCallId(`timed-cancel-${Date.now()}`)
     const cancelArgs = { timeout: 30, questions: [{ id: 'cancel', question: 'Wait for cancellation?' }] }
     const cancelController = new AbortController()
-    const cancelledPromise = host.ctx.tools.execute({
-      callId: cancelId,
-      name: 'ask_user_question',
-      arguments: cancelArgs,
-      agent,
-      signal: cancelController.signal,
-    })
+    const cancelledPromise = host.ctx.tools
+      .execute({
+        calls: [{ type: 'tool-call', id: cancelId, name: 'ask_user_question', arguments: JSON.stringify(cancelArgs) }],
+        agent,
+        signal: cancelController.signal,
+      })
+      .then((batch) => required(batch.results[0]).result)
     await page.locator('[data-question-key]').waitFor()
     cancelController.abort(new Error('E2E cancel timed question'))
     const cancelled = await cancelledPromise

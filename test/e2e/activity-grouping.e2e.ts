@@ -321,7 +321,8 @@ describe('ACP markers through the native Chat builder and ProcessState', () => {
     const reply = current
       .projectedNodes()
       .find((node) => node.kind === 'assistant-step' && JSON.stringify(node.data).includes('FINAL_SUMMARY'))!
-    expect(reply.groupTree).toBe('turn')
+    // Placement belongs to the native seat (ui-chat.foldedReplies); the projection only keeps the final record.
+    expect(reply.groupTree).toBeUndefined()
     expect(reply.data).toMatchObject({ finalNode: { messageId: 'final-summary' } })
     current.restore()
     expect(current.groupKeys()).toEqual(processKeys)
@@ -391,8 +392,9 @@ describe('ACP markers through the native Chat builder and ProcessState', () => {
         .projectedNodes()
         .find((node) => node.kind === 'assistant-step' && JSON.stringify(node.data).includes(text))!
     expect(nodeFor(before, 'REPORT').groupTree).toBeUndefined()
-    expect(nodeFor(after, 'REPORT').groupTree).toBe('turn')
-    expect(nodeFor(after, 'RECEIPT').groupTree).toBe('turn')
+    // The projection no longer lifts replies out of the process; the native seat keeps or folds them.
+    expect(nodeFor(after, 'REPORT').groupTree).toBeUndefined()
+    expect(nodeFor(after, 'RECEIPT').groupTree).toBeUndefined()
     expect(nodeFor(after, 'Inspect the files').groupTree).toBeUndefined()
     const process = after.projectedNodes().find((node) => node.kind === 'turn-process')!
     expect(process.data).toMatchObject({ answerStep: 2 })
@@ -400,7 +402,8 @@ describe('ACP markers through the native Chat builder and ProcessState', () => {
     expect(tail.data).toMatchObject({ closing: { finalNode: { messageId: 'receipt' } }, branchUnavailable: false })
     const key = nodeFor(after, 'REPORT').key
     after.restore()
-    expect(nodeFor(after, 'REPORT')).toMatchObject({ key, groupTree: 'turn' })
+    expect(nodeFor(after, 'REPORT').key).toBe(key)
+    expect(nodeFor(after, 'REPORT').groupTree).toBeUndefined()
     expect(after.projectedNodes().filter((node) => node.kind === 'context' && node.id === 'settlement-1')).toHaveLength(
       1,
     )

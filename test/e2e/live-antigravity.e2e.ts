@@ -9,15 +9,15 @@ import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchBrowser, newEnglishPage, type TestBrowser } from './browser.ts'
 import { launchAdapterWorld, root } from './scaffold.ts'
 import type { AdapterWorld } from './scaffold.ts'
-import type { LiveDiagnosticEvent, LiveDiagnosticTraceSink } from '../../src/contract/live-diagnostic-trace.ts'
+import type {
+  LiveDiagnosticEvent,
+  LiveDiagnosticTraceSink,
+  LiveDiagnosticTrace,
+} from '../../src/contract/live-diagnostic-trace.ts'
+import type {} from '../../src/host/composition/live-diagnostics.ts'
 import { redactSecretText } from '../../src/contract/redaction.ts'
 import { createAcpSidecar } from '../../src/persistence/sidecar.ts'
 
-type NativeDiagnosticModule = {
-  installLiveDiagnosticTrace(sink: LiveDiagnosticTraceSink): () => void
-  liveDiagnosticTraceEnabled(): boolean
-  liveDiagnosticTraceFailureCount(): number
-}
 type NativeRuntimeModule = { AcpSessionRuntime: unknown }
 type RuntimePrompt = (this: unknown, ...args: unknown[]) => unknown
 type RuntimePermissionRequest = (this: unknown, ...args: unknown[]) => Promise<unknown>
@@ -110,9 +110,9 @@ it.skipIf(!optedIn)(
     let host: AdapterWorld | undefined
     let browser: TestBrowser | undefined
     let page: Page | undefined
-    let diagnosticModule: NativeDiagnosticModule | undefined
+    let diagnosticTrace: LiveDiagnosticTrace | undefined
     let sidecar: ReturnType<typeof createAcpSidecar> | undefined
-    let removeDiagnostic: (() => void) | undefined
+    let removeDiagnostic: (() => Promise<void>) | undefined
     let sessionId: string | undefined
     let firstSessionId: string | undefined
     let hostToolCalls = 0
@@ -727,10 +727,9 @@ it.skipIf(!optedIn)(
       restoreRuntimePrompt = () => {
         runtimePrototype.prompt = originalRuntimePrompt
       }
-      diagnosticModule = (await loader.import(
-        pathToFileURL(resolve(root, 'lib/contract/live-diagnostic-trace.js')).href,
-      )) as NativeDiagnosticModule
-      const remove = diagnosticModule.installLiveDiagnosticTrace(
+      diagnosticTrace = host.ctx.get('acpLiveDiagnostics')
+      if (diagnosticTrace === undefined) throw new Error('ANTIGRAVITY_DIAGNOSTIC_OWNER_UNAVAILABLE')
+      const remove = diagnosticTrace.install(
         Object.assign(
           (event: LiveDiagnosticEvent) => {
             const sanitized = safeEvent(event, hash)
@@ -761,7 +760,7 @@ it.skipIf(!optedIn)(
         ) as LiveDiagnosticTraceSink,
       )
       removeDiagnostic = remove
-      expect(diagnosticModule.liveDiagnosticTraceEnabled()).toBe(true)
+      expect(diagnosticTrace.enabled()).toBe(true)
 
       browser = await launchBrowser({ headless: true })
       page = await newEnglishPage(browser)
@@ -973,7 +972,7 @@ it.skipIf(!optedIn)(
       expect(runtimeConfigModels.every((model) => model === MODEL)).toBe(true)
       expect(requestRoutes.length).toBeGreaterThan(0)
       expect(requestRoutes.every((route) => route.provider === PROVIDER && route.model === MODEL)).toBe(true)
-      expect(diagnosticModule.liveDiagnosticTraceFailureCount()).toBe(0)
+      expect(diagnosticTrace.failureCount()).toBe(0)
       expect(pageErrors).toEqual([])
       runStatus = 'passed'
       privateWrite(
@@ -1049,7 +1048,7 @@ it.skipIf(!optedIn)(
       try {
         for (const restore of restorePermissionHandlers) restore()
         restoreRuntimePrompt?.()
-        removeDiagnostic?.()
+        await removeDiagnostic?.()
       } catch (error) {
         cleanupFailures.push(error)
       }

@@ -98,7 +98,7 @@ describe('CI coverage and isolation', () => {
       expect(() => selectE2eShard(value, files)).toThrow('E2E shard')
     expect(selectE2eShard('2/3', files)).toEqual(createE2eShards(files)[1])
     expect(nativeParityProfiles(undefined)).toEqual([...NATIVE_PARITY_PROFILES])
-    expect(nativeParityProfiles('devin,kimi')).toEqual(['devin', 'kimi'])
+    expect(nativeParityProfiles('devin,codex')).toEqual(['devin', 'codex'])
     for (const value of ['', 'devin,devin', 'unknown', 'devin,'])
       expect(() => nativeParityProfiles(value)).toThrow('nonempty, unique subset')
   })

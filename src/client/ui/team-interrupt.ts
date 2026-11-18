@@ -1,13 +1,14 @@
 import type { AcpTeamMemberView } from '../data/acp-remote.ts'
 
 /** Capture the visible team, then refresh membership before sending native
- * interrupts. The native endpoint authorizes each durable parent address.
+ * interrupts. The native endpoint authorizes the target Session for the current user.
  * Its receipt means accepted, not that execution has already stopped.
  */
 export async function interruptTeam(input: {
   lead: string
   targets: readonly string[]
   isCurrent(): boolean
+  canInterrupt?(id: string): boolean
   members(): Promise<readonly AcpTeamMemberView[]>
   interrupt(id: string): Promise<void>
 }): Promise<{ accepted: number; skipped: number; failed: number }> {
@@ -17,7 +18,11 @@ export async function interruptTeam(input: {
   const members = await input.members()
   await Promise.all(
     targets.map(async (id) => {
-      if (!input.isCurrent() || !members.some((member) => member.sessionId === id && member.status === 'running')) {
+      if (
+        !input.isCurrent() ||
+        input.canInterrupt?.(id) === false ||
+        !members.some((member) => member.sessionId === id && member.status === 'running')
+      ) {
         result.skipped++
         return
       }

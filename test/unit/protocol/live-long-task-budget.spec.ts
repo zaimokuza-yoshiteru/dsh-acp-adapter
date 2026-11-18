@@ -1,3 +1,4 @@
+import { NativeToolExecutor } from '@deepseek-ai/dsh-tool-executor-native'
 import { expect, it, vi } from 'vitest'
 import { Context as CordisContext } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -16,11 +17,9 @@ import {
 it('allows two planned spawns and rejects the third before dispatch', () => {
   const budget = createLongTaskBudget()
   for (let index = 0; index < 2; index += 1) {
-    expect(
-      admitLongTaskTool(budget, { scene: 'B', toolName: 'spawn_teammate', callId: `spawn-${index}` }),
-    ).toBeUndefined()
+    expect(admitLongTaskTool(budget, { scene: 'B', toolName: 'subagent', callId: `spawn-${index}` })).toBeUndefined()
   }
-  expect(admitLongTaskTool(budget, { scene: 'B', toolName: 'spawn_teammate', callId: 'spawn-3' })).toBe(
+  expect(admitLongTaskTool(budget, { scene: 'B', toolName: 'subagent', callId: 'spawn-3' })).toBe(
     'LONG_TASK_SPAWN_BUDGET',
   )
   expect(budget.totalDispatches).toBe(2)
@@ -47,6 +46,7 @@ it('reserves repeat-effect allowance before concurrent Host tool bodies start', 
   const ctx = new CordisContext()
   const systemPromptFiber = await ctx.plugin(SystemPrompt, {})
   const runtime = await ctx.plugin(ToolRuntime)
+  ctx.tools.setExecutor(new NativeToolExecutor(ctx))
   const budget = createLongTaskBudget()
   let bodyCalls = 0
   let errorResults = 0
@@ -87,9 +87,14 @@ it('reserves repeat-effect allowance before concurrent Host tool bodies start', 
     const calls = Array.from({ length: 3 }, (_, index) =>
       ctx.tools.execute({
         signal: new AbortController().signal,
-        callId: ToolCallId(`parallel-${index}`),
-        name: 'bash',
-        arguments: { command: 'same side effect' },
+        calls: [
+          {
+            type: 'tool-call',
+            id: ToolCallId(`parallel-${index}`),
+            name: 'bash',
+            arguments: JSON.stringify({ command: 'same side effect' }),
+          },
+        ],
         agent: { id: 'lead-session', options: { provider: 'acp-devin' } } as never,
       }),
     )
@@ -99,7 +104,7 @@ it('reserves repeat-effect allowance before concurrent Host tool bodies start', 
     })
     release()
     const results = await Promise.all(calls)
-    expect(results.filter((result) => result.isError)).toHaveLength(1)
+    expect(results.filter((result) => result.results[0]!.result.isError)).toHaveLength(1)
     expect(bodyCalls).toBe(2)
     expect(budget.pendingEffectCounts.size).toBe(0)
     expect([...budget.successfulEffectCounts.values()]).toEqual([2])

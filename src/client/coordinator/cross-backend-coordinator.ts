@@ -5,12 +5,29 @@ import type { ISessions, SessionBinding } from '@deepseek-ai/dsh-api-session-con
 import type { IWorkspaces } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { TypertClientRemote } from '@deepseek-ai/dsh-typert-protocol'
+import type { AcpOwnedRoutesView } from '../../contract/remote.ts'
+import { includesRoute } from '../data/managed-routes.ts'
+import { requiresAcpModelSwitchExit } from '../../contract/model-transition.ts'
 import { CrossBackendTransactionController, resolveCrossBackendLocation } from '../data/cross-backend-controller.ts'
 import type {
   CrossBackendFailure,
+  CrossBackendLocation,
   CrossBackendModelSelection,
   CrossBackendTicket,
 } from '../data/cross-backend-controller.ts'
+
+import {
+  createIndependentChild,
+  isMainSession,
+  presetUnavailable,
+  reconcileIndependentChild,
+  openIndependentChild,
+  DefaultPresetRepair,
+  definiteCreateRefusal,
+  sourcePresetUnavailable,
+  sessionCreateFailure,
+  withDefaultPreset,
+} from './native-session-navigation.ts'
 
 type ModelProjection = {
   readonly lastUsed: CrossBackendModelSelection | null
@@ -18,14 +35,22 @@ type ModelProjection = {
 }
 
 export interface CrossBackendPending {
+  readonly reason: 'backend-change' | 'model-switch'
   readonly ticket: CrossBackendTicket
   readonly failure: CrossBackendFailure | null
   readonly blockingReason?: 'no-location'
   readonly confirmable: boolean
   readonly busy: boolean
+  readonly useDefault?: true
+}
+
+interface CreatedSession {
+  readonly source: string
+  readonly child: SessionId
 }
 
 export interface CrossBackendCoordinatorSnapshot {
+  readonly created: readonly CreatedSession[]
   readonly pending: CrossBackendPending | null
 }
 
@@ -60,7 +85,8 @@ export function shouldConfirmBackendTransition(
   const toAcp = isAcpRoute(input.next.provider, ownsRoute)
   if (!fromAcp && !toAcp) return false
   if (input.blank && input.lastUsed === null && toAcp) return false
-  if (fromAcp && toAcp && input.lastUsed?.provider === input.next.provider) return false
+  if (fromAcp && toAcp && input.lastUsed?.provider === input.next.provider)
+    return requiresAcpModelSwitchExit(input.lastUsed, input.next, ownsRoute)
   return true
 }
 
@@ -79,12 +105,30 @@ export class CrossBackendCoordinator {
   private readonly observed = new Map<SessionId, ObservedSession>()
   private readonly queued: CrossBackendPending[] = []
   private pending: CrossBackendPending | null = null
-  private snapshot: CrossBackendCoordinatorSnapshot = { pending: null }
+  private created: readonly CreatedSession[] = []
+  private readonly offered = new WeakSet<CrossBackendTicket>()
+  private readonly uncertainCreations = new Map<
+    string,
+    {
+      ticket: CrossBackendTicket
+      requested: SessionId
+      checking: boolean
+      presetRefused: boolean
+      refused: boolean
+      repair: DefaultPresetRepair
+    }
+  >()
+  private snapshot: CrossBackendCoordinatorSnapshot = { pending: null, created: [] }
   private disposed = false
+  private readonly ticketChecks = new Map<string, (routes: AcpOwnedRoutesView) => boolean>()
+  private readonly ownsRoute: OwnsAcpRoute = (provider) => includesRoute(this.routes.getSnapshot().providers, provider)
 
   constructor(
     private readonly ctx: Context,
-    private readonly ownsRoute: OwnsAcpRoute,
+    private readonly routes: {
+      getSnapshot(): AcpOwnedRoutesView
+      subscribe(changed: () => void): () => void
+    },
   ) {}
 
   start(): () => void {
@@ -97,6 +141,7 @@ export class CrossBackendCoordinator {
     }
     const syncBindings = (): void => {
       if (this.disposed) return
+      this.reconcileWithdrawn()
       const rows = sessions.list.getSnapshot().byId
       for (const [id, observed] of this.observed) {
         if (sessions.binding(id) !== observed.binding || rows[id] === undefined) {
@@ -125,7 +170,10 @@ export class CrossBackendCoordinator {
         this.observe(row.id, observed)
       }
     }
-    this.unsubscribers.push(sessions.list.subscribe(syncBindings))
+    this.unsubscribers.push(
+      sessions.list.subscribe(syncBindings),
+      this.routes.subscribe(() => this.withdrawChangedRoutes()),
+    )
     syncBindings()
     return () => this.dispose()
   }
@@ -141,16 +189,123 @@ export class CrossBackendCoordinator {
     return this.snapshot
   }
 
-  async confirm(): Promise<void> {
+  private forget(key: string): void {
+    this.uncertainCreations.delete(key)
+    this.ticketChecks.delete(key)
+    this.tx.forget(key)
+  }
+
+  private offerCreated(ticket: CrossBackendTicket, child: string): void {
+    if (this.disposed || this.offered.has(ticket)) return
+    this.offered.add(ticket)
+    this.created = [...this.created, { source: ticket.sourceSessionId, child: child as SessionId }]
+    this.emit()
+  }
+
+  dismissCreated(source: string, child: SessionId): void {
+    this.created = this.created.filter((entry) => entry.source !== source || entry.child !== child)
+    this.emit()
+  }
+
+  openCreated(source: SessionId, child: SessionId, allowed: () => boolean): boolean {
+    const sessions = this.ctx.get('sessions') as unknown as ISessions
+    if (
+      this.disposed ||
+      !this.created.some((entry) => entry.source === source && entry.child === child) ||
+      !isMainSession(sessions, source) ||
+      !sessions.list.getSnapshot().byId[child]?.blank ||
+      !allowed()
+    )
+      return false
+    this.ctx.uiWorkspace.openSession(child)
+    this.dismissCreated(source, child)
+    return true
+  }
+
+  /** A lost create acknowledgement can outlive its route. Publish only a blank row
+   * confirmed by a fresh Host reply; the source dock observes the child's live follow grant. */
+  private reconcileWithdrawn(): void {
+    if (this.disposed || !this.uncertainCreations.size) return
+    const list = (this.ctx.get('sessions') as unknown as ISessions).list.getSnapshot()
+    if (list.phase !== 'ready') return
+    const candidates = [...this.uncertainCreations.values()].filter(
+      (candidate) =>
+        !candidate.checking && !this.ticketChecks.has(candidate.ticket.key) && list.byId[candidate.requested]?.blank,
+    )
+    if (!candidates.length) return
+    for (const candidate of candidates) candidate.checking = true
+    void this.ctx.remote.session
+      .list({})
+      .then((result) => {
+        if (!result.ok || this.disposed) return
+        for (const candidate of candidates) {
+          if (
+            this.uncertainCreations.get(candidate.ticket.key) === candidate &&
+            result.value.items.some((row) => row.sessionId === candidate.requested && row.blank)
+          ) {
+            this.uncertainCreations.delete(candidate.ticket.key)
+            this.offerCreated(candidate.ticket, candidate.requested)
+          }
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        for (const candidate of candidates) candidate.checking = false
+      })
+  }
+
+  private withdraw(key: string): void {
     const pending = this.pending
-    if (pending === null || this.disposed || !pending.confirmable || pending.busy) return
+    const child = this.tx.confirmedDestination(key)
+    this.ticketChecks.delete(key)
+    this.tx.forget(key)
+    this.reconcileWithdrawn()
+    if (child !== undefined && pending?.ticket.key === key) this.offerCreated(pending.ticket, child)
+  }
+
+  private withdrawChangedRoutes(): void {
+    for (const [key, current] of this.ticketChecks) {
+      if (!current(this.routes.getSnapshot())) this.withdraw(key)
+    }
+    for (let i = this.queued.length - 1; i >= 0; i--)
+      if (!this.ticketChecks.has(this.queued[i]!.ticket.key)) this.queued.splice(i, 1)
+    if (this.pending !== null && !this.ticketChecks.has(this.pending.ticket.key)) {
+      this.pending = this.queued.shift() ?? null
+      this.emit()
+    }
+  }
+
+  async confirm(expectedKey?: string, useDefault = false): Promise<void> {
+    let pending = this.pending
+    if (
+      pending === null ||
+      this.disposed ||
+      !pending.confirmable ||
+      pending.busy ||
+      (expectedKey !== undefined && pending.ticket.key !== expectedKey)
+    )
+      return
+    if (pending.failure?.phase === 'preset-unavailable') {
+      if (!useDefault) return
+      pending = { ...pending, useDefault: true }
+    }
     this.pending = { ...pending, busy: true, failure: null }
     this.suppressSelection(pending.ticket.sourceSessionId, pending.ticket.sourceSelection)
     this.emit()
-    const result = await this.tx.confirm(pending.ticket, this.operationsFor(pending.ticket))
-    if (result.ok) this.tx.forget(pending.ticket.key)
+    const result = await this.tx.confirm(pending.ticket, this.operationsFor(pending.ticket, pending.useDefault))
     if (this.disposed) return
+    if (this.pending?.ticket.key !== pending.ticket.key) {
+      // A revocation may arrive while create is in flight, before the transaction knows its published ID.
+      if (
+        !result.ok &&
+        ['select-destination', 'open-destination', 'ungrouped-destination'].includes(result.failure.phase) &&
+        result.failure.destinationSessionId !== undefined
+      )
+        this.offerCreated(pending.ticket, result.failure.destinationSessionId)
+      return
+    }
     if (result.ok) {
+      this.forget(pending.ticket.key)
       this.pending = this.queued.shift() ?? null
     } else {
       this.pending = { ...pending, busy: false, failure: result.failure }
@@ -163,7 +318,7 @@ export class CrossBackendCoordinator {
     if (pending === null || this.disposed || pending.busy) return
     const source = pending.ticket.sourceSelection
     if (source === undefined) {
-      this.tx.forget(pending.ticket.key)
+      this.forget(pending.ticket.key)
       this.pending = this.queued.shift() ?? null
       this.emit()
       return
@@ -172,9 +327,11 @@ export class CrossBackendCoordinator {
     this.suppressSelection(pending.ticket.sourceSessionId, source)
     this.emit()
     const result = await this.tx.cancel(pending.ticket, this.operationsFor(pending.ticket))
-    if (this.disposed) return
-    if (result.ok) this.pending = this.queued.shift() ?? null
-    else this.pending = { ...pending, busy: false, failure: result.failure }
+    if (this.disposed || this.pending?.ticket.key !== pending.ticket.key) return
+    if (result.ok) {
+      this.forget(pending.ticket.key)
+      this.pending = this.queued.shift() ?? null
+    } else this.pending = { ...pending, busy: false, failure: result.failure }
     this.emit()
   }
 
@@ -190,7 +347,16 @@ export class CrossBackendCoordinator {
     // same-profile reasoning change); if the user immediately chooses another
     // backend, cancellation must restore that visible pre-transition choice,
     // not the older committed model.
-    const sourceSelection = observed.lastProjection?.next ?? projection.lastUsed
+    const modelSwitch =
+      projection.next !== null && requiresAcpModelSwitchExit(projection.lastUsed, projection.next, this.ownsRoute)
+    const firstObservation = observed.lastProjection === undefined
+    const previousChoice = observed.lastProjection?.next
+    const sourceSelection =
+      modelSwitch &&
+      previousChoice != null &&
+      requiresAcpModelSwitchExit(projection.lastUsed, previousChoice, this.ownsRoute)
+        ? projection.lastUsed
+        : (previousChoice ?? projection.lastUsed)
     observed.lastProjection = projection
     if (sameSelection(observed.suppressed, projection.next) && observed.suppressed !== undefined) {
       observed.suppressed = undefined
@@ -203,90 +369,130 @@ export class CrossBackendCoordinator {
     )
       return
     const row = sessions.list.getSnapshot().byId[sessionId]
-    if (
-      !shouldConfirmBackendTransition(
-        {
-          lastUsed: projection.lastUsed,
-          next: projection.next,
-          blank: row?.blank === true,
-        },
-        this.ownsRoute,
-      )
-    )
-      return
-    const workspaces = (this.ctx.get('workspaces') as IWorkspaces).list.getSnapshot()
-    const location = resolveCrossBackendLocation(sessionId, workspaces.items, row?.cwd)
-    if (location === undefined) {
-      const ticket: CrossBackendTicket = {
-        key: `${sessionId}\u0000${Date.now()}`,
-        sourceSessionId: sessionId,
-        sourceSelection: sourceSelection ?? undefined,
-        targetSelection: projection.next!,
-        location: {},
-      }
-      void this.stagePending(ticket, observed, 'no-location')
-      return
+    const next = projection.next
+    if (next === null || sameSelection(projection.lastUsed, next)) return
+    const sourceProvider = projection.lastUsed?.provider
+    const sourceStatus = (routes: AcpOwnedRoutesView) => {
+      if (includesRoute(routes.providers, sourceProvider)) return 'active'
+      return includesRoute(routes.historicalProviders, sourceProvider) ? 'historical' : 'native'
     }
+    const initialRoutes = this.routes.getSnapshot()
+    const source = sourceStatus(initialRoutes)
+    const targetOwned = this.ownsRoute(next.provider)
+    const transition = shouldConfirmBackendTransition(
+      { lastUsed: projection.lastUsed, next, blank: row?.blank === true },
+      this.ownsRoute,
+    )
+    if (!transition && source !== 'historical') return
+    // A retired model cannot be written back. Its pending choice can survive
+    // cancel, navigation or reload; only a new choice opens this dialog.
+    if (firstObservation && source === 'historical') return
+
+    const workspaces = (this.ctx.get('workspaces') as IWorkspaces).list.getSnapshot()
+    const location = resolveCrossBackendLocation(
+      sessionId,
+      workspaces.items,
+      row?.cwd,
+      row?.projectionValues?.agentPreset,
+    )
     const ticket: CrossBackendTicket = {
-      key: `${sessionId}\u0000${Date.now()}\u0000${projection.next!.provider}\u0000${projection.next!.model}`,
+      key: globalThis.crypto.randomUUID(),
       sourceSessionId: sessionId,
       sourceSelection: sourceSelection ?? undefined,
-      targetSelection: projection.next!,
-      location,
+      targetSelection: next,
+      location: location ?? {},
     }
-    // The stock picker has already written `next` by the time this additive
-    // observer runs. Compensate immediately, before exposing the decision UI,
-    // so refresh/close cannot commit an unconfirmed backend transition.
-    void this.stagePending(ticket, observed)
+    // Track both the execution source and any previously pending selection
+    // the stock picker would restore. A same-named replacement cannot inherit intent.
+    const restoreOwned = this.ownsRoute(sourceSelection?.provider)
+    this.ticketChecks.set(
+      ticket.key,
+      (routes) =>
+        [sourceProvider, next.provider, sourceSelection?.provider].every(
+          (provider) =>
+            provider === undefined ||
+            initialRoutes.generations?.[provider] === undefined ||
+            initialRoutes.generations[provider] === routes.generations?.[provider],
+        ) &&
+        sourceStatus(routes) === source &&
+        includesRoute(routes.providers, next.provider) === targetOwned &&
+        includesRoute(routes.providers, sourceSelection?.provider) === restoreOwned,
+    )
+    void this.stagePending(ticket, observed, projection, source === 'historical', transition, location === undefined)
   }
 
   private async stagePending(
     ticket: CrossBackendTicket,
     observed: ObservedSession,
-    blockingReason?: 'no-location',
+    projection: ModelProjection,
+    historicalSource: boolean,
+    liveTransition: boolean,
+    noLocation: boolean,
   ): Promise<void> {
-    if (observed.staging || this.disposed) return
+    const current = () =>
+      this.ticketChecks.has(ticket.key) && this.observed.get(ticket.sourceSessionId as SessionId) === observed
+    if (historicalSource) {
+      const backend = await this.ctx.remote.dshAcp.backendOf(ticket.sourceSessionId).catch(() => undefined)
+      const bound =
+        backend?.ok &&
+        backend.value.state === 'established' &&
+        backend.value.acpBinding === true &&
+        backend.value.provider === projection.lastUsed?.provider
+      if (!current() || observed.lastProjection !== projection || !backend?.ok || (!bound && !liveTransition)) {
+        this.forget(ticket.key)
+        return
+      }
+      // The removed source cannot be selected again through the Host catalog.
+      // Its durable history stays guarded even if another plugin reuses the name.
+      if (bound) ticket = { ...ticket, sourceSelection: undefined, sourceUnavailable: true }
+    }
     const source = ticket.sourceSelection
     observed.staging = true
     if (source !== undefined) this.suppressSelection(ticket.sourceSessionId, source)
-    // A nonblank session can have no committed model selection when its first
-    // request was stopped before request/header. There is no truthful source
-    // model to restore, but the host guard blocks ACP use in that history; the
-    // user can still explicitly continue by creating a fresh destination.
-    const restored =
+    const restored: { ok: boolean; message?: string } =
       source === undefined ? { ok: true as const } : await this.operationsFor(ticket).restoreSource(source)
     observed.staging = false
-    if (this.disposed || this.observed.get(ticket.sourceSessionId as SessionId) !== observed) return
-    const pending: CrossBackendPending = restored.ok
-      ? {
-          ticket: {
-            ...ticket,
-            ...(source === undefined ? {} : { sourceAlreadyRestored: true }),
-          },
-          failure: null,
-          ...(blockingReason === undefined ? {} : { blockingReason }),
-          confirmable: blockingReason === undefined,
-          busy: false,
-        }
-      : {
-          ticket,
-          failure: {
-            phase: 'restore-source',
-            message: restored.message ?? 'source model restore failed',
-          },
-          confirmable: false,
-          busy: false,
-        }
+    if (!current()) {
+      this.forget(ticket.key)
+      return
+    }
+    const pending: CrossBackendPending = {
+      reason:
+        source !== undefined && requiresAcpModelSwitchExit(source, ticket.targetSelection, this.ownsRoute)
+          ? 'model-switch'
+          : 'backend-change',
+      ticket: restored.ok && source !== undefined ? { ...ticket, sourceAlreadyRestored: true } : ticket,
+      failure: restored.ok
+        ? null
+        : { phase: 'restore-source', message: restored.message ?? 'source model restore failed' },
+      ...(noLocation ? { blockingReason: 'no-location' as const } : {}),
+      confirmable: restored.ok && !noLocation,
+      busy: false,
+    }
     if (this.pending === null) this.pending = pending
     else this.queued.push(pending)
     this.emit()
   }
 
-  private operationsFor(ticket: CrossBackendTicket) {
+  /** A catalog notification may still be in transit when the user confirms. */
+  private async verifyTicket(key: string): Promise<boolean> {
+    if (!this.ticketChecks.has(key)) return false
+    const result = await this.ctx.remote.dshAcp.ownedProviderRoutes().catch(() => undefined)
+    if (!result?.ok) return false
+    if (this.ticketChecks.get(key)?.(result.value)) return true
+    this.withdraw(key)
+    this.withdrawChangedRoutes()
+    return false
+  }
+
+  private operationsFor(ticket: CrossBackendTicket, useDefault = false) {
+    const current = () => this.ticketChecks.has(ticket.key)
+    const withdrawn = { ok: false, message: 'The model selection changed.' }
     const remote = this.ctx.remote as TypertClientRemote
     const sessions = this.ctx.get('sessions') as unknown as ISessions
     return {
       restoreSource: async (selection: CrossBackendModelSelection) => {
+        if (!current()) return withdrawn
         try {
           const result = await remote.session.selectModel({
             sessionId: ticket.sourceSessionId as SessionId,
@@ -299,36 +505,106 @@ export class CrossBackendCoordinator {
       },
       createDestination: async ({
         sessionId,
-        location,
+        location: sourceLocation,
       }: {
         sessionId: string
-        location: { workspaceId?: string; cwd?: string }
+        location: CrossBackendLocation
       }) => {
+        if (!(await this.verifyTicket(ticket.key))) return withdrawn
+        const location = useDefault ? withDefaultPreset(sourceLocation) : sourceLocation
+        const requested = sessionId as SessionId
+        const reconcile = async () => {
+          const state = await reconcileIndependentChild(this.ctx, requested, location)
+          if (state === 'missing') return undefined
+          return state === 'ungrouped'
+            ? { sessionId, attachmentError: 'Workspace attachment was not confirmed.' }
+            : { sessionId }
+        }
+        const uncertain = this.uncertainCreations.get(ticket.key)
+        if (uncertain !== undefined) {
+          let confirmed
+          try {
+            confirmed = await reconcile()
+          } catch (error) {
+            return { uncertain: true as const, message: error instanceof Error ? error.message : String(error) }
+          }
+          if (confirmed !== undefined) {
+            if (!uncertain.presetRefused) {
+              this.uncertainCreations.delete(ticket.key)
+              return confirmed
+            }
+            const repaired = await uncertain.repair.run(this.ctx, requested, current)
+            this.uncertainCreations.delete(ticket.key)
+            return { ...confirmed, sessionId: repaired }
+          }
+          if (!uncertain.refused)
+            return { uncertain: true as const, message: 'Session creation has not been confirmed.' }
+          if (!current()) return withdrawn
+        }
+        if (location.agentPreset && (await sourcePresetUnavailable(this.ctx, location.agentPreset))) {
+          return { message: 'The source mode is unavailable.', presetUnavailable: true as const }
+        }
+        if (!current()) return withdrawn
         try {
-          await sessions.create({
-            sessionId: sessionId as SessionId,
-            ...(location.cwd === undefined ? {} : { cwd: location.cwd }),
-            ...(location.workspaceId === undefined ? {} : { workspaceId: location.workspaceId as never }),
-          })
-          return { published: true }
+          const child = await createIndependentChild(sessions, requested, location)
+          this.uncertainCreations.delete(ticket.key)
+          return { sessionId: child }
         } catch (error) {
-          // A transport timeout can race a successful Host create. Reuse the
-          // preallocated id when the authoritative list already contains it.
-          if (sessions.list.getSnapshot().byId[sessionId as SessionId] !== undefined) return { published: true }
-          return { published: false, message: error instanceof Error ? error.message : String(error) }
+          const failure = sessionCreateFailure(error)
+          if (failure?.code === 'session/workspace-attach-failed')
+            return {
+              sessionId: failure.details.sessionId,
+              attachmentError: error instanceof Error ? error.message : failure.message,
+            }
+          const message = error instanceof Error ? error.message : String(error)
+          const refused = presetUnavailable(failure?.code, location)
+          const terminal = definiteCreateRefusal(failure?.code)
+          if (!this.disposed)
+            this.uncertainCreations.set(ticket.key, {
+              ticket,
+              requested,
+              checking: false,
+              presetRefused: refused,
+              refused: terminal,
+              repair: new DefaultPresetRepair(),
+            })
+          if (refused) {
+            this.reconcileWithdrawn()
+            return { message, presetUnavailable: true as const }
+          }
+          const confirmed = await reconcile().catch(() => undefined)
+          if (confirmed !== undefined) this.uncertainCreations.delete(ticket.key)
+          else this.reconcileWithdrawn()
+          return confirmed ?? (terminal ? { message } : { message, uncertain: true as const })
         }
       },
       selectDestination: async (sessionId: string, selection: CrossBackendModelSelection) => {
+        if (!(await this.verifyTicket(ticket.key))) return withdrawn
         try {
           const result = await remote.session.selectModel({ sessionId: sessionId as SessionId, ...selection })
+          if (!result.ok && result.error.code === 'session/model-unavailable' && current()) {
+            const catalog = await remote.session.modelCatalog().catch(() => undefined)
+            if (
+              catalog?.ok &&
+              !catalog.value.failures.some((failure) => failure.id === selection.provider) &&
+              !catalog.value.groups.some(
+                (group) =>
+                  group.id === selection.provider && group.models.some((model) => model.id === selection.model),
+              )
+            ) {
+              this.withdraw(ticket.key)
+              this.withdrawChangedRoutes()
+            }
+          }
           return result.ok ? { ok: true } : { ok: false, message: result.error.message }
         } catch (error) {
           return { ok: false, message: error instanceof Error ? error.message : String(error) }
         }
       },
       openDestination: async (sessionId: string) => {
+        if (!(await this.verifyTicket(ticket.key))) return withdrawn
         try {
-          this.ctx.uiWorkspace.openSession(sessionId as SessionId)
+          openIndependentChild(this.ctx, sessionId as SessionId)
           return { ok: true }
         } catch (error) {
           return { ok: false, message: error instanceof Error ? error.message : String(error) }
@@ -338,7 +614,7 @@ export class CrossBackendCoordinator {
   }
 
   private emit(): void {
-    this.snapshot = { pending: this.pending }
+    this.snapshot = { pending: this.pending, created: this.created }
     for (const listener of [...this.listeners]) listener()
   }
 
@@ -353,7 +629,9 @@ export class CrossBackendCoordinator {
     this.disposed = true
     for (const observed of this.observed.values()) observed.unsubscribe()
     this.observed.clear()
+    this.uncertainCreations.clear()
     this.queued.length = 0
+    for (const key of this.ticketChecks.keys()) this.forget(key)
     for (const unsubscribe of this.unsubscribers.splice(0)) unsubscribe()
     this.listeners.clear()
   }

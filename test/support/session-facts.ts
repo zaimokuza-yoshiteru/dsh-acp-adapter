@@ -23,15 +23,5 @@ export function withSessionFacts<
           ),
     },
     seq: { get: () => Math.max(-1, ...session.snapshotEvents().map((event, index) => event.seq ?? index)) + 1 },
-    permissions: {
-      get: () => {
-        const latest = (type: string, key: string): string | null => {
-          const data = session.snapshotEvents().findLast((event) => event.type === type)?.data as
-            Record<string, string> | undefined
-          return data?.[key] ?? null
-        }
-        return { sandbox: latest('sandbox/mode', 'mode'), approval: latest('approval/policy', 'policy') }
-      },
-    },
   }) as T & SessionLike
 }

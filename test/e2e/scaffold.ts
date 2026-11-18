@@ -1,3 +1,4 @@
+import type {} from '@deepseek-ai/dsh-permission-presets'
 import type {} from '@deepseek-ai/dsh-api-terminal-controller'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
@@ -10,13 +11,13 @@ import { launchWebScaffold } from '#host-scaffold'
 
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 type NativeScaffoldOptions = NonNullable<Parameters<typeof launchWebScaffold>[0]>
-type ToolsMode = NativeScaffoldOptions['toolsMode']
+type ToolExecutor = 'native' | 'ptc'
 
 /** Names from the pinned Host's optional bundle inventory, resolved from its npm installation. */
 export type OptionalBundle =
-  | 'agent-team-profile'
   | 'voice-input-bundle'
   | 'auto-review'
+  | 'deepseek-chat-import'
   | 'inspector-profile'
   | 'tool-worktree'
   | 'cot-translation-bundle'
@@ -29,7 +30,11 @@ export type OptionalBundle =
 function optionalBundleDirectory(bundle: OptionalBundle): string {
   const requireAdapter = createRequire(join(root, 'package.json'))
   const requireHost = createRequire(requireAdapter.resolve('@deepseek-ai/dsh/package.json'))
-  const manifestPath = requireHost.resolve(`@deepseek-ai/dsh-experimental-${bundle}/package.json`)
+  const packageName =
+    bundle === 'deepseek-chat-import'
+      ? '@deepseek-ai/dsh-deepseek-chat-import'
+      : `@deepseek-ai/dsh-experimental-${bundle}`
+  const manifestPath = requireHost.resolve(`${packageName}/package.json`)
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
     version: string
     dsh?: { bundle?: { patch?: unknown } }
@@ -48,7 +53,7 @@ export async function launchAdapterWorld({
   teamMembers,
   terminalShell,
   renderProbe = false,
-  toolsMode,
+  toolExecutor,
   replayFixture,
   replayProviders,
   replayProvidersOnly,
@@ -62,7 +67,7 @@ export async function launchAdapterWorld({
   teamMembers?: number
   terminalShell?: { path: string; name: string; args: string[] }
   renderProbe?: boolean
-  toolsMode?: ToolsMode
+  toolExecutor?: ToolExecutor
   /** Official catalog-only fixtures for zero-inference native UI checks. */
   replayFixture?: NativeScaffoldOptions['replayFixture']
   replayProviders?: NativeScaffoldOptions['replayProviders']
@@ -73,7 +78,6 @@ export async function launchAdapterWorld({
 } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'dsh-acp-e2e-install-'))
   try {
-    const upstream = process.env.DSH_UPSTREAM_CHECKOUT ?? resolve(root, '../reference/deepseek-harness')
     if (renderProbe)
       execFileSync('pnpm', ['exec', 'tsdown', '--config', 'test/e2e/fixtures/render-probe/tsdown.config.ts'], {
         cwd: root,
@@ -83,13 +87,12 @@ export async function launchAdapterWorld({
     const packages = [
       { dir: adapterDirectory, enabled: true },
       ...(renderProbe ? [{ dir: join(root, 'test/e2e/fixtures/render-probe'), enabled: true }] : []),
-      ...(teams && !optionalBundles.includes('agent-team-profile')
-        ? [{ dir: join(upstream, 'packages/experimental/agent-team-profile'), enabled: true }]
-        : []),
       ...[...new Set(optionalBundles)].map((bundle) => ({ dir: optionalBundleDirectory(bundle), enabled: true })),
     ]
     const patches: string[] = []
-    if (teamMembers !== undefined) patches.push(`- id: agent-team\n  config:\n    maxMembers: ${teamMembers}\n`)
+    if (teams) patches.push('- id: agent-team\n  config:\n    defaultEnabled: true\n')
+    if (teamMembers !== undefined)
+      patches.push(`- id: subagent\n  config:\n    maxActiveSubagents: ${Math.max(1, teamMembers - 1)}\n`)
     if (terminalShell !== undefined)
       patches.push(`- id: terminal-controller\n  config:\n    shell: ${JSON.stringify(terminalShell)}\n`)
     patches.push(...extraPatches)
@@ -99,7 +102,7 @@ export async function launchAdapterWorld({
       profile: { packages },
       extraOverlayPath,
       ...(timedAskUser === undefined
-        ? {}
+        ? { agentPresets: { default: toolExecutor === 'ptc' ? 'ptc' : 'standard' } }
         : {
             agentPresets: {
               default: 'timed-ask-user',
@@ -118,7 +121,6 @@ export async function launchAdapterWorld({
               ],
             },
           }),
-      ...(toolsMode === undefined ? {} : { toolsMode }),
       ...(replayFixture === undefined ? {} : { replayFixture }),
       ...(replayProviders === undefined ? {} : { replayProviders }),
       ...(replayProvidersOnly === undefined ? {} : { replayProvidersOnly }),

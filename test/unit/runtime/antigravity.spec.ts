@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { executableOverrideEnvFor } from '../../../src/domain/session/agent-compatibility.ts'
+import { executableOverrideEnvFor } from '../../../src/agents/compatibility.ts'
 import {
   formatAntigravityAskQuestionResult,
   normalizeAntigravityPresentation,

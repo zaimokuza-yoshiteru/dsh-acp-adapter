@@ -18,6 +18,7 @@ import type { SessionLike } from '../../../src/domain/session/current-step-admis
 import { ACP_ACTIVITY_RAW_MAX, createAcpSidecar, type AcpSidecar } from '../../../src/persistence/sidecar.ts'
 import type { AcpSubprocessExitFact, SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
 import type { AcpTerminalHandlers } from '../../../src/protocol/v1/types.ts'
+import { AcpClientError } from '../../../src/protocol/v1/errors.ts'
 import type { AcpHostToolControlOutcome } from '../../../src/contract/tool-control-outcome.ts'
 
 const roots: string[] = []
@@ -70,6 +71,64 @@ async function drain(iterable: AsyncIterable<unknown>): Promise<void> {
 }
 
 describe('provider activity bridge', () => {
+  it.each([
+    { title: undefined, name: undefined, fallback: true },
+    { title: 'Agent tool activity', name: undefined, fallback: false },
+    { title: undefined, name: 'Agent tool activity', fallback: false },
+  ])(
+    'records fallback-title provenance without interpreting an Agent title ($fallback)',
+    async ({ title, name, fallback }) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-title-provenance-'))
+      roots.push(root)
+      const sidecar = testSidecar(root)
+      const message = user('Observe tool presentation')
+      const adapter = new AcpProfileAdapter(
+        'test',
+        profile,
+        seam(),
+        () => session(message),
+        ledgerFor(sidecar),
+        undefined,
+        () => ({
+          acpSessionId: 'title-remote',
+          start: async () => undefined,
+          close: async () => undefined,
+          prompt: async (_content, onUpdate) => {
+            onUpdate({
+              sessionId: 'title-remote',
+              update: {
+                sessionUpdate: 'tool_call_update',
+                toolCallId: 'title-1',
+                status: 'completed',
+                ...(title === undefined ? {} : { title }),
+                ...(name === undefined ? {} : { name }),
+                titleSource: 'adapter-fallback',
+                _meta: { titleSource: 'adapter-fallback' },
+              },
+            } as never)
+            onUpdate({
+              sessionId: 'title-remote',
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                content: { type: 'text', text: 'Done.' },
+              },
+            })
+            return { stopReason: 'end_turn' }
+          },
+        }),
+        sidecar,
+      )
+      try {
+        await drain(adapter.stream(request('title-session', message)))
+        const row = (await sidecar.activitySnapshot('title-session' as never)).find((entry) => entry.kind === 'tool')!
+        expect(row.presentation).toBe('Agent tool activity')
+        expect(JSON.parse(row.rawDetail!).titleSource).toBe(fallback ? 'adapter-fallback' : undefined)
+      } finally {
+        await adapter.close()
+      }
+    },
+  )
+
   it.each([false, true])(
     'persists control provenance only from the Host runtime, not provider metadata (Host=%s)',
     async (hostConfirmed) => {
@@ -2091,7 +2150,12 @@ describe('provider activity bridge', () => {
           status: 'in_progress',
           content: [{ type: 'diff', path: 'file.txt', oldText: 'before', newText: 'after' }],
         })
-        update({ sessionUpdate: 'tool_call_update', toolCallId: 'replace', status: 'completed', content: [] })
+        update({
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'replace',
+          content: [{ type: 'terminal', terminalId: 'term' }],
+        })
+        update({ sessionUpdate: 'tool_call_update', toolCallId: 'replace', status: 'failed', content: [] })
         update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' } })
         return { stopReason: 'end_turn' } as never
       },
@@ -2112,8 +2176,9 @@ describe('provider activity bridge', () => {
     }
     const rows = await sidecar.activitySnapshot('session-details' as never)
     expect(rows.map((row) => [row.kind, row.status, row.contentIndex])).toEqual([
-      ['tool', 'completed', 0],
+      ['tool', 'failed', 0],
       ['diff', 'completed', 0],
+      ['terminal', 'failed', 0],
     ])
     expect(rows[0]!.activitySeq).toBeLessThan(rows[1]!.activitySeq)
     expect(rows[1]!.revisionSeq).toBeGreaterThan(rows[1]!.activitySeq)
@@ -2954,7 +3019,7 @@ describe('provider activity bridge', () => {
       acpSessionId: 'agent-host-owner',
       start: async () => undefined,
       prompt: async () => {
-        throw new AcpHostSettlementError('ACP_HOST_CALL_DRAIN_TIMEOUT')
+        throw new AcpClientError('crash', 'ACP transport closed before a response was confirmed')
       },
       close: async () => undefined,
       hasPendingHostCalls: () => pending,
@@ -2991,11 +3056,11 @@ describe('provider activity bridge', () => {
       for await (const _chunk of first.stream(request(sessionId, message))) {
         // Drain the public stream so the adapter's settlement path completes.
       }
-    }).rejects.toMatchObject({ code: 'ACP_RECOVERY_REQUIRED' })
+    }).rejects.toMatchObject({ code: 'ACP_CRASH' })
     const fallbackAdapter = makeAdapter('replacement-profile')
     expect(fallbackAdapter.recoveryStateFallback(sessionId)).toMatchObject({
       kind: 'outcome-unknown',
-      detail: 'ACP prompt ended while a DSH Host tool was still active and its outcome could not be confirmed.',
+      detail: 'ACP prompt ended before its remote outcome was confirmed',
     })
     await expect(fallbackAdapter.rebindBlank(sessionId)).rejects.toMatchObject({ code: 'ACP_RECOVERY_REQUIRED' })
     const blockedChunks: unknown[] = []

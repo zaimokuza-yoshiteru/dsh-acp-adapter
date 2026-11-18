@@ -1,6 +1,6 @@
 export type DevinLiveWaitResult = 'timedOut' | 'noProgress' | 'observedChange' | 'unknown'
 
-/** Project only the published DSH Agent Teams wait_agent result shape. */
+/** Project the native wait result; retain the prior no-progress diagnostic for stored evidence. */
 export function classifyDevinWaitResult(value: unknown): DevinLiveWaitResult {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return 'unknown'
   const result = value as { readonly timedOut?: unknown; readonly noProgress?: unknown }

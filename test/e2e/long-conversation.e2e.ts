@@ -1,3 +1,5 @@
+import * as PtcExecutorPlugin from '@deepseek-ai/dsh-tool-executor-ptc'
+import * as NativeExecutorPlugin from '@deepseek-ai/dsh-tool-executor-native'
 import type { ToolCallBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { CDPSession, Page } from 'playwright'
@@ -282,18 +284,19 @@ describe('long conversation native renderer comparison', () => {
   const nativeProvider = 'native-control'
   const acpProvider = 'acp-devin'
   const nativeControl = new NativeControl()
-  let releaseToolPresentation: (() => void) | undefined
-  const restoreToolPresentation = (): void => {
+  let releaseToolPresentation: (() => Promise<void>) | undefined
+  let releaseNativeExecutor: (() => Promise<void>) | undefined
+  const restoreToolPresentation = async (): Promise<void> => {
     const release = releaseToolPresentation
     releaseToolPresentation = undefined
-    release?.()
+    await release?.()
   }
 
   beforeAll(async () => {
     mkdirSync(EVIDENCE, { recursive: true })
     host = await startupPhase(
       'host launch',
-      () => launchAdapterWorld({ renderProbe: true, toolsMode: 'native' }),
+      () => launchAdapterWorld({ renderProbe: true, toolExecutor: 'native' }),
       (lateHost) => lateHost.close(),
     )
     await startupPhase('ACP settings', () =>
@@ -349,7 +352,8 @@ describe('long conversation native renderer comparison', () => {
   }, 120_000)
 
   afterAll(async () => {
-    restoreToolPresentation()
+    await restoreToolPresentation()
+    await releaseNativeExecutor?.()
     await browser?.close()
     await host?.close()
   })
@@ -503,7 +507,7 @@ describe('long conversation native renderer comparison', () => {
       }
       throw error
     } finally {
-      restoreToolPresentation()
+      await restoreToolPresentation()
       activeWaiterCancel?.()
       await cdp.detach()
       await page.close()
@@ -578,7 +582,16 @@ describe('long conversation native renderer comparison', () => {
         if (agent === undefined) throw new Error(`Long-flow Agent ${sessionId} is not active before its PTC turn`)
         // One legal presentation at a time: the real PTC turn temporarily
         // replaces native tools, then the same session resumes native calls.
-        releaseToolPresentation = agent.ctx.tools.presentAs('ptc')
+        await releaseNativeExecutor?.()
+        releaseNativeExecutor = undefined
+        const executorOwner = await agent.ctx.plugin(PtcExecutorPlugin, {})
+        releaseToolPresentation = async () => {
+          await executorOwner.dispose()
+          // Alpha.2 intentionally keeps an unloaded selection unavailable.
+          // Restore a real native owner instead of falling through to an ancestor.
+          const nativeOwner = await agent.ctx.plugin(NativeExecutorPlugin)
+          releaseNativeExecutor = nativeOwner.dispose
+        }
       }
       const prompt = `E2E_LONG_CONVERSATION turn=${index} total=${turnCount} kind=${spec.kind} ${spec.marker}; preserve earlier requirements and summarize this step.`
       const composer = conversation.locator('[data-composer-input][contenteditable="true"]')

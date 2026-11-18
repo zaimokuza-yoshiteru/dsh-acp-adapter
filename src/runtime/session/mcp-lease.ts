@@ -3,7 +3,6 @@ import type { AcpPermissionCheck } from '../../domain/policy/permission-check.ts
 import type { AcpHostToolControlOutcome } from '../../contract/tool-control-outcome.ts'
 
 export type AcpHostSettlementFailure =
-  | 'ACP_HOST_CALL_DRAIN_TIMEOUT'
   | 'ACP_HOST_TOOL_RECONCILIATION_REQUIRED'
   | 'ACP_HOST_TOOL_NOT_DISPATCHED'
   | 'ACP_HOST_GENERATION_STILL_ACTIVE'
@@ -35,6 +34,8 @@ export interface AcpMcpLease {
   readonly diagnosticLeaseId?: string
   readonly instructions?: string
   readonly servers: readonly acp.McpServer[]
+  /** A withdrawn directory must be rebuilt between prompts, even if the same names return. */
+  needsRefresh?(): boolean
   /** Host-only evidence callback for a successful native teammate report in this prompt. */
   beginPrompt(
     signal: AbortSignal,
@@ -65,8 +66,20 @@ export interface AcpMcpLease {
   ):
     | Promise<AcpPermissionCheck & { readonly response?: acp.RequestPermissionResponse }>
     | (AcpPermissionCheck & { readonly response?: acp.RequestPermissionResponse })
-  /** Revalidate the captured decision after audit I/O without resolving policy again. */
+  /** Captured target/prompt lifetime for both automatic and manual permission decisions. */
+  permissionSignal?(request: acp.RequestPermissionRequest): AbortSignal | undefined
+  /** Revalidate the captured target after audit or a manual answer without resolving policy again. */
   validatePermissionDecision?(request: acp.RequestPermissionRequest): boolean
+  /** Capture the target, prompt, and Host admission of a Codex tool approval once. */
+  elicitationSignal?(
+    request: acp.CreateElicitationRequest,
+    toolCall: acp.ToolCallUpdate | undefined,
+  ): AbortSignal | undefined
+  /** Revalidate the captured approval without rebinding it to a newer Host step. */
+  validateElicitationDecision?(
+    request: acp.CreateElicitationRequest,
+    toolCall: acp.ToolCallUpdate | undefined,
+  ): boolean | undefined
   elicitation?(
     request: acp.CreateElicitationRequest,
     toolCall: acp.ToolCallUpdate | undefined,

@@ -5,7 +5,7 @@ import type { AcpAgentSessionSnapshotView, AcpRecoveryView } from '../../../src/
 
 const snapshot = (): AcpAgentSessionSnapshotView => ({
   sessionId: 'session',
-  profileId: 'kimi',
+  profileId: 'generic',
   freshness: 'live',
   editable: false,
   configOptions: [],
@@ -37,7 +37,7 @@ function setup() {
   const service = new AcpRemoteService(new Context(), {
     registry: { agents: () => new Map(), probeCacheFor: () => undefined },
     backendFacts: {
-      readBindingProvider: async () => (bound ? 'acp-kimi' : undefined),
+      readBindingProvider: async () => (bound ? 'acp-generic' : undefined),
       peekHeaderProvider: async () => undefined,
       hasLiveAgent: () => true,
     },

@@ -39,7 +39,7 @@ class NativeOwner extends LlmAdapter {
 it.skipIf(process.env.DSH_E2E_LIVE_MANAGED_APPROVAL !== '1')(
   'handles a real Devin child permission from its native parent with Teams disabled',
   async () => {
-    const host = await launchAdapterWorld({ toolsMode: 'native' })
+    const host = await launchAdapterWorld({ toolExecutor: 'native' })
     let browser: TestBrowser | undefined
     let activation: SubagentActivation | undefined
     let child: Agent | undefined
@@ -105,16 +105,14 @@ it.skipIf(process.env.DSH_E2E_LIVE_MANAGED_APPROVAL !== '1')(
         provider: 'spawn',
         label: 'Devin approval verification',
         delivery: 'caller',
-        request: {
-          parent,
-          agentOptions: { provider: 'acp-devin', model: 'swe-2-high' },
-          prompt: [
-            {
-              type: 'text',
-              text: markerWritePrompt(writeSchema, path, marker),
-            },
-          ],
-        },
+        parent,
+        agentOptions: { provider: 'acp-devin', model: 'swe-2-high' },
+        prompt: [
+          {
+            type: 'text',
+            text: markerWritePrompt(writeSchema, path, marker),
+          },
+        ],
         signal: new AbortController().signal,
       })
       child = required(host.ctx.agents.get(activation.childId))
@@ -209,7 +207,7 @@ it.skipIf(process.env.DSH_E2E_LIVE_MANAGED_APPROVAL !== '1')(
 it.skipIf(process.env.DSH_E2E_LIVE_MANAGED_APPROVAL !== '1')(
   'preserves all real Devin root permission options and executes only the selected one-time grant',
   async () => {
-    const host = await launchAdapterWorld({ toolsMode: 'native' })
+    const host = await launchAdapterWorld({ toolExecutor: 'native' })
     let browser: TestBrowser | undefined
     const id = randomUUID()
     const directory = join(root, '.local/fork-approval-fix-20261021/live-root', id)

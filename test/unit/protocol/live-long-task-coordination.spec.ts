@@ -117,7 +117,7 @@ it.each([
   { phase: 'C:lead-allow' },
   { phase: 'C:lead-reject' },
   { toolName: 'bash', args: { command: 'write marker' } },
-  { toolName: 'send_message', args: { target: 'runtime-reader', message: 'unrelated' } },
+  { toolName: 'send_message', args: { agent: 'runtime-reader', message: 'unrelated' } },
   { toolName: 'list_agents', args: { command: 'write marker' } },
   { args: { timeout_ms: 60000, command: 'write marker' } },
   { args: [] },

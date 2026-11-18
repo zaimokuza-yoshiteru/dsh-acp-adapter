@@ -1,3 +1,4 @@
+import { NativeToolExecutor } from '@deepseek-ai/dsh-tool-executor-native'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -5,6 +6,7 @@ import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { SubagentRunId } from '@deepseek-ai/dsh-subagent'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SandboxPolicyService, { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
@@ -38,6 +40,7 @@ async function fixture() {
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SandboxPolicyService, { mode: 'danger-full-access' })
   await ctx.plugin(ToolRuntime)
+  ctx.tools.setExecutor(new NativeToolExecutor(ctx))
   await ctx.plugin(ApprovalService, { policy: 'ask' })
   const executed: { command: string; sandboxPolicy: { mode: string } }[] = []
   const shell = {
@@ -75,22 +78,29 @@ async function fixture() {
   const lead = agent('approval-lead')
   const member = agent('approval-member')
   const unrelated = agent('approval-unrelated')
-  ctx.provide('agentTeams', {
-    tryMembership: (candidate: Agent) =>
-      candidate === member
-        ? { role: 'teammate', root: lead, name: 'permission-review' }
-        : { role: 'lead', root: candidate, name: 'lead' },
+  const agents = new Map([lead, member, unrelated].map((entry) => [entry.id, entry]))
+  ctx.provide('agents', { get: (id: SessionId) => agents.get(id) } as never)
+  ctx.provide('subagents', {
+    rootOf: (candidate: Agent) => (candidate === member ? lead : candidate),
+    namesOf: (candidate: Agent) => ({ self: candidate === member ? 'permission-review' : 'lead' }),
   } as never)
   const install = () => installLiveTeamApprovalPolicy(ctx, { lead, memberName: 'permission-review', command, token })
-  const announce = (candidate = member) => ctx.serial('agent/created', { agent: candidate, source: 'startup' })
-  const call = (candidate: Agent, callArgs: unknown = args, callId = 'native-bash') =>
-    ctx.tools.execute({
-      name: 'bash',
-      arguments: callArgs,
-      callId: ToolCallId(callId),
-      agent: candidate,
-      signal: new AbortController().signal,
+  const announce = (candidate = member) =>
+    ctx.serial('subagent/start', {
+      runId: SubagentRunId(`approval-${candidate.id}`),
+      provider: 'spawn',
+      parentSessionId: candidate === member ? lead.id : unrelated.id,
+      id: candidate.id,
+      local: true,
     })
+  const call = (candidate: Agent, callArgs: unknown = args, callId = 'native-bash') =>
+    ctx.tools
+      .execute({
+        calls: [{ type: 'tool-call', id: ToolCallId(callId), name: 'bash', arguments: JSON.stringify(callArgs) }],
+        agent: candidate,
+        signal: new AbortController().signal,
+      })
+      .then((batch) => batch.results[0]!.result)
   return { ctx, lead, member, unrelated, shell, executed, install, announce, call }
 }
 
@@ -113,7 +123,7 @@ describe('live Team approval native sandbox precondition', () => {
     await f.announce()
     expect(policy.member).toBe(f.member)
     expect(f.ctx.sandboxPolicy.resolve({ session: f.member.session }).mode).toBe('danger-full-access')
-    // ACP setup synchronizes the Lead policy after agent/created. The fixture
+    // ACP setup synchronizes the Lead policy around subagent activation. The fixture
     // must establish strict widening at the actual tool boundary, not race it.
     setSandboxMode(f.member.session, 'read-only')
     setSandboxMode(f.member.session, 'danger-full-access')

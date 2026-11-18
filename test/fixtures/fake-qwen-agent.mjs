@@ -349,6 +349,9 @@ async function runCron(respond, slowHook = false) {
 
 async function onPrompt(message) {
   const prompt = message.params.prompt.map((block) => block.text ?? '').join(' ')
+  // Scenario keywords come from the user's own input (the last block). Host
+  // context in the same prompt mentions scheduled tasks and must not start cron.
+  const input = message.params.prompt.at(-1)?.text ?? ''
   if (process.env.FAKE_QWEN_PROMPT_LOG !== undefined)
     appendFileSync(process.env.FAKE_QWEN_PROMPT_LOG, `${JSON.stringify(prompt)}\n`)
   if (prompt === 'finish-task') {
@@ -372,7 +375,7 @@ async function onPrompt(message) {
       source: 'background_task_completed',
       backgroundTask: { taskId: 'ordinary', status: 'completed' },
     })
-  if (prompt.includes('schedule-inline')) {
+  if (input.includes('schedule-inline')) {
     void runCron(() => send({ jsonrpc: '2.0', id: message.id, result: { stopReason: 'end_turn' } }))
     return
   }
@@ -399,7 +402,7 @@ async function onPrompt(message) {
   })
   if (prompt.includes('background') && tasks[0].status === 'running')
     void runBackground(prompt.includes('background-ask'))
-  if (prompt.includes('schedule')) void runCron(undefined, prompt.includes('slow-hook'))
+  if (input.includes('schedule')) void runCron(undefined, input.includes('slow-hook'))
 }
 
 process.stdin.on('data', (chunk) => {

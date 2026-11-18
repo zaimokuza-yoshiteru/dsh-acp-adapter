@@ -172,6 +172,7 @@ function sidecarProxy(
   return {
     append: overrides.append ?? sidecar.append.bind(sidecar),
     readLatestBinding: sidecar.readLatestBinding.bind(sidecar),
+    readNativeFork: sidecar.readNativeFork.bind(sidecar),
     readModeIntent: async () => undefined,
     readRecoveryState: sidecar.readRecoveryState.bind(sidecar),
     writeRecoveryState: overrides.writeRecoveryState ?? sidecar.writeRecoveryState.bind(sidecar),
@@ -281,10 +282,19 @@ describe('provider adapter ACP fork boundary', () => {
     },
   )
 
-  it.each([false, true])(
-    'uses ACP fork only at first dispatch and gives the child an independent binding (legacy registry references: %s)',
-    async (legacy) => {
-      const { root, sidecar } = await harness()
+  it.each([
+    { legacy: false, provenance: 'header', reopen: false },
+    { legacy: true, provenance: 'header', reopen: false },
+    { legacy: false, provenance: 'explicit', reopen: false },
+    { legacy: false, provenance: 'missing', reopen: false },
+    { legacy: false, provenance: 'missing', reopen: true },
+  ])(
+    'uses the first-dispatch fork boundary with $provenance provenance (legacy registry: $legacy, reopened: $reopen)',
+    async ({ legacy, provenance, reopen }) => {
+      const fixture = await harness()
+      const root = fixture.root
+      let sidecar = fixture.sidecar
+      const adapters: AcpProfileAdapter[] = []
       try {
         const sessions = new Map<string, FixtureSession>()
         const parentMessage = user('parent')
@@ -301,6 +311,7 @@ describe('provider adapter ACP fork boundary', () => {
           runtimeFactory(parentCounts),
           sidecar,
         )
+        adapters.push(parentAdapter)
         const parentChunks: unknown[] = []
         for await (const chunk of parentAdapter.stream(request('parent', parentMessage))) parentChunks.push(chunk)
         expect(
@@ -326,9 +337,24 @@ describe('provider adapter ACP fork boundary', () => {
         }
         const parentWithMarker = await parentWithReplay(sidecar, 'parent', parent)
         sessions.set('parent', parentWithMarker)
+        if (reopen) {
+          await parentAdapter.close()
+          await sidecar.dispose()
+          sidecar = createAcpSidecar({ root })
+          expect((await sidecar.readLatestBinding('parent' as never))?.status).toBe('ok')
+        }
 
         const childMessage = user('child')
-        const child = childFromParent(parentWithMarker, 'parent', childMessage)
+        const seeded = childFromParent(parentWithMarker, 'parent', childMessage)
+        const child =
+          provenance === 'header'
+            ? seeded
+            : withSessionFacts({
+                ...seeded,
+                header: { cwd: os.tmpdir(), isSeeded: true },
+              })
+        if (provenance === 'explicit')
+          await sidecar.recordNativeFork({ dshSessionId: 'child', sourceSessionId: 'parent', atSeq: 2 })
         sessions.set('child', child)
         const childCounts = { starts: 0, forks: 0, prompts: 0 }
         const childAdapter = new AcpProfileAdapter(
@@ -343,6 +369,16 @@ describe('provider adapter ACP fork boundary', () => {
           }),
           sidecar,
         )
+        adapters.push(childAdapter)
+        if (provenance === 'missing') {
+          await expect(drain(childAdapter.stream(request('child', childMessage)))).rejects.toMatchObject({
+            code: 'ACP_FORK_SOURCE_REQUIRED',
+          })
+          expect(childCounts).toEqual({ starts: 0, forks: 0, prompts: 0 })
+          expect(await sidecar.readLatestBinding('child' as never)).toBeUndefined()
+          expect(await sidecar.readNativeFork('child' as never)).toBeUndefined()
+          return
+        }
         await drain(childAdapter.stream(request('child', childMessage)))
 
         expect(childCounts).toEqual({ starts: 0, forks: 1, prompts: 1 })
@@ -362,8 +398,12 @@ describe('provider adapter ACP fork boundary', () => {
           ),
         ).toBe(true)
       } finally {
-        await sidecar.dispose()
-        fs.rmSync(root, { recursive: true, force: true })
+        try {
+          for (const adapter of adapters.reverse()) await adapter.close()
+        } finally {
+          await sidecar.dispose()
+          fs.rmSync(root, { recursive: true, force: true })
+        }
       }
     },
   )

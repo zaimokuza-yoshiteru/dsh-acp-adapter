@@ -1,3 +1,4 @@
+import { isDirectChild } from './subagent-tree.ts'
 /** Opt-in real Devin checks. Only isolated marker files and swe-2-high are authorized. */
 import { LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -80,19 +81,17 @@ async function startChild(
     provider: 'spawn',
     label,
     delivery: 'caller',
-    request: {
-      parent,
-      maxDepth: 4,
-      agentOptions: { provider: 'acp-devin', model: 'swe-2-high' },
-      prompt: [
-        {
-          type: 'text',
-          text:
-            instruction ??
-            `Call write on the dsh MCP server (mcp__dsh__write) exactly once with arguments ${JSON.stringify({ file_path: path, content: marker })}. Its exact current host schema is ${JSON.stringify(writeSchema)}. If tools are deferred, discover only mcp__dsh__write by its exact name; do not enumerate the entire server or read overflow files. Do not use another tool, shell, file reader, subagent or bypass. Wait for human approval. After a successful write, reply with ${marker} and finish. If approval is denied, cancelled or unavailable, report it and stop without retrying or substituting a tool. This test authorizes only this isolated marker file.`,
-        },
-      ],
-    },
+    parent,
+    maxDepth: 4,
+    agentOptions: { provider: 'acp-devin', model: 'swe-2-high' },
+    prompt: [
+      {
+        type: 'text',
+        text:
+          instruction ??
+          `Call write on the dsh MCP server (mcp__dsh__write) exactly once with arguments ${JSON.stringify({ file_path: path, content: marker })}. Its exact current host schema is ${JSON.stringify(writeSchema)}. If tools are deferred, discover only mcp__dsh__write by its exact name; do not enumerate the entire server or read overflow files. Do not use another tool, shell, file reader, subagent or bypass. Wait for human approval. After a successful write, reply with ${marker} and finish. If approval is denied, cancelled or unavailable, report it and stop without retrying or substituting a tool. This test authorizes only this isolated marker file.`,
+      },
+    ],
     signal: new AbortController().signal,
   })
   const child = required(host.ctx.agents.get(activation.childId))
@@ -117,7 +116,7 @@ async function settled(run: Awaited<ReturnType<typeof startChild>>) {
 it.skipIf(!enabled).each(['ask', 'auto'] as const)(
   'real Devin %s keeps child identity and full parent choices across refresh',
   async (policy) => {
-    const host = await launchAdapterWorld({ adapterDirectory, toolsMode: 'native' })
+    const host = await launchAdapterWorld({ adapterDirectory, toolExecutor: 'native' })
     let browser: TestBrowser | undefined
     let run: Awaited<ReturnType<typeof startChild>> | undefined
     const directory = join(reportRoot, `${policy}-${randomUUID()}`)
@@ -255,7 +254,7 @@ it.skipIf(!enabled).each(['ask', 'auto'] as const)(
 it.skipIf(!enabled || before)(
   'real concurrent nested Devin approvals cancel only their original child',
   async () => {
-    const host = await launchAdapterWorld({ adapterDirectory, toolsMode: 'native' })
+    const host = await launchAdapterWorld({ adapterDirectory, toolExecutor: 'native' })
     let browser: TestBrowser | undefined
     let middle: SubagentActivation | undefined
     const hold = Promise.withResolvers<void>()
@@ -291,12 +290,10 @@ it.skipIf(!enabled || before)(
         provider: 'spawn',
         label: 'Nested coordinator',
         delivery: 'caller',
-        request: {
-          parent,
-          maxDepth: 4,
-          prompt: [{ type: 'text', text: 'Hold while owned descendants are checked.' }],
-          agentOptions: { provider: 'parent-permission-holding', model: 'fixture' },
-        },
+        parent,
+        maxDepth: 4,
+        prompt: [{ type: 'text', text: 'Hold while owned descendants are checked.' }],
+        agentOptions: { provider: 'parent-permission-holding', model: 'fixture' },
         signal: new AbortController().signal,
       })
       const coordinator = required(host.ctx.agents.get(middle.childId))
@@ -319,7 +316,7 @@ it.skipIf(!enabled || before)(
       for (const run of runs) {
         expect(run.result.value).toBeUndefined()
         expect(existsSync(run.path)).toBe(false)
-        expect(host.ctx.agents.isOwnedBy(run.child.id, coordinator)).toBe(true)
+        expect(isDirectChild(host.ctx, run.child.id, coordinator)).toBe(true)
         expect(host.ctx.approval.overrideOf(run.child.session)).toBe('never')
       }
       await page.screenshot({ path: join(directory, 'two-pending.png') })
@@ -375,7 +372,7 @@ it.skipIf(!enabled || before)(
 it.skipIf(!enabled || before)(
   'real Devin project Deny preserves the native boundary and reports a missing summary truthfully',
   async () => {
-    const host = await launchAdapterWorld({ adapterDirectory, toolsMode: 'native' })
+    const host = await launchAdapterWorld({ adapterDirectory, toolExecutor: 'native' })
     let browser: TestBrowser | undefined
     let run: Awaited<ReturnType<typeof startChild>> | undefined
     let captureFailure: (() => Promise<void>) | undefined

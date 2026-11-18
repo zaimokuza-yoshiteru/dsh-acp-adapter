@@ -1,5 +1,7 @@
 # 历史回归记录
 
+> 历史验收记录按当时版本保留。本版已移除 Kimi 支持；下方旧版 Kimi 结果不代表当前支持范围。
+
 本页保留历史验收快照，不表示当前版本的验证状态。复现步骤与验收矩阵统一维护在 [E2E 指南](README.md)；后续逐次结果记录在对应 PR／CI，避免重复维护测试数量、本机路径和发布状态。
 
 `0.1.6-alpha.1.4` 的变更见 [PR #6](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/pull/6)，自动检查见 [PR CI](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/actions/runs/35117367723)，发布状态见 [发布工作流](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/actions/runs/35119168694)。该次本机验收明细可在 [当时提交的记录](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/ce1893edd49dfc333cb8b0bc64d566308b41c39b/test/e2e/REGRESSION.md) 中追溯；其中候选包和未发布状态属于当时快照。真实模型、本机 Electron 与 CI 协议夹具结果不可相互替代。
@@ -645,3 +647,43 @@ ACP 主会话的成员管理新增同 profile 原生模型下拉，保留按 pro
 早期并行只读核查误调用无 help 分支的 stale-build 脚本，重建被忽略的 lib 导致若干回归导入失败；中断后产物不完整。恢复并固定最终构建后重测，不将这些受干扰结果计为产品通过证据。发布证据保存在 gitignored `.local/release-0.1.6-alpha.1.1/`，临时预览和旧 dist 产物不进入提交。
 
 最终完整 Chrome 回归：13 文件、109 项通过；默认跳过的 4 项真实连接已按上面的真实验证结果单独记录。成员模型与模式的两项专项另外通过。
+
+## 2026-11-13：Agent 差异收拢、Kimi 退役与 ACP 预设原型
+
+目标仍为 `0.2.2-alpha`，版本号保持 `0.2.2-rc.1.1`，不发布。上游源码固定于 RC.1 `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`，未改上游；开发依赖使用精确 npm RC.1 包。Node 24.19.0、pnpm 10.7.0。
+
+集中小型无状态 Agent 规则，删除 Kimi 的活动接入、私有权限／推理／委派／输入猜测和测试矩阵；旧配置仅保留停用诊断，原始目录快照和历史 fingerprint 槽保持兼容。独立的 SessionControls 管理控件写入与模式意图，ToolDirectoryOwner 管理目录和审批有效期；已接收执行、补存、恢复顺序仍由原 owner 负责。回归覆盖关闭等待 RPC／快照写入、旧 owner 排队写入、工具撤回后不可复活，以及同一 ACP prompt 跨 Host step 的 Auto／手动 elicitation 失效。
+
+全源码回归：217 文件通过、1 跳过；2775 用例通过、3 跳过。后续三个控件时序负例在其 owning suite 通过。类型检查、构建、E2E 类型检查、格式与 diff 检查通过；构建验证 114 个精确开发包、321 个 tarball 文件、130 个 JavaScript 相对导入闭包及严格公共类型消费。
+
+新增两项浏览器回归均通过。ACP 预设使用真实 Loader 注册，确认标准／创造预设保留、默认不变、实际 ACP scope 不提供宿主 compaction；调用 MCP 技能工具并验证 390px 明暗菜单、单 entry／整个 bundle 热停启及原会话续接。Creator 场景走原生 Plugins 创建入口，读取官方 `cordis-plugin-development` 技能，通过原生审批调用 `plugin_manager` 安装临时本地工具 bundle，覆盖后续目录、停用、重新启用、ACP 重挂后 `session/load` 和原标准草稿保留。
+
+浏览器首次失败分别属于测试菜单角色错误与技能夹具继承了脚手架仓库的项目根目录；修正为原生 `menuitem` 和独立 Git 项目根后，相关测试通过，没有更改生产技能发现规则。所有新流程均为确定性 ACP 协议夹具，不消耗真实模型配额，也不扩大真实 Agent 认证范围。
+
+独立 macOS arm64 Electron 验证通过 13 组检查：7 组基础生命周期与 6 组 Creator／预设场景，共保留 31 张有效截图。DS Bot 0.2.2 共存、空闲／运行中热停启、延迟首次绑定无重连提示、通用 Agent 首次会话、切模出口、恢复及 390px 明暗布局通过；Creator 连续 8 轮验证官方技能、真实本地插件安装和两次启停目录变化、同 ACP binding 恢复，以及原标准草稿保留。两组有效运行的 renderer error 记录为空，已人工查看控件、恢复、预设菜单和创造恢复截图。
+
+桌面使用 RC.1 源码 shell／私有 Host glue，加精确 npm 公共模块及独立 `DSH_HOME`，未改用户日常 profile。首次启动因本机应用的 runtime 旁缺少 Office skills 失败；在临时 runtime 目录引用精确 RC.1 npm `dsh-skill-office/assets` 后正常启动，没有修改应用安装目录或上游。桌面补充脚本另修正了区域语言标识、菜单角色和空 composer 的完成断言；这些初始脚本失败不计为产品通过。没有进行真实模型、Windows 桌面或发行安装包验收。证据位于 `.local/agent-modules-preset/`，隔离桌面测试后关闭。
+
+## 2026-11-13：DSH 0.2.2-rc.2 兼容与原生复用
+
+分支 `0.2.2-alpha`，候选 `0.2.2-rc.2.1`；宿主、peers 与开发依赖精确锁定 RC.2。上游 scaffold 为 `ddac96760b6edf8fa0fe17cbdcf0b512f4c12b2c`，没有修改上游源码；原 RC.1 reference 与试用实例不变。迁移与分项证据见 [RC.2 验收记录](../../docs/assessments/dsh-0.2.2-rc.2.md#9-rc2-实施与验收2026-11-13)。
+
+- 迁移具名子代理树、资源权限、原生协作工具参数和结构化错误；复用 `working-directory/access`，保留 Git 副作用前准入、外部 ACP 连续性与恢复保护。删除旧成员模型补写、重复父链遍历、第二套弹层和无生产来源的成员状态。
+- ACP 成员控制接入原生子代理 footer 与 Modal；修复首次 Escape 被后台菜单截走。创造模式使用官方 `dsh-doc` 与插件开发参考，保留标准/创造/ACP 预设组合和用户默认；Kimi 仍退役。
+- 完整单元/集成检查 227 文件通过、1 文件跳过，2857 项通过、3 项跳过；后续测试夹具修改单独完成受影响单测与类型检查。构建、公开声明消费、325 文件打包清单和 130 个运行时 JS 闭包通过。
+- 选定原生 E2E 分批完成：最终集成首轮 41 项有 30 通过，11 项旧契约失败；修正后的五个文件共 20 项重测全通过。预设与首轮控件另 11 项通过。错误的 fixture 参数、实际 UI 缺陷与宿主限制分别记录，没有把失败日志删除或计作单次全绿。
+- 独立 macOS Electron 通过 4 组生命周期和 12 组创造/UI 验证：DS Bot 共存、双方热启停、运行中取消、延迟首次绑定无重连提示、8 轮创造/技能/插件安装/工具目录变化/恢复，中英文及明暗 390 CSS px。renderer errors 为空。390px 是页面视口，原生窗口仍有 520px 最小宽度；未验收 Windows 或发行安装包。
+- 真实 Devin `3000.12.43` / 目录标为 Free 的 `swe-2-high`，两轮宿主指令更新与刷新恢复通过。**真实 Teams 未通过**：最终请求已到 DSH 工具授权，但测试误把 ACP 握手 `0.0.0-dev` 当作 CLI 包版本，在批准前退出，0 Host 派发与成员；之后修正版本取证，相关 41 项单测与类型通过，并在空白隔离环境实读 CLI 版本成功；没有重跑 Teams 或继续调用模型，不能宣称 Teams 已验收。没有修改用户原认证或历史。
+
+仍保留宿主 Modal 关闭后的返回焦点限制：交互导致原生 footer trigger 卸载，焦点落 BODY；Tab 可用且无焦点陷阱，但不算理想返回。工程文档单列公开返回目标 API 方案，插件不改上游或依赖私有 DOM。已有会话切模压缩、原生分叉能力预检和辅助 ACP 调用的既有限制未解除。证据位于 gitignored `.local/upgrade-rc2/`；本次只提交，不发布。
+
+## 2026-11-13：Devin Teams 真实补验
+
+在 `141760b` 的 RC.2 生产产物上，使用 Devin CLI `3000.12.43` 和本次目录标为 Free 的 `swe-2-high`，两个独立真实浏览器场景各执行一次通过：
+
+- 共享任务/消息：Lead 创建两项依赖任务和一个真实成员；成员领取、完成计算并回信，Lead 收信后完成审核并回复。11 项原始一次授权对应 11 次成功 Host 工具执行，任务 owner、revision、消息入队与持久化顺序一致。
+- ACP 审批/取消：同一真实子会话分别 Allow once、Reject、待审批时从原生侧栏 Stop。允许恰好一次写入；拒绝和取消均无 Host 派发、无文件。Stop 同时记录原权限 cancelled、DSH aborted、ACP cancelled；随后同一 DSH/ACP session 成功继续，刷新不恢复旧审批。
+
+新增 11 项离线单测（含越界与错误决定反例）与 test/E2E 类型检查通过；旧 Devin native bash escalation 夹具缺少前置 ACP Ask 处理，已在启动 Host/模型前明确拒绝不适用组合，新专项不替代该场景。没有修改生产代码、上游或用户日常认证/配置；没有重跑无关全量。取消范围是待审批状态，未扩展声明到运行中 shell、Host 重启或 Windows。
+
+完整证据和限制见 [RC.2 补验记录](../../docs/assessments/dsh-0.2.2-rc.2.md#10-真实-devin-teams-补验基线-141760b)，原始日志/截图在 gitignored `.local/devin-teams-rc2/`。第 9 节首次验收中的真实 Teams 缺口已补齐，旧失败记录仍保留。本次提交到 `0.2.2-alpha`，不发布。

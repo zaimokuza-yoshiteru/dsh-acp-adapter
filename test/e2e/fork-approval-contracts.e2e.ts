@@ -33,7 +33,7 @@ class NativeParent extends LlmAdapter {
 }
 
 async function fixture(supportsFork = false) {
-  const host = await launchAdapterWorld({ adapterDirectory, toolsMode: 'native' })
+  const host = await launchAdapterWorld({ adapterDirectory, toolExecutor: 'native' })
   const log = join(host.workspaceCwd, 'fork-approval-wire.log')
   try {
     await host.ctx.settings.replace('dsh-acp-adapter', {
@@ -92,7 +92,7 @@ async function create(host: AdapterWorld, provider: string) {
 }
 
 it.each([false, true])(
-  'ordinary native fork preserves truthful ACP dispatch (advertised fork: %s)',
+  'direct native API fork fails closed without an explicit ACP source (advertised fork: %s)',
   async (supportsFork) => {
     const host = await fixture(supportsFork)
     try {
@@ -105,6 +105,7 @@ it.each([false, true])(
         .filter((line) => /--> session\/(?:new|fork|prompt) /.test(line))
       const forked = await host.ctx.sessionController.fork({ sessionId: parent.id })
       const child = required(host.ctx.agents.get(forked.sessionId))
+      expect(child.session.header.parentSession).toBeUndefined()
       expect(child.session.inheritedEventCount).toBeGreaterThan(0)
       const inheritedTurns = child.session.snapshotEvents().filter((e) => e.type === 'turn/end').length
       send(child, 'FORK_CHILD_CONTINUATION')
@@ -121,21 +122,14 @@ it.each([false, true])(
         childRecordCreated: true,
         events: child.session.snapshotEvents(),
       })
-      if (supportsFork) {
-        // This fixture has process-local history: a newly launched fork connection
-        // advertises support but rejects the source id. Never turn that into new.
-        expect(reason).toBe('error')
-        expect(delta.filter((line) => line.includes('session/fork'))).toHaveLength(1)
-        expect(delta.filter((line) => line.includes('session/new'))).toHaveLength(0)
-        expect(JSON.stringify(child.session.snapshotEvents())).toContain('ACP_FORK_FAILED')
-      } else if (before) {
+      if (before) {
         expect(reason).toBe('completed')
         expect(delta.filter((line) => line.includes('session/new'))).toHaveLength(1)
         expect(delta.filter((line) => line.includes('session/prompt'))).toHaveLength(1)
       } else {
         expect(reason).toBe('error')
         expect(delta).toEqual([])
-        expect(JSON.stringify(child.session.snapshotEvents())).toContain('ACP_FORK_UNAVAILABLE')
+        expect(JSON.stringify(child.session.snapshotEvents())).toContain('ACP_BACKEND_RECOVERY_REQUIRED')
       }
     } finally {
       await host.close()
@@ -164,19 +158,18 @@ it.each(['native', 'acp'])(
       const settled = host.whenTurnSettled(30_000)
       await page.getByRole('button', { name: 'Send message', exact: true }).click()
       const parent = required(host.ctx.agents.get(await settled))
-      expect(host.ctx.get('agentTeams', false)).toBeUndefined()
+      expect(host.ctx.agentTeams.isEnabled(parent)).toBe(false)
       host.ctx.on('subagent/start', (entry) => {
         child = host.ctx.agents.get(entry.id)
       })
       activation = await host.ctx.subagents.startActivation({
         provider: 'spawn',
+        name: 'approval-reviewer',
         label: 'Approval review worker',
         delivery: 'caller',
-        request: {
-          parent,
-          prompt: [{ type: 'text', text: 'E2E_PERMISSION' }],
-          agentOptions: { provider: 'acp-contract', model: 'mock-model-a' },
-        },
+        parent,
+        prompt: [{ type: 'text', text: 'E2E_PERMISSION' }],
+        agentOptions: { provider: 'acp-contract', model: 'mock-model-a' },
         signal: new AbortController().signal,
       })
       await vi.waitFor(() => expect(acpPermissionAudit(host, 'asked')).toHaveLength(1), { timeout: 30_000 })
@@ -328,13 +321,12 @@ it('presents full child authorization choices at the root without using binary a
     const marker = join(required(parent.session.header.cwd), 'exact-option.txt')
     activation = await host.ctx.subagents.startActivation({
       provider: 'spawn',
+      name: 'full-scope-child',
       label: 'Full scope child',
       delivery: 'caller',
-      request: {
-        parent,
-        prompt: [{ type: 'text', text: 'E2E_EXACT_PERMISSION_OPTIONS' }],
-        agentOptions: { provider: 'acp-contract', model: 'mock-model-a' },
-      },
+      parent,
+      prompt: [{ type: 'text', text: 'E2E_EXACT_PERMISSION_OPTIONS' }],
+      agentOptions: { provider: 'acp-contract', model: 'mock-model-a' },
       signal: new AbortController().signal,
     })
     if (!before) {
@@ -342,6 +334,12 @@ it('presents full child authorization choices at the root without using binary a
       const option = card.getByRole('radio', { name: 'Allow for this Agent session', exact: true })
       await option.waitFor({ state: 'visible' })
       expect(await card.getByRole('radio').count()).toBe(4)
+      const child = required(host.ctx.agents.get(activation.childId))
+      expect(host.ctx.subagents.rootOf(child)).toBe(parent)
+      expect(host.ctx.subagents.namesOf(child).self).toBe('full-scope-child')
+      expect(await card.locator('[data-question-source]').innerText()).toContain(
+        `full-scope-child · ${child.id.slice(0, 8)}`,
+      )
       expect(existsSync(marker)).toBe(false)
       await page.screenshot({ path: join(directory, 'child-options-presented.png') })
       await option.click()

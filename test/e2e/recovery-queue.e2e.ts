@@ -1,3 +1,4 @@
+import { confirmBlankRecovery } from './recovery-ui.helpers.ts'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -32,15 +33,7 @@ it('keeps native queued input operable across ACP crash recovery and closes pend
         expect(events.filter((event) => event.sessionId === sessionId && event.type === 'turn/end').length).toBe(count),
       { timeout: 30_000 },
     )
-  const recoveryErrorCode = (data: unknown): string | undefined => {
-    if (typeof data !== 'object' || data === null || !('reason' in data)) return undefined
-    const reason = data.reason
-    if (typeof reason !== 'object' || reason === null || !('error' in reason)) return undefined
-    const error = reason.error
-    return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
-      ? error.code
-      : undefined
-  }
+
   const capture = async (name: string) => {
     if (evidenceDirectory === undefined) return
     await page.screenshot({ path: join(evidenceDirectory, `recovery-queue-${name}.png`), fullPage: true })
@@ -79,7 +72,7 @@ it('keeps native queued input operable across ACP crash recovery and closes pend
     await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).click()
     const dialog = page.getByRole('dialog')
     await dialog.waitFor({ state: 'visible' })
-    await dialog.getByRole('button', { name: 'Abandon context and continue', exact: true }).click()
+    await confirmBlankRecovery(page)
     await dialog.waitFor({ state: 'hidden' })
     await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).waitFor({ state: 'hidden' })
   }
@@ -144,7 +137,13 @@ it('keeps native queued input operable across ACP crash recovery and closes pend
     ).toHaveLength(0)
     const firstEndFacts = events.filter((event) => event.sessionId === sessionId && event.type === 'turn/end')
     expect(firstEndFacts).toHaveLength(1)
-    expect(recoveryErrorCode(firstEndFacts[0]?.data)).toBe('ACP_CRASH')
+    expect(firstEndFacts[0]?.data).toMatchObject({
+      reason: {
+        kind: 'error',
+        error: { code: 'ACP_CRASH', message: 'The Agent disconnected. Check its connection in ACP settings.' },
+      },
+    })
+    await page.getByText('The Agent disconnected. Check its connection in ACP settings.', { exact: true }).waitFor()
 
     const remote = host.ctx.get('dshAcp') as AcpRemoteService
     const recoveryFollow = remote.recoveryFollow.bind(remote)
@@ -207,7 +206,7 @@ it('keeps native queued input operable across ACP crash recovery and closes pend
     expect(promptCount()).toBe(3)
     const finalEnds = events.filter((event) => event.sessionId === sessionId && event.type === 'turn/end')
     expect(finalEnds).toHaveLength(3)
-    expect(recoveryErrorCode(finalEnds[2]?.data)).toBe('ACP_CRASH')
+    expect(finalEnds[2]?.data).toMatchObject({ reason: { kind: 'error', error: { code: 'ACP_CRASH' } } })
 
     await recoverByRebind()
     const queuedPermissionAfterRebind = page

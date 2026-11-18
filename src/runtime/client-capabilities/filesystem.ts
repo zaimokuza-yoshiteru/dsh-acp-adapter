@@ -5,9 +5,9 @@ import path from 'node:path'
 import { randomUUID, createHash } from 'node:crypto'
 import type * as acp from '@agentclientprotocol/sdk'
 
-export const ACP_FS_MAX_BYTES = 8 * 1024 * 1024
+const ACP_FS_MAX_BYTES = 8 * 1024 * 1024
 export const ACP_FS_MAX_LINES = 20_000
-export const ACP_FS_MAX_LINE = 1_000_000
+const ACP_FS_MAX_LINE = 1_000_000
 const ACP_FS_DEFAULT_TIMEOUT_MS = 30_000
 
 /** Stable, content-free reason codes for failed filesystem requests. */
@@ -173,18 +173,18 @@ function checkReadWindow(text: string, line: number | null | undefined, limit: n
   // while a zero limit intentionally returns an empty window.
   if (line !== undefined && line !== null && (!Number.isSafeInteger(line) || line < 0))
     throw new AcpFileFailure('invalid-line', 'ACP fs: line must be a safe non-negative integer')
-  // The request window is a presentation bound, not an additional file-size
-  // limit.  Accept an oversized safe limit and clamp it to the host's maximum
-  // instead of rejecting otherwise valid files (some ACP agents use a very
-  // large sentinel/default here).
+  // Some ACP agents send a very large sentinel limit. It is accepted while
+  // the requested window fits the host's maximum; a window that would have to
+  // be cut is refused below, never returned as a silently shortened file.
   if (limit !== undefined && limit !== null && (!Number.isSafeInteger(limit) || limit < 0))
     throw new AcpFileFailure('invalid-limit', 'ACP fs: limit must be a safe non-negative integer')
   if ((line === undefined || line === null) && (limit === undefined || limit === null)) return text
   const rows = text.split('\n')
   const start = line === undefined || line === null ? 0 : Math.max(0, line - 1)
   if (limit === 0) return ''
-  const boundedLimit = limit === undefined || limit === null ? undefined : Math.min(limit, ACP_FS_MAX_LINES)
-  return rows.slice(start, boundedLimit === undefined ? undefined : start + boundedLimit).join('\n')
+  if (limit !== undefined && limit !== null && limit > ACP_FS_MAX_LINES && rows.length - start > ACP_FS_MAX_LINES)
+    throw new AcpFileFailure('line-limit-exceeded', 'line limits exceeded')
+  return rows.slice(start, limit === undefined || limit === null ? undefined : start + limit).join('\n')
 }
 
 async function emit(

@@ -54,7 +54,15 @@ it.each(['reject', 'accepted-running'])(
       await expect.poll(() => host.ctx.jobs.list(owner).filter((job) => job.kind === 'acp-qwen-task').length).toBe(1)
       const job = required(host.ctx.jobs.list(owner).find((job) => job.kind === 'acp-qwen-task'))
       await expect.poll(() => existsSync(`${control}.heartbeat`)).toBe(true)
-      await page.getByRole('button', { name: '1 background job running', exact: true }).click()
+      const backgroundJob = page.getByRole('button', { name: '1 background job', exact: true })
+      const runningDescription = () =>
+        backgroundJob.evaluate((button) => {
+          const id = button.getAttribute('aria-describedby')
+          return id === null ? null : document.getElementById(id)?.textContent
+        })
+      await expect.poll(() => host.ctx.jobs.get(job.id, owner).status).toBe('running')
+      await expect.poll(runningDescription).toBe('Running')
+      await backgroundJob.click()
       await page.getByRole('button', { name: 'Stop task Controlled Qwen task', exact: true }).click()
       await page.getByRole('button', { name: 'Click again to confirm', exact: true }).click()
       await expect.poll(() => host.ctx.jobs.get(job.id, owner).status).toBe('stopping')
@@ -69,6 +77,7 @@ it.each(['reject', 'accepted-running'])(
       expect(facts.heartbeatAfter).toBeGreaterThan(before)
       await page.screenshot({ path: join(directory, 'after-deadline.png'), fullPage: true })
       expect(host.ctx.jobs.get(job.id, owner).status).toBe('stopping')
+      await expect.poll(runningDescription).toBe('Running')
       await expect(host.ctx.workspaceController.archiveSession({ sessionId: owner })).rejects.toMatchObject({
         cause: {
           name: 'WorkspaceActiveSessionError',
@@ -102,6 +111,7 @@ it.each(['reject', 'accepted-running'])(
       facts.completed = host.ctx.jobs.get(job.id, owner)
       facts.events = terminal
       await page.getByRole('button', { name: '1 background job', exact: true }).waitFor()
+      await expect.poll(() => backgroundJob.getAttribute('aria-describedby')).toBeNull()
       await page.getByRole('button', { name: 'Clear', exact: true }).waitFor()
       const list = page.getByRole('list', { name: 'Background jobs', exact: true })
       await expect.poll(() => list.innerText()).toContain('completed')

@@ -58,8 +58,8 @@ describe('Devin live diagnostic trace', () => {
   it('HMACs identities and canonical arguments without persisting raw IDs, text, or unapproved fields', () => {
     const trace = new DevinLiveTrace({ directory: directory(), key: Buffer.alloc(32, 7) })
     const message = 'private-message-never-store'
-    const first = trace.fingerprint('tool-arguments', { target: 'lead', message })
-    const reordered = trace.fingerprint('tool-arguments', { message, target: 'lead' })
+    const first = trace.fingerprint('tool-arguments', { agent: 'lead', message })
+    const reordered = trace.fingerprint('tool-arguments', { message, agent: 'lead' })
     const nextCall = trace.id('host-call', 'host-call-2')
     trace.record('tool/admission', {
       actorRole: 'teammate',

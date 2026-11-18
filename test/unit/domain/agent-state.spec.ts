@@ -71,9 +71,9 @@ describe('deriveAcpAgentState（五态）', () => {
     ).toBe('ready')
   })
 
-  it(' 目录口径：probe ok 零 models 但 configOptions 含 category=model 项 → ready（kimi 形态：目录只经 configOptions 提供）', () => {
-    // kimi 形态（、实际 ACP 行为）：legacy models 恒空，目录在 configOptions——
-    // 旧口径会把 declaresAuthRefs 的 kimi 误判成 auth-required
+  it(' 目录口径：probe ok 零 models 但 configOptions 含 category=model 项 → ready（generic 形态：目录只经 configOptions 提供）', () => {
+    // generic 形态（、实际 ACP 行为）：legacy models 恒空，目录在 configOptions——
+    // 旧口径会把 declaresAuthRefs 的 generic 误判成 auth-required
     expect(
       deriveAcpAgentState({ ...BASE, probe: { result: { kind: 'ok', modelCount: 0, hasModelConfigOption: true } } }),
     ).toBe('ready')

@@ -4,7 +4,7 @@ import {
   auditEntryMatchesFilter,
   auditEntryMatchesQuery,
   auditHeaderVisible,
-  auditProjectionIsAcp,
+  auditProjectionProvider,
   auditSessionRefreshKeyOf,
   auditSummaryOf,
   auditRecordedCause,
@@ -44,15 +44,17 @@ describe('ACP audit header utility behavior', () => {
   it('is visible only for an established ACP backend', () => {
     expect(auditHeaderVisible({ state: 'blank' }, owns)).toBe(false)
     expect(auditHeaderVisible({ state: 'established', provider: 'openai' }, owns)).toBe(false)
+    expect(auditHeaderVisible({ state: 'established', provider: 'acp-retired', acpBinding: true }, owns)).toBe(true)
+    expect(auditHeaderVisible({ state: 'established', provider: 'acp-retired' }, owns)).toBe(false)
     expect(auditHeaderVisible({ state: 'draft', provider: 'acp-codex' }, owns)).toBe(false)
     expect(auditHeaderVisible({ state: 'established', provider: 'acp-codex' }, owns)).toBe(true)
   })
 
   it('rejects native or incomplete model projections before any ACP lookup', () => {
-    expect(auditProjectionIsAcp({ lastUsed: { provider: 'openai', model: 'x' }, next: null }, owns)).toBe(false)
-    expect(auditProjectionIsAcp({ lastUsed: null, next: { provider: 'acp-codex', model: 'x' } }, owns)).toBe(false)
-    expect(auditProjectionIsAcp({ lastUsed: { provider: 'acp-codex', model: 'x' }, next: null }, owns)).toBe(true)
-    expect(auditProjectionIsAcp(undefined, owns)).toBe(false)
+    expect(owns(auditProjectionProvider({ lastUsed: { provider: 'openai', model: 'x' }, next: null }))).toBe(false)
+    expect(owns(auditProjectionProvider({ lastUsed: null, next: { provider: 'acp-codex', model: 'x' } }))).toBe(false)
+    expect(owns(auditProjectionProvider({ lastUsed: { provider: 'acp-codex', model: 'x' }, next: null }))).toBe(true)
+    expect(owns(auditProjectionProvider(undefined))).toBe(false)
   })
 
   it('changes the backend refresh key when a blank session becomes prompt-active', () => {

@@ -63,6 +63,7 @@ const SRC_DIR = path.resolve(TEST_DIR, '..', '..', 'src')
 // ---------- 层归类 ----------
 
 type Layer =
+  | 'agentCompatibility'
   | 'runtime'
   | 'protocol'
   | 'domainPolicy'
@@ -79,6 +80,7 @@ type Layer =
 
 /** src 相对路径 → 层；返回 undefined 表示路径不在任何已知层（归类本身也被钉死）。 */
 function layerOf(srcRel: string): Layer | undefined {
+  if (srcRel.startsWith('agents/')) return 'agentCompatibility'
   if (srcRel === 'index.ts') return 'hostEntry'
   if (srcRel.startsWith('runtime/')) return 'runtime'
   if (srcRel.startsWith('protocol/')) return 'protocol'
@@ -101,6 +103,7 @@ function layerOf(srcRel: string): Layer | undefined {
 }
 
 const HOST_LAYERS: readonly Layer[] = [
+  'agentCompatibility',
   'runtime',
   'protocol',
   'domainPolicy',
@@ -114,9 +117,10 @@ const HOST_LAYERS: readonly Layer[] = [
 
 /** 跨层白名单：key 层可 import 的异层集合（同层恒允许，不入表）。 */
 const ALLOWED_CROSS_LAYER: Readonly<Record<Layer, readonly Layer[]>> = {
+  agentCompatibility: ['contract'],
   // Native client capabilities expose ACP handlers and durable audit payloads.
   runtime: ['protocol', 'domainPolicy', 'domainObservability'],
-  protocol: ['runtime'],
+  protocol: ['runtime', 'agentCompatibility'],
   // Pure presentation parsing is shared with the client in the dependency-free contract layer.
   domainPolicy: ['protocol', 'runtime', 'domainObservability', 'contract'],
   // observability is a zero-import leaf except for its exact compatibility facade edge below.
@@ -126,9 +130,18 @@ const ALLOWED_CROSS_LAYER: Readonly<Record<Layer, readonly Layer[]>> = {
   // contract 是零 import 叶子：收窄 wire 类型与共享纯函数真源，host 的 remote 与
   // client 两半共同下行消费（共享层，不进 HOST_LAYERS）。
   contract: [],
-  domainSession: ['domainPolicy', 'domainObservability', 'protocol', 'runtime', 'persistence', 'contract'],
+  domainSession: [
+    'agentCompatibility',
+    'domainPolicy',
+    'domainObservability',
+    'protocol',
+    'runtime',
+    'persistence',
+    'contract',
+  ],
   remote: ['contract', 'protocol', 'runtime', 'domainSession', 'domainPolicy', 'domainObservability'],
   hostComposition: [
+    'agentCompatibility',
     'domainSession',
     'domainPolicy',
     'domainObservability',
@@ -178,6 +191,10 @@ const ALLOWED_CROSS_FILE_EDGES = new Set([
   'persistence/sidecar.ts->contract/config-options.ts',
   'protocol/v1/config-options.ts->contract/config-options.ts',
   'runtime/session/session-runtime.ts->contract/config-options.ts',
+  // Model route framing shared with the client; the same dependency-free leaf
+  // keeps the protocol's model classification and the persisted route bound consistent.
+  'persistence/sidecar.ts->contract/model-selection.ts',
+  'protocol/v1/config-options.ts->contract/model-selection.ts',
 ])
 
 const IMPORT_FROM_RE = /(?:import|export)\s[^'"]*?from\s+['"]([^'"]+)['"]/g

@@ -7,13 +7,14 @@ import LlmRuntime, { createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId, Session } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import * as NativeExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import WorkingDirectory from '@deepseek-ai/dsh-working-directory'
 import { AcpProfileAdapter, type AcpProfileRuntime } from '../../../src/host/composition/profile-adapter.ts'
-import { acpExecutionProjection, acpSessionView } from '../../../src/host/composition/session-facts.ts'
+import { AcpSessionFacts, acpSessionView } from '../../../src/host/composition/session-facts.ts'
 import { createAcpSidecar } from '../../../src/persistence/sidecar.ts'
 
 const cleanup: Array<() => Promise<unknown> | void> = []
@@ -39,9 +40,10 @@ async function harness(cancelAt = 1, emitText = true, atomicSteering = false) {
   await ctx.plugin(LocalFileSystem, { cwd: root })
   await ctx.plugin(WorkingDirectory, { defaultDirectory: root })
   await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeExecutor)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
-  ctx.sessionProjections.register(acpExecutionProjection)
+  await ctx.plugin(AcpSessionFacts)
   const sessionId = SessionId('remote-cancel-persistence')
   let prompts = 0
   let steers = 0
@@ -53,15 +55,7 @@ async function harness(cancelAt = 1, emitText = true, atomicSteering = false) {
     'cancel-test',
     () => ({ name: 'Cancel test', command: 'scripted-acp', args: [], env: {} }),
     { ok: true, seam: undefined as never },
-    (id) => {
-      const view = acpSessionView(ctx, ctx.sessions.get(id as never))
-      // No permission operation is exercised by this stream-persistence fixture.
-      return view === undefined
-        ? undefined
-        : Object.defineProperty(view, 'permissions', {
-            value: { preset: null, sandbox: null, approval: null, seeded: false },
-          })
-    },
+    (id) => acpSessionView(ctx, ctx.sessions.get(id as never)),
     {
       begin: (record) => sidecar.beginDispatch(record),
       settle: (id, key) => sidecar.settleDispatch(id as never, key),

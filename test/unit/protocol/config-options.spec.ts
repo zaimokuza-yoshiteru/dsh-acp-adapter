@@ -1,8 +1,43 @@
 import { describe, expect, it } from 'vitest'
 import { ACP_CONFIG_IDENTIFIER_MAX } from '../../../src/contract/config-options.ts'
-import { acpConfigOptionsSnapshot } from '../../../src/protocol/v1/config-options.ts'
+import {
+  acpConfigOptionsSnapshot,
+  advertisesIndependentModelControls,
+  isModelConfigOption,
+} from '../../../src/protocol/v1/config-options.ts'
 
 describe('ACP config option identity bounds', () => {
+  it.each([undefined, 'vendor-choice'])(
+    'does not infer a model selector from an opaque id with category %s',
+    (category) => {
+      expect(
+        isModelConfigOption({
+          id: 'model',
+          name: 'Vendor choice',
+          type: 'select',
+          currentValue: 'one',
+          options: [],
+          ...(category === undefined ? {} : { category }),
+        }),
+      ).toBe(false)
+    },
+  )
+
+  it('does not infer reasoning controls from opaque ids in an unknown category', () => {
+    expect(
+      advertisesIndependentModelControls([
+        {
+          id: 'thought_level',
+          name: 'Vendor choice',
+          category: 'vendor-choice',
+          type: 'select',
+          currentValue: 'one',
+          options: [],
+        },
+      ]),
+    ).toBe(false)
+  })
+
   it('keeps IDs and values through 512 characters and drops values above the limit intact', () => {
     const id511 = 'a'.repeat(ACP_CONFIG_IDENTIFIER_MAX - 1)
     const id512 = 'b'.repeat(ACP_CONFIG_IDENTIFIER_MAX)

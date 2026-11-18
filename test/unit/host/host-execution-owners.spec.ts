@@ -1,18 +1,23 @@
-import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it } from 'vitest'
-import {
-  assertHostExecutionQuiescent,
-  clearHostExecutionOwners,
-  getSharedRecoveryFallback,
-  retainHostExecutionOwner,
-  setSharedRecoveryFallback,
-} from '../../../src/host/composition/host-execution-owners.ts'
+import { HostExecutionOwners } from '../../../src/host/composition/host-execution-owners.ts'
 
 describe('Host execution owner registry', () => {
-  it('shares pending owners across child contexts and isolates separate roots with the same session id', async () => {
-    const root = new Context()
-    const child = root.extend({})
-    const otherRoot = new Context()
+  it.each(['hasUncommittedHostFeedback', 'hasRetainedHostFeedback'] as const)(
+    'does not certify final shutdown while %s remains after calls have drained',
+    async (fact) => {
+      const owners = new HostExecutionOwners()
+      owners.retain('unsettled-session', {
+        hasPendingHostCalls: () => false,
+        [fact]: () => true,
+        waitForHostCallsSettled: async () => undefined,
+      })
+      await expect(owners.close()).rejects.toThrow('ACP_HOST_EXECUTION_STILL_ACTIVE')
+    },
+  )
+
+  it('isolates owners with the same session id', async () => {
+    const root = new HostExecutionOwners()
+    const otherRoot = new HostExecutionOwners()
     let pending = true
     let resolve!: () => void
     const settled = new Promise<void>((done) => (resolve = done))
@@ -21,19 +26,19 @@ describe('Host execution owner registry', () => {
       waitForHostCallsSettled: () => settled,
     }
 
-    retainHostExecutionOwner(root, 'same-session', owner)
+    root.retain('same-session', owner)
 
-    expect(() => assertHostExecutionQuiescent(child, 'same-session')).toThrow('ACP_HOST_EXECUTION_STILL_ACTIVE')
-    expect(() => assertHostExecutionQuiescent(otherRoot, 'same-session')).not.toThrow()
+    expect(() => root.assertQuiescent('same-session')).toThrow('ACP_HOST_EXECUTION_STILL_ACTIVE')
+    expect(() => otherRoot.assertQuiescent('same-session')).not.toThrow()
     pending = false
     resolve()
     await settled
     await Promise.resolve()
-    expect(() => assertHostExecutionQuiescent(child, 'same-session')).not.toThrow()
+    expect(() => root.assertQuiescent('same-session')).not.toThrow()
   })
 
-  it('archives retained feedback and releases the active gate without changing feedback evidence', async () => {
-    const root = new Context()
+  it('releases the active gate after recovery without changing the retired owner feedback', async () => {
+    const root = new HostExecutionOwners()
     let uncommitted = true
     let retained = true
     const owner = {
@@ -50,23 +55,23 @@ describe('Host execution owner registry', () => {
       updatedAt: 1,
     }
 
-    setSharedRecoveryFallback(root, recoveryState)
-    retainHostExecutionOwner(root, 'feedback-session', owner)
+    root.setRecoveryFallback(recoveryState)
+    root.retain('feedback-session', owner)
     await Promise.resolve()
 
-    expect(getSharedRecoveryFallback(root, 'feedback-session')).toEqual(recoveryState)
-    expect(() => assertHostExecutionQuiescent(root, 'feedback-session')).toThrow('ACP_HOST_EXECUTION_STILL_ACTIVE')
-    expect(() => assertHostExecutionQuiescent(root, 'feedback-session', true)).not.toThrow()
-    clearHostExecutionOwners(root, 'feedback-session')
+    expect(root.getRecoveryFallback('feedback-session')).toEqual(recoveryState)
+    expect(() => root.assertQuiescent('feedback-session')).toThrow('ACP_HOST_EXECUTION_STILL_ACTIVE')
+    expect(() => root.assertQuiescent('feedback-session', true)).not.toThrow()
+    root.clear('feedback-session')
 
     expect(retained).toBe(true)
     expect(uncommitted).toBe(true)
-    expect(() => assertHostExecutionQuiescent(root, 'feedback-session')).not.toThrow()
-    expect(getSharedRecoveryFallback(root, 'feedback-session')).toEqual(recoveryState)
+    expect(() => root.assertQuiescent('feedback-session')).not.toThrow()
+    expect(root.getRecoveryFallback('feedback-session')).toEqual(recoveryState)
   })
 
   it('releases a rejected settlement observer once later public facts show the call settled', async () => {
-    const root = new Context()
+    const root = new HostExecutionOwners()
     let pending = true
     let uncommitted = false
     let reject!: (error: Error) => void
@@ -78,13 +83,38 @@ describe('Host execution owner registry', () => {
       waitForHostCallsSettled: () => observed,
     }
 
-    retainHostExecutionOwner(root, 'observer-race', owner)
+    root.retain('observer-race', owner)
     reject(new Error('settlement observer rejected while the call was pending'))
     await Promise.resolve()
-    expect(() => assertHostExecutionQuiescent(root, 'observer-race')).toThrow('ACP_HOST_EXECUTION_STILL_ACTIVE')
+    expect(() => root.assertQuiescent('observer-race')).toThrow('ACP_HOST_EXECUTION_STILL_ACTIVE')
 
     pending = false
     uncommitted = false
-    expect(() => assertHostExecutionQuiescent(root, 'observer-race')).not.toThrow()
+    expect(() => root.assertQuiescent('observer-race')).not.toThrow()
+  })
+
+  it('keeps a newer owner gate when an explicitly cleared owner finishes later', async () => {
+    const owners = new HostExecutionOwners()
+    const oldWait = Promise.withResolvers<void>()
+    const newWait = Promise.withResolvers<void>()
+    let oldFeedback = true
+    let pending = true
+    owners.retain('session-a', {
+      hasPendingHostCalls: () => false,
+      hasRetainedHostFeedback: () => oldFeedback,
+      waitForHostCallsSettled: () => oldWait.promise,
+    })
+    owners.clear('session-a')
+    owners.retain('session-a', {
+      hasPendingHostCalls: () => pending,
+      waitForHostCallsSettled: () => newWait.promise,
+    })
+    oldFeedback = false
+    oldWait.resolve()
+    await oldWait.promise
+    expect(() => owners.assertQuiescent('session-a')).toThrow('ACP_HOST_EXECUTION_STILL_ACTIVE')
+    pending = false
+    newWait.resolve()
+    await owners.close()
   })
 })

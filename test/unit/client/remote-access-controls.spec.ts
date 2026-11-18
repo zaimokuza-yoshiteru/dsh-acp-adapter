@@ -1,3 +1,4 @@
+import type { AcpOwnedRoutesView } from '../../../src/contract/remote.ts'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -16,20 +17,21 @@ vi.mock('react', () => ({
     return [index < hooks.values.length ? hooks.values[index] : initial, () => {}]
   },
   useEffect: () => {},
+  useLayoutEffect: () => {},
   useRef: (current: unknown) => ({ current }),
   useMemo: (factory: () => unknown) => factory(),
   useCallback: (callback: unknown) => callback,
   useSyncExternalStore: (_subscribe: unknown, getSnapshot: () => unknown) => getSnapshot(),
 }))
 
+import { UnroutedHistoryDock } from '../../../src/client/ui/UnroutedHistoryDock.ts'
 import { AcpAgentControl } from '../../../src/client/ui/AcpAgentControl.ts'
 import { AcpRecoveryDock } from '../../../src/client/ui/AcpRecoveryDock.ts'
+import type { IndependentSessionOutcome } from '../../../src/client/coordinator/native-session-navigation.ts'
 import { TeamMemberModelControl } from '../../../src/client/ui/TeamMemberModelControl.ts'
 import type { AcpAgentSessionSnapshotView } from '../../../src/contract/remote.ts'
 
-// Use the installed RC1 grant producer, not a hand-written boolean permission
-// stub. Element-tree tests inspect choices and handlers; browser E2E owns React
-// effects, native menus and the mounted owner experience.
+// Exercise selection handlers with the same grant updates used by a mounted DSH client.
 const require = createRequire(import.meta.url)
 type NativeAccess = {
   global(action: string): HostObservable<boolean>
@@ -48,7 +50,7 @@ function nodes(value: unknown): Tree[] {
   if (Array.isArray(value)) return value.flatMap(nodes)
   if (typeof value !== 'object' || value === null || !('props' in value)) return []
   const node = value as Tree
-  return [node, ...nodes(node.props.children)]
+  return [node, ...nodes(node.props.children), ...nodes(node.props.footer)]
 }
 function seed(values: unknown[]) {
   hooks.values = values
@@ -83,7 +85,7 @@ function setup(owner = false, workspace = true) {
     retryOriginal: vi.fn(async () => ({ ok: true, value: undefined })),
     rebindRecoveryBlank: vi.fn(async () => ({ ok: true, value: undefined })),
   }
-  const createNewSession = vi.fn(async () => {})
+  const createNewSession = vi.fn(async () => 'idle' as const)
   const common = {
     sessionId: 'lead',
     remote,
@@ -98,7 +100,8 @@ function setup(owner = false, workspace = true) {
     useSession: (select: (value: object) => unknown) => select({ running: false, openState: 'ready' }),
     useProjection: () => ({ lastUsed: { provider: 'acp-codex' }, next: { provider: 'acp-codex' } }),
     t: (key: string) => key,
-    ownsRoute: (value: string) => value === 'acp-codex',
+    useRouteOwnership: (select: (value: AcpOwnedRoutesView) => unknown) =>
+      select({ providers: ['acp-codex'], historicalProviders: [] }),
   }
   const control = () => {
     seed([
@@ -122,13 +125,14 @@ function setup(owner = false, workspace = true) {
       feedback: { report: vi.fn() },
     } as never) as Tree
   }
-  const model = (status: 'inactive' | 'running' = 'inactive') => {
+  const model = (status: 'inactive' | 'running' = 'inactive', blocked = false, memberBlocked = false) => {
     seed([
       false,
       {
         currentModel: 'a',
         pendingModel: null,
         writable: true,
+        ...(blocked ? { unavailableReason: 'model-switch' } : {}),
         models: [
           { id: 'a', name: 'A' },
           { id: 'b', name: 'B' },
@@ -148,6 +152,7 @@ function setup(owner = false, workspace = true) {
         name: 'Child',
         model: 'a',
         modelWritable: true,
+        ...(memberBlocked ? { modelUnavailableReason: 'model-switch' } : {}),
         status,
         description: null,
       },
@@ -157,7 +162,7 @@ function setup(owner = false, workspace = true) {
       onMenuOpen: () => {},
     } as never)
   }
-  const recovery = () => {
+  const recovery = (confirmRebind = false, navigation: IndependentSessionOutcome = 'idle') => {
     seed([
       { dshSessionId: 'lead', kind: 'outcome-unknown', cause: null, detail: null },
       true,
@@ -168,10 +173,35 @@ function setup(owner = false, workspace = true) {
       false,
       false,
       0,
+      confirmRebind,
+      navigation,
     ])
     return AcpRecoveryDock({ ...common, createNewSession } as never)
   }
-  return { state, remote, control, model, recovery, createNewSession }
+  const imported = (nativeModels: string[] = ['m']) => {
+    seed([])
+    return UnroutedHistoryDock({
+      ...common,
+      useSessionRetainInfo: (select: (value: object) => unknown) => select({ retainedBy: { mainView: 1 } }),
+      useSession: (select: (value: object) => unknown) =>
+        select({ openState: 'open', blank: false, running: false, removed: false, subagent: null }),
+      useProjection: (id: string, select: (value: object) => unknown) =>
+        select(id === 'acpExecution' ? { completedWithoutModel: true } : { next: null, lastUsed: null }),
+      directory: {
+        subscribe: () => () => {},
+        getSnapshot: () => ({
+          current: { provider: 'acp-codex', model: 'm' },
+          status: 'ready',
+          groups: [
+            { id: 'acp-codex', models: ['m'] },
+            { id: 'native', models: nativeModels },
+          ],
+        }),
+      },
+      openIndependent: createNewSession,
+    } as never)
+  }
+  return { state, remote, control, model, recovery, imported, createNewSession }
 }
 function groups(tree: Tree): { choices: { disabled: boolean; write: { kind: string } }[] }[] {
   return tree.props.groups as never
@@ -259,6 +289,36 @@ it('keeps native owner model controls enabled without granting a busy member a w
   expect(h.remote.setTeamMemberModel).not.toHaveBeenCalled()
 })
 
+it('explains member model-switch refusal and permits only restoring the current model', () => {
+  for (const fromMember of [false, true]) {
+    const h = setup(true)
+    const menu = modelMenu(h.model('inactive', !fromMember, fromMember))
+    expect(menu.props.items).toEqual([
+      { id: 'a', label: 'A', disabled: false },
+      { id: 'b', label: 'B', disabled: true },
+    ])
+    expect(menu.props.footer).toEqual([{ type: 'label', id: 'read-only', text: 'teamModelSwitchUnavailable' }])
+    ;(menu.props.onSelect as (id: string) => void)('b')
+    expect(h.remote.setTeamMemberModel).not.toHaveBeenCalled()
+    ;(menu.props.onSelect as (id: string) => void)('a')
+    expect(h.remote.setTeamMemberModel).toHaveBeenCalledExactlyOnceWith('lead', 'child', 'a')
+  }
+})
+
+it('requires confirmation before blank rebind and rechecks grants at the final confirmation', () => {
+  const h = setup()
+  grants(h.state, 'lead', ['dshAcp/rebindRecoveryBlank'])
+  ;(recoveryButton(h.recovery(), 'recoveryRebind').props.onClick as () => void)()
+  expect(h.remote.rebindRecoveryBlank).not.toHaveBeenCalled()
+  const confirmation = recoveryButton(h.recovery(true), 'recoveryRebindConfirm')
+  grants(h.state, 'lead', [])
+  ;(confirmation.props.onClick as () => void)()
+  expect(h.remote.rebindRecoveryBlank).not.toHaveBeenCalled()
+  grants(h.state, 'lead', ['dshAcp/rebindRecoveryBlank'])
+  ;(recoveryButton(h.recovery(true), 'recoveryRebindConfirm').props.onClick as () => void)()
+  expect(h.remote.rebindRecoveryBlank).toHaveBeenCalledExactlyOnceWith('lead')
+})
+
 it('disables ACP recovery writes for a reader and rechecks a previously opened recovery action', async () => {
   const h = setup()
   for (const [label, method] of [
@@ -301,6 +361,47 @@ it('uses the destination workspace or global create grant instead of the source 
     const allowed = recoveryButton(h.recovery(), 'recoveryNew')
     expect(allowed.props.disabled).toBe(false)
     ;(allowed.props.onClick as () => void)()
-    expect(h.createNewSession).toHaveBeenCalledExactlyOnceWith('lead')
+    expect(h.createNewSession).toHaveBeenCalledExactlyOnceWith('lead', expect.any(Function), 'create')
   }
+})
+
+it('offers opening the existing ungrouped session after a recovery attachment failure', () => {
+  const h = setup(true)
+  const view = h.recovery(false, 'ungrouped')
+  const labels = nodes(view).flatMap((node) => node.props.children ?? [])
+  expect(labels).toContain('unroutedHistoryUngrouped')
+  expect(labels).not.toContain('recoveryNew')
+  ;(recoveryButton(view, 'unroutedHistoryOpen').props.onClick as () => void)()
+  expect(h.createNewSession).toHaveBeenCalledExactlyOnceWith('lead', expect.any(Function), 'open-existing')
+})
+
+it('offers the default mode as an explicit alternate recovery action when the original mode is unavailable', () => {
+  const h = setup(true)
+  const view = h.recovery(false, 'preset-unavailable')
+  const button = recoveryButton(view, 'independentUseDefault')
+  expect(nodes(view).flatMap((node) => node.props.children ?? [])).toContain('independentPresetUnavailable')
+  ;(button.props.onClick as () => void)()
+  expect(h.createNewSession).toHaveBeenCalledExactlyOnceWith('lead', expect.any(Function), 'use-default')
+})
+
+it('offers only available model and creation actions in an imported history', () => {
+  const h = setup()
+  const keys = (view: unknown) => nodes(view).flatMap((node) => node.props.children ?? [])
+  expect(h.imported()).toBeNull()
+  grants(h.state, 'lead', ['session/selectModel'])
+  expect(keys(h.imported())).toContain('unroutedHistoryHint')
+  expect(keys(h.imported())).not.toContain('crossBackendContinue')
+  expect(h.imported([])).toBeNull()
+  h.state.update({
+    type: 'upsert',
+    grant: {
+      resource: { kind: 'workspace', id: 'workspace' as never },
+      actions: ['session/create'],
+    },
+  })
+  expect(keys(h.imported())).toContain('crossBackendContinue')
+  expect(keys(h.imported([]))).toContain('unroutedHistoryCreateOnly')
+  grants(h.state, 'lead', [])
+  expect(keys(h.imported())).toContain('unroutedHistoryCreateOnly')
+  expect(keys(h.imported())).toContain('crossBackendContinue')
 })

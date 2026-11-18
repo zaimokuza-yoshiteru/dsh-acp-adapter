@@ -9,6 +9,7 @@ import {
 import type { LlmModelInfo } from '@deepseek-ai/dsh-llm'
 import { acpConfigOptionsSnapshot } from '../../../src/domain/session/acp-config-options.ts'
 import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts'
+import { ACP_CURRENT_CONFIG_MODEL_ID, acpDeclaredModelRoute } from '../../../src/contract/model-selection.ts'
 
 const config: AcpAgentConfig = { name: 'Test', command: 'agent', args: [], env: {} }
 const effortOption = (
@@ -36,7 +37,7 @@ const effortOption = (
 })
 
 describe('ACP catalog reasoning metadata', () => {
-  it.each(['codex', 'claude', 'kimi', 'devin'])('maps %s thought_level to DSH reasoning metadata', (profileId) => {
+  it.each(['codex', 'claude', 'devin'])('maps %s thought_level to DSH reasoning metadata', (profileId) => {
     const info = reasoningInfoFromConfigOptions(profileId, config, [effortOption()])
     expect(info?.efforts.map((effort) => effort.id)).toEqual(['low', 'high', 'max'])
     expect(info?.defaultEffort).toBe('high')
@@ -152,6 +153,55 @@ describe('ACP model display labels', () => {
     ])
     expect(models.map((item) => item.id)).toEqual(['one', 'two'])
     expect(models.map((item) => item.name)).toEqual(['Same · one', 'Same · two'])
+  })
+
+  it.each(
+    [
+      undefined,
+      [],
+      [
+        {
+          id: 'model',
+          name: 'Vendor choice',
+          type: 'select' as const,
+          category: 'vendor-choice',
+          currentValue: 'one',
+          options: [{ value: 'one', name: 'One' }],
+        },
+      ],
+      [
+        {
+          id: 'model',
+          name: 'Model',
+          type: 'select' as const,
+          currentValue: 'one',
+          options: [{ value: 'one', name: 'One' }],
+        },
+      ],
+      [{ id: 'model', name: 'Model', type: 'select' as const, category: 'model', currentValue: 'one', options: [] }],
+    ].map((configOptions) => ({ configOptions })),
+  )('keeps a successfully probed Agent selectable without a model catalogue ($configOptions)', ({ configOptions }) => {
+    expect(probeModels('acp-test', configOptions)).toEqual([
+      { provider: 'acp-test', id: ACP_CURRENT_CONFIG_MODEL_ID, name: 'Agent current configuration' },
+    ])
+  })
+
+  it('escapes a real declared model that collides with the host-only current-configuration route', () => {
+    const [entry] = probeModels('acp-test', [
+      {
+        id: 'engine',
+        name: 'Engine',
+        category: 'model',
+        type: 'select',
+        currentValue: ACP_CURRENT_CONFIG_MODEL_ID,
+        options: [{ value: ACP_CURRENT_CONFIG_MODEL_ID, name: 'Actual supplier model' }],
+      },
+    ])
+    expect(entry).toEqual({
+      provider: 'acp-test',
+      id: acpDeclaredModelRoute(ACP_CURRENT_CONFIG_MODEL_ID),
+      name: 'Actual supplier model',
+    })
   })
 })
 

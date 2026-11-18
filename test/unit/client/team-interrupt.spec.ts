@@ -79,3 +79,22 @@ it('fails closed when the roster cannot be refreshed', async () => {
   ).rejects.toThrow('offline')
   expect(interrupt).not.toHaveBeenCalled()
 })
+
+it('rechecks per-target access after the refreshed roster arrives', async () => {
+  let writable = true
+  const interrupt = vi.fn(async () => {})
+  expect(
+    await interruptTeam({
+      lead: 'lead',
+      targets: ['a', 'b'],
+      isCurrent: () => true,
+      canInterrupt: (id) => id === 'b' || writable,
+      members: async () => {
+        writable = false
+        return [member('a'), member('b')]
+      },
+      interrupt,
+    }),
+  ).toEqual({ accepted: 1, skipped: 1, failed: 0 })
+  expect(interrupt.mock.calls).toEqual([['b']])
+})

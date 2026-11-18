@@ -117,8 +117,7 @@ export function AgentSessionMenu({
       align,
       items,
       listClassName: css.menuList,
-      // Pane heights differ; let native positioning remeasure on each render.
-      getAnchorRect: () => anchor.current?.getBoundingClientRect() ?? null,
+      anchorRef: anchor,
       selectedId: group?.choices.find((choice) => choice.current)?.id,
       onClose: () => onOpenChange(false),
       onSelect: (id: string) => {

@@ -1,7 +1,6 @@
 import { createHmac, randomBytes, randomUUID } from 'node:crypto'
 import { appendFileSync, chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { Page } from 'playwright'
 import { expect, it } from 'vitest'
@@ -9,14 +8,14 @@ import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchBrowser, newEnglishPage, type TestBrowser } from './browser.ts'
 import { launchAdapterWorld, root } from './scaffold.ts'
 import type { AdapterWorld } from './scaffold.ts'
-import type { LiveDiagnosticEvent, LiveDiagnosticTraceSink } from '../../src/contract/live-diagnostic-trace.ts'
+import type {
+  LiveDiagnosticEvent,
+  LiveDiagnosticTraceSink,
+  LiveDiagnosticTrace,
+} from '../../src/contract/live-diagnostic-trace.ts'
+import type {} from '../../src/host/composition/live-diagnostics.ts'
 import { redactSecretText } from '../../src/contract/redaction.ts'
 
-type NativeDiagnosticModule = {
-  installLiveDiagnosticTrace(sink: LiveDiagnosticTraceSink): () => void
-  liveDiagnosticTraceEnabled(): boolean
-  liveDiagnosticTraceFailureCount(): number
-}
 type MainRequestEvidence = {
   sessionId: string
   provider: string
@@ -128,8 +127,8 @@ it.skipIf(!optedIn)(
     let host: AdapterWorld | undefined
     let browser: TestBrowser | undefined
     let page: Page | undefined
-    let diagnosticModule: NativeDiagnosticModule | undefined
-    let removeDiagnostic: (() => void) | undefined
+    let diagnosticTrace: LiveDiagnosticTrace | undefined
+    let removeDiagnostic: (() => Promise<void>) | undefined
     let closePromise: Promise<void> | undefined
     let totalTimer: ReturnType<typeof setTimeout> | undefined
     let stickyViolation: string | undefined
@@ -282,7 +281,7 @@ it.skipIf(!optedIn)(
         env['ANTIGRAVITY_HARNESS_PATH'] = harness
       }
 
-      host = await launchAdapterWorld({ toolsMode: 'native' })
+      host = await launchAdapterWorld({ toolExecutor: 'native' })
       if (stickyViolation !== undefined) {
         void closeHost()
         throw new Error(`LIVE_MCP_STOPPED:${stickyViolation}`)
@@ -414,15 +413,12 @@ it.skipIf(!optedIn)(
         return next()
       })
 
-      const loader = host.ctx.loader as unknown as { internal?: unknown; import(specifier: string): Promise<unknown> }
-      if (loader.internal === undefined) throw new Error('LIVE_MCP_NATIVE_LOADER_UNAVAILABLE')
-      diagnosticModule = (await loader.import(
-        pathToFileURL(resolve(root, 'lib/contract/live-diagnostic-trace.js')).href,
-      )) as NativeDiagnosticModule
+      diagnosticTrace = host.ctx.get('acpLiveDiagnostics')
+      if (diagnosticTrace === undefined) throw new Error('LIVE_MCP_DIAGNOSTIC_OWNER_UNAVAILABLE')
       const diagnosticPath = join(evidence, 'diagnostics.jsonl')
       writeFileSync(diagnosticPath, '', { mode: 0o600 })
       chmodSync(diagnosticPath, 0o600)
-      removeDiagnostic = diagnosticModule.installLiveDiagnosticTrace(
+      removeDiagnostic = diagnosticTrace.install(
         Object.assign(
           (event: LiveDiagnosticEvent) => {
             const safe = safeDiagnostic(event, hash)
@@ -452,7 +448,7 @@ it.skipIf(!optedIn)(
           },
         ) as LiveDiagnosticTraceSink,
       )
-      expect(diagnosticModule.liveDiagnosticTraceEnabled()).toBe(true)
+      expect(diagnosticTrace.enabled()).toBe(true)
 
       browser = await launchBrowser({
         headless: true,
@@ -630,7 +626,7 @@ it.skipIf(!optedIn)(
       expect(requestRoutes.length).toBeGreaterThan(0)
       expect(requestRoutes.every((route) => route.provider === provider && route.model === model)).toBe(true)
       expect(stickyViolation).toBeUndefined()
-      expect(diagnosticModule.liveDiagnosticTraceFailureCount()).toBe(0)
+      expect(diagnosticTrace.failureCount()).toBe(0)
       expect(pageErrors).toEqual([])
       await waitForAssistantText(followupMarker)
       await waitForAssistantText(marker)
@@ -686,7 +682,7 @@ it.skipIf(!optedIn)(
         cleanupFailures.push(error)
       }
       try {
-        removeDiagnostic?.()
+        await removeDiagnostic?.()
       } catch (error) {
         cleanupFailures.push(error)
       }

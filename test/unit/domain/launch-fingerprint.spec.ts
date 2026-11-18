@@ -57,7 +57,7 @@ describe('acpLaunchFingerprint（Native 会话连续性）', () => {
       acpCanonicalHash16(base),
     )
     expect(
-      acpCanonicalHash16(acpLaunchFingerprint({ ...baseInput(), config: { ...baseConfig(), runtime: 'kimi' } })),
+      acpCanonicalHash16(acpLaunchFingerprint({ ...baseInput(), config: { ...baseConfig(), runtime: 'codebuddy' } })),
     ).not.toBe(acpCanonicalHash16(base))
     expect(base.envKeys).toEqual(['ALPHA', 'ZED_LIKE'])
     expect(JSON.stringify(base)).not.toContain('"1"')

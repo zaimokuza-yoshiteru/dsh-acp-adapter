@@ -1,3 +1,4 @@
+import { treeMember, treeMembers } from './subagent-tree.ts'
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -44,7 +45,12 @@ import {
   type RejectedCancellationExpectation,
   type RejectedCancellationFacts,
 } from './live-long-task-rejection-cancel.ts'
-import type { LiveDiagnosticEvent, LiveDiagnosticTraceSink } from '../../src/contract/live-diagnostic-trace.ts'
+import type {
+  LiveDiagnosticEvent,
+  LiveDiagnosticTraceSink,
+  LiveDiagnosticTrace,
+} from '../../src/contract/live-diagnostic-trace.ts'
+import type {} from '../../src/host/composition/live-diagnostics.ts'
 import type { AcpRemoteService } from '../../src/remote/service.js'
 import { waitForLongTask } from './live-long-task-wait.ts'
 import {
@@ -151,12 +157,6 @@ type RuntimePrompt = (
   ...args: unknown[]
 ) => unknown
 type NativeRuntimeModule = { AcpSessionRuntime: { prototype: { prompt: RuntimePrompt } } }
-type NativeDiagnosticModule = {
-  installLiveDiagnosticTrace: (sink: LiveDiagnosticTraceSink) => () => void
-  liveDiagnosticTraceFailureCount: () => number
-  liveDiagnosticTraceEnabled: () => boolean
-  liveDiagnosticId: (kind: string, value: unknown) => string | undefined
-}
 
 type PromptTrace = {
   readonly scene: LongTaskScene
@@ -270,7 +270,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
       let host!: AdapterWorld
       let browser: TestBrowser | undefined
       let page: Page | undefined
-      let removeTrace: (() => void) | undefined
+      let removeTrace: (() => Promise<void>) | undefined
       let restoreRuntimePrompt: (() => void) | undefined
       const restoreRuntimePermissionHandlers: Array<() => void> = []
       const wrappedPermissionOptions = new WeakSet<object>()
@@ -284,7 +284,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
       let removeJobEvents: (() => void) | undefined
       let runtimePromptChecks = 0
       let nativeTraceEvents = 0
-      let nativeDiagnosticModule: NativeDiagnosticModule | undefined
+      let nativeDiagnosticTrace: LiveDiagnosticTrace | undefined
       let primaryFailure: unknown
       let primaryFailureRecord: LongTaskFailure | undefined
       let evidenceFailure: unknown
@@ -438,7 +438,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           violate('LONG_TASK_PAGE_ERROR')
           throw new Error('LONG_TASK_PAGE_ERROR')
         }
-        if ((nativeDiagnosticModule?.liveDiagnosticTraceFailureCount() ?? 0) > 0) {
+        if ((nativeDiagnosticTrace?.failureCount() ?? 0) > 0) {
           violate('LONG_TASK_DIAGNOSTIC_TRACE_FAILURE')
           throw new Error('LONG_TASK_DIAGNOSTIC_TRACE_FAILURE')
         }
@@ -671,7 +671,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
               scene,
               phase: activePhase,
               operation: cancelState.expected.operation,
-              owner: nativeDiagnosticModule?.liveDiagnosticId('dsh-session', String(sessionId)) ?? 'unavailable',
+              owner: nativeDiagnosticTrace?.id('dsh-session', String(sessionId)) ?? 'unavailable',
               acpSession: cancelState.prompt.acpSession,
               requestId: safeId(`approval-request:${cancelState.requestIdRaw}`),
               decidedOutcome: isApprovalDecided(decisionRow) ? decisionRow.data.outcome : '',
@@ -1003,14 +1003,8 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
         const runtimeModule = (await nativeLoader.import(
           pathToFileURL(resolve(root, 'lib/runtime/session/session-runtime.js')).href,
         )) as NativeRuntimeModule
-        nativeDiagnosticModule = (await nativeLoader.import(
-          pathToFileURL(resolve(root, 'lib/contract/live-diagnostic-trace.js')).href,
-        )) as NativeDiagnosticModule
-        if (
-          typeof (nativeDiagnosticModule as { liveDiagnosticTraceEnabled?: unknown }).liveDiagnosticTraceEnabled !==
-          'function'
-        )
-          throw new Error('LONG_TASK_NATIVE_DIAGNOSTIC_ENABLEMENT_CHECK_UNAVAILABLE')
+        nativeDiagnosticTrace = host.ctx.get('acpLiveDiagnostics')
+        if (nativeDiagnosticTrace === undefined) throw new Error('LONG_TASK_DIAGNOSTIC_OWNER_UNAVAILABLE')
         const runtimePrototype = (
           runtimeModule.AcpSessionRuntime as unknown as { prototype: { prompt: RuntimePrompt } }
         ).prototype
@@ -1078,10 +1072,8 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
                     state.prompt.promptOrdinal === state.expected.promptOrdinal &&
                     state.prompt.leaseId === state.expected.leaseId &&
                     state.prompt.stopReason === undefined &&
-                    state.expected.owner ===
-                      nativeDiagnosticModule?.liveDiagnosticId('dsh-session', runtimeDshSessionId) &&
-                    state.expected.acpSession ===
-                      nativeDiagnosticModule?.liveDiagnosticId('acp-session', runtimeState.acpSessionId) &&
+                    state.expected.owner === nativeDiagnosticTrace?.id('dsh-session', runtimeDshSessionId) &&
+                    state.expected.acpSession === nativeDiagnosticTrace?.id('acp-session', runtimeState.acpSessionId) &&
                     isRecord(params) &&
                     params.sessionId === runtimeState.acpSessionId &&
                     isRecord(params.toolCall) &&
@@ -1159,9 +1151,8 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           const promptTrace: PromptTrace = {
             scene: activeScene,
             phase: activePhase,
-            owner: nativeDiagnosticModule?.liveDiagnosticId('dsh-session', runtimeDshSessionId) ?? 'unavailable',
-            acpSession:
-              nativeDiagnosticModule?.liveDiagnosticId('acp-session', runtimeState.acpSessionId) ?? 'unavailable',
+            owner: nativeDiagnosticTrace?.id('dsh-session', runtimeDshSessionId) ?? 'unavailable',
+            acpSession: nativeDiagnosticTrace?.id('acp-session', runtimeState.acpSessionId) ?? 'unavailable',
             ...(abortSignalLike(args[2]) === undefined ? {} : { signal: abortSignalLike(args[2]) }),
           }
           const promptKey = JSON.stringify([promptTrace.owner, promptTrace.acpSession])
@@ -1264,7 +1255,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           for (const asked of pending) {
             assertHealthy()
             const owner = required(host.ctx.agents.get(asked.sessionId as SessionId), 'B approval owner must be live')
-            const membership = host.ctx.agentTeams.tryMembership(owner)
+            const membership = treeMember(host.ctx, owner)
             expect(String(membership?.root.id)).toBe(String(leadSessionId))
             const role = membership?.role === 'lead' ? 'lead' : membership?.name
             expect(['lead', 'runtime-reader', 'teams-reader']).toContain(role)
@@ -1385,7 +1376,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           }
         }
 
-        const allowedTeamTools = new Set(['spawn_teammate', 'wait_agent', 'list_agents'])
+        const allowedTeamTools = new Set(['subagent', 'wait_agent', 'list_agents'])
         const sourcePaths = new Set(
           SOURCE_FILES.map((path) => sourcePathFor(join(host.workspaceCwd, 'workspace'), path)),
         )
@@ -1412,7 +1403,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           if (scene === 'A') {
             allowed = toolName === 'read' && typeof args?.file_path === 'string' && sourcePaths.has(args.file_path)
           } else if (scene === 'B') {
-            const membership = host.ctx.agentTeams.tryMembership(execution.agent)
+            const membership = treeMember(host.ctx, execution.agent)
             const isLead = membership?.role === 'lead' && String(membership.root.id) === String(leadSessionId)
             const isExpectedMember =
               membership?.role === 'teammate' &&
@@ -1432,7 +1423,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
             const teamTaskAllowed =
               toolName.startsWith('team_task_') &&
               (isLead || (isExpectedMember && ['team_task_get', 'team_task_update'].includes(toolName)))
-            const target = typeof args?.target === 'string' ? args.target : ''
+            const target = typeof args?.agent === 'string' ? args.agent : ''
             const teamMessageAllowed =
               toolName === 'send_message' &&
               ((isExpectedMember && target === 'lead') ||
@@ -1440,7 +1431,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
             allowed =
               (toolName === 'read' && typeof args?.file_path === 'string' && sourcePaths.has(args.file_path)) ||
               (allowedTeamTools.has(toolName) &&
-                (toolName !== 'spawn_teammate' || isLead) &&
+                (toolName !== 'subagent' || isLead) &&
                 (toolName !== 'wait_agent' || isLead) &&
                 (toolName !== 'list_agents' || isLead || isExpectedMember)) ||
               teamTaskAllowed ||
@@ -1467,8 +1458,8 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
                 relaySucceeded: successfulMemberRelays.has(activePhase.slice(2)),
               }) ||
               (toolName === 'send_message' &&
-                ((actorId === String(leadSessionId) && args?.target === 'runtime-reader' && expectedRelay) ||
-                  (memberSessionIds.has(actorId) && args?.target === 'lead' && operationRelay))) ||
+                ((actorId === String(leadSessionId) && args?.agent === 'runtime-reader' && expectedRelay) ||
+                  (memberSessionIds.has(actorId) && args?.agent === 'lead' && operationRelay))) ||
               (toolName === 'bash' && operation !== undefined && operationOwners.get(operation) === actorId)
           } else {
             const command = typeof args?.command === 'string' ? args.command : ''
@@ -1531,7 +1522,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
             ['member-allow', 'member-reject'].includes(currentMemberOperation) &&
             sessionId === String(leadSessionId) &&
             execution.name === 'send_message' &&
-            args?.target === 'runtime-reader' &&
+            args?.agent === 'runtime-reader' &&
             typeof args.message === 'string' &&
             relayedCommand !== undefined &&
             args.message.includes(relayedCommand) &&
@@ -1547,7 +1538,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           )
           const operationId = command === operationCommands.get('D:long-running') ? 'D:long-running' : operation?.[1]
           const assignmentText =
-            activeScene === 'B' && ['spawn_teammate', 'team_task_create'].includes(execution.name)
+            activeScene === 'B' && ['subagent', 'team_task_create'].includes(execution.name)
               ? [args?.prompt, args?.description]
                   .filter((value): value is string => typeof value === 'string')
                   .join('\n')
@@ -1611,8 +1602,8 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           modelRouteObservations.push({ provider: request.provider, model: request.model, session: safeId(sessionId) })
           return next()
         })
-        if (nativeDiagnosticModule === undefined) throw new Error('LONG_TASK_NATIVE_DIAGNOSTIC_MODULE_UNAVAILABLE')
-        const removeSink = nativeDiagnosticModule.installLiveDiagnosticTrace(
+        if (nativeDiagnosticTrace === undefined) throw new Error('LONG_TASK_DIAGNOSTIC_OWNER_UNAVAILABLE')
+        const removeSink = nativeDiagnosticTrace.install(
           diagnosticSink(runSecret, (event) => {
             nativeTraceEvents += 1
             if (event.type === 'adapter-prompt/start') {
@@ -1680,8 +1671,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           }),
         )
         removeTrace = removeSink
-        if (!nativeDiagnosticModule.liveDiagnosticTraceEnabled())
-          throw new Error('LONG_TASK_NATIVE_DIAGNOSTIC_SINK_NOT_ENABLED')
+        if (!nativeDiagnosticTrace.enabled()) throw new Error('LONG_TASK_NATIVE_DIAGNOSTIC_SINK_NOT_ENABLED')
 
         const evidenceSource = exportPinnedSource(join(host.workspaceCwd, 'workspace'))
         expect(evidenceSource.totalBytes).toBeLessThanOrEqual(SOURCE_MAX_BYTES)
@@ -1806,7 +1796,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
             'B:team',
             async () => {
               await sendPrompt(
-                `Use only the current DSH tools MCP connection identified in the latest host instructions. Discover exact names and complete input schemas only for these tools needed by this task: read, spawn_teammate, send_message, list_agents, wait_agent, team_task_create, team_task_get, team_task_list, team_task_update. If discovery is truncated, narrow discovery using the discovery capabilities actually available to you; do not use execute, terminal, or shell to read an overflow file. If complete required schemas cannot be discovered, report the limitation and end the turn. Create two shared tasks and exactly two members named runtime-reader and teams-reader. Then use task update to assign each task to its named owner. Assign runtime-reader to read these exact files with the DSH filesystem read tool: ${teamSourcePaths.slice(0, 3).join(', ')}. Assign teams-reader to read: ${teamSourcePaths.slice(3).join(', ')}. In each member's task, require it to discover its own current DSH connection's exact names and schemas only for read, team_task_get, team_task_update, and send_message; never pass your connection's tool names to it, and forbid execute, terminal, or shell for discovery and reading. Put the full file paths and this ordered checklist in both the spawn prompt and the shared task description: (1) get the assigned task; (2) discover the member's own current DSH read tool and actually call it for each of the three assigned files; (3) only after receiving all three read results, update the task to completed with source findings; (4) send the Lead one concise source-based report with file paths. A task description, another member's summary, or prior knowledge does not substitute for the member's own read calls. If any file cannot be read, leave the task incomplete and report that limitation. The runtime-reader report must include B_REPORT_RUNTIME_${runId.slice(0, 8)}, and the teams-reader report must include B_REPORT_TEAMS_${runId.slice(0, 8)}. After assigning both tasks, finish this turn without waiting for the reports; I will ask you to inspect and consume them in a follow-up. Do not use external subagents or shell to read source. Reference marker ${teamMarker}.`,
+                `Use only the current DSH tools MCP connection identified in the latest host instructions. Discover exact names and complete input schemas only for these tools needed by this task: read, subagent, send_message, list_agents, wait_agent, team_task_create, team_task_get, team_task_list, team_task_update. If discovery is truncated, narrow discovery using the discovery capabilities actually available to you; do not use execute, terminal, or shell to read an overflow file. If complete required schemas cannot be discovered, report the limitation and end the turn. Create two shared tasks and exactly two members named runtime-reader and teams-reader. Then use task update to assign each task to its named owner. Assign runtime-reader to read these exact files with the DSH filesystem read tool: ${teamSourcePaths.slice(0, 3).join(', ')}. Assign teams-reader to read: ${teamSourcePaths.slice(3).join(', ')}. In each member's task, require it to discover its own current DSH connection's exact names and schemas only for read, team_task_get, team_task_update, and send_message; never pass your connection's tool names to it, and forbid execute, terminal, or shell for discovery and reading. Put the full file paths and this ordered checklist in both the spawn prompt and the shared task description: (1) get the assigned task; (2) discover the member's own current DSH read tool and actually call it for each of the three assigned files; (3) only after receiving all three read results, update the task to completed with source findings; (4) send the Lead one concise source-based report with file paths. A task description, another member's summary, or prior knowledge does not substitute for the member's own read calls. If any file cannot be read, leave the task incomplete and report that limitation. The runtime-reader report must include B_REPORT_RUNTIME_${runId.slice(0, 8)}, and the teams-reader report must include B_REPORT_TEAMS_${runId.slice(0, 8)}. After assigning both tasks, finish this turn without waiting for the reports; I will ask you to inspect and consume them in a follow-up. Do not use external subagents or shell to read source. Reference marker ${teamMarker}.`,
                 teamMarker,
                 leadSessionId,
               )
@@ -1814,7 +1804,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
             180_000,
           )
           const lead = required(leadAgent)
-          const roster = host.ctx.agentTeams.listMembers(lead)
+          const roster = await treeMembers(host.ctx, lead)
           expect(roster).toHaveLength(3)
           const runtimeReader = required(roster.find((member) => member.name === 'runtime-reader'))
           runtimeReaderId = runtimeReader.id
@@ -1923,7 +1913,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
             ).toBe(true)
           }
           const leadExecutions = tools.filter((tool) => tool.session === safeId(String(leadSessionId)) && !tool.isError)
-          expect(tools.filter((tool) => tool.name === 'spawn_teammate' && !tool.isError)).toHaveLength(2)
+          expect(tools.filter((tool) => tool.name === 'subagent' && !tool.isError)).toHaveLength(2)
           expect(leadExecutions.some((tool) => tool.name === 'team_task_create')).toBe(true)
           for (const memberId of memberIds) {
             const memberTools = tools.filter((tool) => tool.session === safeId(String(memberId)) && !tool.isError)
@@ -2086,45 +2076,44 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           }
           if (scenarios === 'approvals') {
             // A real native child is fixture setup here, independent of B's source-reading task.
-            // This lane does not certify an Agent invocation of spawn_teammate.
+            // This lane does not certify an Agent invocation of subagent.
             const setupController = new AbortController()
             try {
               await withPhase('C:member-setup', async () => {
                 const lead = required(leadAgent)
-                expect(host.ctx.agentTeams.listMembers(lead)).toHaveLength(1)
+                expect(await treeMembers(host.ctx, lead)).toHaveLength(1)
                 const before = events.length
                 const toolCount = tools.length
                 const dispatchCount = budget.totalDispatches
                 const approvalCount = approvalEvidence.length
                 const marker = `LONGTASK_MEMBER_READY_${runId.slice(0, 8)}`
-                const { member } = await host.ctx.agentTeams.spawnTeammate(lead, {
+                const started = await host.ctx.subagents.startActivation({
+                  parent: lead,
                   name: 'runtime-reader',
-                  description: 'Isolated member approval regression',
+                  label: 'Isolated member approval regression',
                   prompt: [{ type: 'text', text: `Reply exactly ${marker} without using any tools.` }],
-                  context: 'fresh',
                   provider: 'spawn',
+                  delivery: 'parent',
                   signal: setupController.signal,
                 })
-                runtimeReaderId = member.id
-                memberSessionIds.add(String(member.id))
-                teamMemberFacts.push({ id: String(member.id), name: member.name, role: String(member.role) })
-                expect(member).toMatchObject({ name: 'runtime-reader', provider: 'spawn', context: 'fresh' })
-                const child = required(host.ctx.agents.get(member.id))
+                const child = required(host.ctx.agents.get(started.childId))
+                const member = required(treeMember(host.ctx, child))
+                runtimeReaderId = child.id
+                memberSessionIds.add(String(child.id))
+                teamMemberFacts.push({ id: String(child.id), name: member.name, role: member.role })
+                expect(member).toMatchObject({ name: 'runtime-reader', root: lead, role: 'teammate' })
+                expect(child.session.header).toMatchObject({ origin: 'subagent', parentSession: lead.id })
                 expect(child.options).toMatchObject({ provider: profile.provider, model: profile.model })
                 expect(child.session.header.cwd).toBe(lead.session.header.cwd)
-                await waitForTurn(member.id, before - 1)
+                await waitForTurn(child.id, before - 1)
                 expect(
-                  answers.some(
-                    (answer) => answer.session === safeId(String(member.id)) && answer.text.includes(marker),
-                  ),
+                  answers.some((answer) => answer.session === safeId(String(child.id)) && answer.text.includes(marker)),
                 ).toBe(true)
-                expect(host.ctx.agentTeams.listMembers(lead)).toHaveLength(2)
+                expect(await treeMembers(host.ctx, lead)).toHaveLength(2)
                 await waitFor(
-                  () =>
+                  async () =>
                     expect(
-                      host.ctx.agentTeams
-                        .listMembers(lead)
-                        .every((entry) => ['idle', 'inactive'].includes(entry.status)),
+                      (await treeMembers(host.ctx, lead)).every((entry) => ['idle', 'inactive'].includes(entry.status)),
                     ).toBe(true),
                   { timeout: Math.max(1, Math.min(10_000, phaseDeadlineAt - Date.now())), interval: 100 },
                 )
@@ -2136,8 +2125,8 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
                   setupRoute: 'host-service',
                   agentSpawnToolVerified: false,
                   members: 2,
-                  member: safeId(String(member.id)),
-                  context: 'fresh',
+                  member: safeId(String(child.id)),
+                  provider: 'spawn',
                   model: child.options.model,
                 })
               })
@@ -2300,7 +2289,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
                 isNativeOperation
               ) {
                 if (rejectionCancellation !== undefined) throw new Error('LONG_TASK_REJECTION_GATE_ALREADY_ACTIVE')
-                const diagnosticOwner = nativeDiagnosticModule?.liveDiagnosticId('dsh-session', requestOwner)
+                const diagnosticOwner = nativeDiagnosticTrace?.id('dsh-session', requestOwner)
                 const prompt = [...promptTraces]
                   .reverse()
                   .find(
@@ -2503,7 +2492,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
             )
             await checkModelSnapshot(String(resumedSession), 'after-approval-resume')
             if (rejectionCancellation !== undefined) {
-              const resumeOwner = nativeDiagnosticModule?.liveDiagnosticId('dsh-session', String(resumedSession))
+              const resumeOwner = nativeDiagnosticTrace?.id('dsh-session', String(resumedSession))
               const resumePrompt = [...promptTraces]
                 .reverse()
                 .find(
@@ -2941,7 +2930,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
 
         expect(stickyViolation).toBeUndefined()
         expect(errorTexts).toEqual([])
-        expect(nativeDiagnosticModule.liveDiagnosticTraceFailureCount()).toBe(0)
+        expect(nativeDiagnosticTrace.failureCount()).toBe(0)
         expect(nativeTraceEvents).toBeGreaterThan(0)
         expect(screenshotFailures).toEqual([])
         await Promise.all([...pendingScreenshotPromises])
@@ -3162,7 +3151,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
               ? 'LONG_TASK_SCREENSHOT_FAILURE'
               : errorTexts.length > 0
                 ? 'LONG_TASK_PAGE_ERROR'
-                : (nativeDiagnosticModule?.liveDiagnosticTraceFailureCount() ?? 0) > 0
+                : (nativeDiagnosticTrace?.failureCount() ?? 0) > 0
                   ? 'LONG_TASK_DIAGNOSTIC_TRACE_FAILURE'
                   : undefined)
           if (lateFailure !== undefined) {

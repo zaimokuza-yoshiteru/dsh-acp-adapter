@@ -13,13 +13,14 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import WorkingDirectory from '@deepseek-ai/dsh-working-directory'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import * as NativeExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import type { JobRegistry } from '@deepseek-ai/dsh-jobs'
 import { AcpProfileAdapter, type AcpProfileRuntime } from '../../../src/host/composition/profile-adapter.ts'
 import { resolveQwenTaskJobs } from '../../../src/host/composition/qwen-task-jobs.ts'
 import { installAcpSessionRuntimeCleanup } from '../../../src/host/composition/installed-profile-registry.ts'
-import { acpExecutionProjection, acpSessionView } from '../../../src/host/composition/session-facts.ts'
+import { AcpSessionFacts, acpSessionView } from '../../../src/host/composition/session-facts.ts'
 import { createAcpSidecar } from '../../../src/persistence/sidecar.ts'
 import { QwenBackgroundTasks, type QwenTaskJobOutcome } from '../../../src/runtime/session/qwen-background.ts'
 import type { AcpPromptOptions } from '../../../src/runtime/session/session-runtime.ts'
@@ -30,7 +31,8 @@ import type * as acp from '@agentclientprotocol/sdk'
 const requireDsh = createRequire(import.meta.resolve('@deepseek-ai/dsh/package.json'))
 const JobsLocal = await import(pathToFileURL(requireDsh.resolve('@deepseek-ai/dsh-jobs-local')).href)
 const ToolJobs = await import(pathToFileURL(requireDsh.resolve('@deepseek-ai/dsh-tool-jobs')).href)
-const TeamTools = await import(pathToFileURL(requireDsh.resolve('@deepseek-ai/dsh-experimental-tool-agent-team')).href)
+const SubagentControls = await import(pathToFileURL(requireDsh.resolve('@deepseek-ai/dsh-tool-subagent-control')).href)
+const TeamTools = await import(pathToFileURL(requireDsh.resolve('@deepseek-ai/dsh-tool-agent-team')).href)
 
 declare module '@deepseek-ai/dsh-jobs' {
   interface JobKindMap {
@@ -61,6 +63,7 @@ async function harness(holdFirst = false, lateCleanup = false) {
   await ctx.plugin(LocalFileSystem, { cwd: root })
   await ctx.plugin(WorkingDirectory, { defaultDirectory: root })
   await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeExecutor)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
   await ctx.plugin(JobsLocal.default, {})
@@ -69,7 +72,7 @@ async function harness(holdFirst = false, lateCleanup = false) {
   ctx.on('session/event', (_session, event) => {
     events.push(event)
   })
-  ctx.sessionProjections.register(acpExecutionProjection)
+  await ctx.plugin(AcpSessionFacts)
   const firstEntered = Promise.withResolvers<void>()
   const firstRelease = Promise.withResolvers<void>()
   const calls: Array<{ content: acp.ContentBlock[]; options: AcpPromptOptions }> = []
@@ -99,14 +102,7 @@ async function harness(holdFirst = false, lateCleanup = false) {
     'qwen-host',
     () => ({ name: 'Qwen host fixture', command: 'scripted', args: [], env: {} }),
     { ok: true, seam: undefined as never },
-    (id) => {
-      const view = acpSessionView(ctx, ctx.sessions.get(id as never))
-      return view === undefined
-        ? undefined
-        : Object.defineProperty(view, 'permissions', {
-            value: { preset: null, sandbox: null, approval: null, seeded: false },
-          })
-    },
+    (id) => acpSessionView(ctx, ctx.sessions.get(id as never)),
     {
       begin: (record) => sidecar.beginDispatch(record),
       settle: (id, key) => sidecar.settleDispatch(id as never, key),
@@ -220,21 +216,20 @@ describe('Qwen jobs through the published registry, reporter and AgentLoop', () 
 
   it('carries the native Team policy and required identity through the admitted ACP request', async () => {
     const h = await harness()
-    // Keep Team membership narrow; policy, scoped registrations, assembly,
-    // native context admission and ACP prompt conversion are the real producers.
-    h.ctx.provide('agentTeams', {
-      tryMembership: () => ({ role: 'lead', name: 'lead' }),
-      membership: () => ({ role: 'lead', name: 'lead' }),
-    } as never)
-    await h.ctx.plugin(TeamTools, { interrupt: false })
+    // Keep tree selection narrow; native tools, required identity, assembly
+    // and ACP prompt conversion remain the real producers.
+    h.ctx.provide('agentTeams', { isEnabled: () => true } as never)
+    h.ctx.provide('subagents', { rootOf: () => h.agent, namesOf: () => ({ self: 'lead' }) } as never)
+    await h.ctx.plugin(TeamTools, {})
+    await h.ctx.plugin(SubagentControls, { interrupt: false })
     h.agent.followup(user('Review this project'))
     await h.agent.whenIdle()
     expect(h.calls).toHaveLength(1)
     const prompt = text(h.calls[0]!.content)
     expect(prompt).toContain('Agent Teams is available in this session')
     expect(prompt).toContain('The Team Lead and all teammates share the same working directory and filesystem.')
-    expect(prompt).toContain('The Lead must wait for required teammates before giving the final answer.')
-    expect(prompt).toContain('You are the Team Lead named "lead".')
+    expect(prompt).toContain('The root agent must wait for required teammates before giving the final answer.')
+    expect(prompt).toContain('You are the root agent. Your name is "lead".')
     expect(prompt).not.toContain('only when the user explicitly asks')
     expect(h.agent.session.requestHeader()?.tools?.some((tool) => tool.name === 'interrupt_agent')).toBe(false)
   })

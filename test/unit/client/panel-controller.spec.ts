@@ -33,11 +33,11 @@ function view(rows: readonly AcpProviderHealth[]): AcpHealthView {
 describe('AcpPanelController targeted health checks', () => {
   it('allows different agents concurrently, deduplicates the same agent, and merges only its row', async () => {
     const devin = deferred<{ ok: true; value: AcpHealthView }>()
-    const kimi = deferred<{ ok: true; value: AcpHealthView }>()
+    const generic = deferred<{ ok: true; value: AcpHealthView }>()
     const health = vi.fn((request?: { recheck?: boolean; agentId?: string }) => {
       if (request?.agentId === 'devin') return devin.promise
-      if (request?.agentId === 'kimi') return kimi.promise
-      return Promise.resolve({ ok: true as const, value: view([row('devin', 'old'), row('kimi', 'old')]) })
+      if (request?.agentId === 'generic') return generic.promise
+      return Promise.resolve({ ok: true as const, value: view([row('devin', 'old'), row('generic', 'old')]) })
     })
     const scope = {
       getSnapshot: () => ({
@@ -47,7 +47,7 @@ describe('AcpPanelController targeted health checks', () => {
         value: {
           agents: {
             devin: { name: 'Devin', command: 'devin', args: ['acp'], env: {} },
-            kimi: { name: 'Kimi', command: 'kimi', args: ['acp'], env: {} },
+            generic: { name: 'generic', command: 'generic', args: ['acp'], env: {} },
           },
         },
       }),
@@ -71,23 +71,51 @@ describe('AcpPanelController targeted health checks', () => {
     await initial
     const first = controller.refreshAgentHealth('devin')
     const duplicate = controller.refreshAgentHealth('devin')
-    const second = controller.refreshAgentHealth('kimi')
-    expect(store.getSnapshot().health.checkingAgentIds).toEqual(['devin', 'kimi'])
+    const second = controller.refreshAgentHealth('generic')
+    expect(store.getSnapshot().health.checkingAgentIds).toEqual(['devin', 'generic'])
     expect(health).toHaveBeenCalledTimes(3)
 
-    kimi.resolve({ ok: true, value: view([row('devin', 'stale-from-kimi'), row('kimi', 'new-kimi')]) })
+    generic.resolve({ ok: true, value: view([row('devin', 'stale-from-generic'), row('generic', 'new-generic')]) })
     await second
     expect(store.getSnapshot().health.checkingAgentIds).toEqual(['devin'])
-    devin.resolve({ ok: true, value: view([row('devin', 'new-devin'), row('kimi', 'stale-from-devin')]) })
+    devin.resolve({ ok: true, value: view([row('devin', 'new-devin'), row('generic', 'stale-from-devin')]) })
     await Promise.all([first, duplicate])
 
     expect(store.getSnapshot().health.checkingAgentIds).toEqual([])
     expect(store.getSnapshot().health.rows.map((entry) => [entry.id, entry.version])).toEqual([
       ['devin', 'new-devin'],
-      ['kimi', 'new-kimi'],
+      ['generic', 'new-generic'],
     ])
     expect(health).toHaveBeenNthCalledWith(2, { recheck: true, agentId: 'devin' })
-    expect(health).toHaveBeenNthCalledWith(3, { recheck: true, agentId: 'kimi' })
+    expect(health).toHaveBeenNthCalledWith(3, { recheck: true, agentId: 'generic' })
+    controller.dispose()
+  })
+
+  it('carries a Host version mismatch into the panel and clears it when the Host no longer reports one', async () => {
+    const responses = [
+      { ...view([]), hostVersion: { required: '0.2.2-rc.1', running: '0.2.2-rc.2' } },
+      { ...view([]), hostVersion: { required: 1 } },
+    ]
+    const controller = new AcpPanelController({
+      scope: {
+        getSnapshot: () => ({ status: 'ready' as const, writable: true, revision: 1, value: { agents: {} } }),
+        subscribe: () => () => {},
+      },
+      mutate: vi.fn(),
+      refusedMessage: () => 'refused',
+      remote: {
+        health: vi.fn(() => Promise.resolve({ ok: true as const, value: responses.shift() })),
+        backendOf: vi.fn(),
+        boundSessions: vi.fn(),
+        activityFollow: async function* () {},
+      } as never,
+    })
+    const store = createAcpPanelStore().create()
+    controller.attach(store.actions)
+    await controller.refreshHealth()
+    expect(store.getSnapshot().health.hostVersion).toEqual({ required: '0.2.2-rc.1', running: '0.2.2-rc.2' })
+    await controller.refreshHealth()
+    expect(store.getSnapshot().health.hostVersion).toBeUndefined()
     controller.dispose()
   })
 

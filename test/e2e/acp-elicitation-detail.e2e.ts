@@ -73,7 +73,7 @@ async function geometry(card: Locator) {
       card: { x, y, width, height, clientWidth: element.clientWidth, scrollWidth: element.scrollWidth },
       header: rect('header'),
       heading: rect('h2'),
-      detail: rect('[data-question-scroll] > div:first-child p'),
+      detail: rect('[data-question-scroll] > div:nth-child(2) p'),
       body: rect('[data-question-scroll]'),
       footer: rect('footer'),
       footerActions: rect('footer > div:last-child'),
@@ -481,6 +481,114 @@ it('renders ACP elicitation detail once in the native question composer', async 
     }
     if (page !== undefined) await page.screenshot({ path: join(evidence, 'failure.png') }).catch(() => undefined)
     throw error
+  } finally {
+    await browser?.close()
+    await host.close()
+  }
+})
+
+it('preserves independent optional fields and keeps permission Skip as cancellation in the native composer', async () => {
+  const host = await launchAdapterWorld()
+  let browser: TestBrowser | undefined
+  let mode: 'fields' | 'skip' | 'permission' = 'fields'
+  let outcome: acp.CreateElicitationResponse | undefined
+  const evidence = join(root, '.local/e2e-acp-elicitation-detail', process.env.DSH_E2E_ELECTRON ? 'electron' : 'web')
+  mkdirSync(evidence, { recursive: true })
+  try {
+    await host.ctx.settings.replace('locale', { preference: 'zh' })
+    host.ctx.effect(() =>
+      host.ctx.llm.registerAdapter(
+        [provider],
+        new ElicitationUiControl(async (request) => {
+          const agent = required(host.ctx.agents.get(required(request.sessionId)))
+          const permission = mode === 'permission'
+          const handler = createAcpNativeElicitationHandler({
+            userQuestions: required(host.ctx.get('userQuestions') as AcpNativeElicitationDeps['userQuestions']),
+            getAgent: () => agent,
+            locale: 'zh-CN',
+            ...(permission ? { hostToolName: 'bash' } : {}),
+          })
+          const params: acp.CreateElicitationRequest = {
+            requestId: `acp-elicitation-optional-${mode}`,
+            mode: 'form',
+            message: permission ? 'Allow the tool?' : '选择方案并按需补充独立的部署说明。',
+            ...(permission ? { _meta: { codex_approval_kind: 'mcp_tool_call' } } : {}),
+            requestedSchema: {
+              type: 'object',
+              properties: permission
+                ? { persist: { type: 'string', enum: ['once', 'session', 'always'] } }
+                : {
+                    plan: {
+                      type: 'string',
+                      title: '方案',
+                      oneOf: [{ const: 'pro', title: '专业版' }],
+                    },
+                    plan_custom: {
+                      type: 'string',
+                      title: '部署说明',
+                      description: '描述所选方案需要的部署调整。',
+                      minLength: 3,
+                    },
+                  },
+              required: [],
+            },
+          }
+          outcome = await handler(params, request.signal)
+        }),
+      ),
+    )
+    await host.ctx.agentDefaultModel.saveSelection({ provider, model })
+    browser = await launchBrowser({ headless: true, channel: process.env.DSH_E2E_BROWSER_CHANNEL })
+    const page = await newEnglishPage(browser, 844)
+    page.setDefaultTimeout(10_000)
+    const errors: string[] = []
+    page.on('pageerror', (error) => errors.push(error.message))
+    await page.goto(host.authenticatedUrl)
+    await connectFreshWorkspaceZh(page, host.workspaceCwd)
+    await page.setViewportSize({ width: 390, height: 844 })
+    expect(await page.evaluate(() => window.innerWidth)).toBe(390)
+    const card = page.locator('div[data-question-key] > section')
+
+    for (const next of ['fields', 'skip', 'permission'] as const) {
+      mode = next
+      outcome = undefined
+      const theme = next === 'skip' ? 'dark' : 'light'
+      await host.ctx.settings.replace('ui-theme', { preference: theme })
+      await expect.poll(() => page.evaluate(() => document.documentElement.style.colorScheme)).toBe(theme)
+      const settled = host.whenTurnSettled(60_000)
+      await writeComposerDraft(page, page.locator('[data-composer-input]').first(), `ELICITATION_OPTIONAL_${next}`)
+      await page.getByRole('button', { name: /^(?:Send message|发送消息)$/ }).click()
+      await card.waitFor()
+      if (next === 'permission') {
+        await expect.poll(() => card.locator('h2').innerText()).toBe('授权范围')
+        expect(await card.getByText('可选', { exact: true }).count()).toBe(0)
+        await page.screenshot({ path: join(evidence, 'permission-skip-390-light.png'), animations: 'disabled' })
+        await card.getByRole('button', { name: '跳过', exact: true }).click()
+      } else {
+        await expect.poll(() => card.locator('h2').innerText()).toBe('方案')
+        await card.getByText('可选', { exact: true }).waitFor()
+        await card.getByRole('radio', { name: '专业版', exact: true }).click()
+        await expect.poll(() => card.locator('h2').innerText()).toBe('部署说明')
+        await card.getByText('描述所选方案需要的部署调整。', { exact: true }).waitFor()
+        await card.getByText('可选', { exact: true }).waitFor()
+        if (next === 'fields') await card.getByPlaceholder('输入你的答案').fill('沿用已有部署')
+        await page.screenshot({ path: join(evidence, `optional-${next}-390-${theme}.png`), animations: 'disabled' })
+        if (next === 'fields') await card.locator('footer button').last().click()
+        else await card.getByRole('button', { name: '跳过', exact: true }).click()
+      }
+      await settled
+      await card.waitFor({ state: 'hidden' })
+      await page.locator('[data-composer-input][contenteditable="true"]').waitFor()
+      expect(outcome).toEqual(
+        next === 'permission'
+          ? { action: 'cancel' }
+          : {
+              action: 'accept',
+              content: { plan: 'pro', ...(next === 'fields' ? { plan_custom: '沿用已有部署' } : {}) },
+            },
+      )
+    }
+    expect(errors).toEqual([])
   } finally {
     await browser?.close()
     await host.close()

@@ -70,7 +70,6 @@ function createRuntime(
     argv,
     env,
     spawnPlan: { argv, env },
-    ...(options.mcpLease === undefined ? {} : { mcpLease: options.mcpLease }),
   })
   return new AcpSessionRuntime({
     profileId: 'close-lifecycle-test',
@@ -79,6 +78,7 @@ function createRuntime(
     subprocess,
     cancelGraceMs: options.cancelGraceMs,
     prepareLaunch,
+    createMcpLease: async () => options.mcpLease,
   })
 }
 

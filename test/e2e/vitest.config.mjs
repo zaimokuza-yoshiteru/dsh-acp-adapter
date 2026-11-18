@@ -5,6 +5,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const host = process.env.DSH_UPSTREAM_CHECKOUT ?? resolve(root, '../reference/deepseek-harness')
 const requireHost = createRequire(resolve(host, 'package.json'))
+const requirePublishedHost = createRequire(
+  createRequire(resolve(root, 'package.json')).resolve('@deepseek-ai/dsh/package.json'),
+)
 const { default: tsconfigPaths } = await import(pathToFileURL(requireHost.resolve('vite-tsconfig-paths')).href)
 const { standardDecoratorPlugin, vitestExecArgv } = await import(pathToFileURL(resolve(host, 'vitest.shared.ts')).href)
 
@@ -17,6 +20,9 @@ export default {
     alias: {
       '#host-scaffold': resolve(host, 'apps/web/tests/scaffold.ts'),
       '#host-support': resolve(host, 'apps/web/tests/support.ts'),
+      // The source scaffold imports include directly; its web workspace may only
+      // receive it transitively. Resolve the pinned Host's actual installation.
+      '@deepseek-ai/cordis-plugin-include': requirePublishedHost.resolve('@deepseek-ai/cordis-plugin-include'),
       playwright: createRequire(resolve(host, 'apps/web/package.json')).resolve('playwright'),
     },
   },

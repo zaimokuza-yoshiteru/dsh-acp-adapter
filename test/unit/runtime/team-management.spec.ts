@@ -1,110 +1,213 @@
 import { describe, expect, it, vi } from 'vitest'
+import { SessionQueryError } from '@deepseek-ai/dsh-session-query'
 import type { Context } from '@deepseek-ai/cordis'
 import { createTeamManagement } from '../../../src/host/teams/management.ts'
 
-function fixture(provider = 'acp-devin') {
-  const session = (model: string) => ({ requestHeader: () => ({ config: { model, provider } }) })
-  const lead = { id: 'lead', session: session('lead-current'), options: { provider, model: 'lead-old' } }
-  const child = { id: 'child', session: session('child-current'), options: { provider, model: 'child-old' } }
-  const rows = [
-    { id: 'lead', name: 'lead', role: 'lead', provider, status: 'inactive' },
-    {
-      id: 'child',
-      name: 'worker',
-      role: 'teammate',
-      provider: 'agent',
-      status: 'inactive',
-      model: 'wrong-native-fallback',
-    },
-    { id: 'cold', name: 'cold', role: 'teammate', provider: 'agent', status: 'inactive', model: 'wrong-lead-fallback' },
-  ]
-  const agents = { get: (id: string) => (id === 'lead' ? lead : id === 'child' ? child : undefined) }
-  const teams = {
-    tryMembership: (agent: unknown) => ({ role: agent === lead ? 'lead' : 'teammate' }),
-    listMembers: () => rows,
+function fixture(rootProvider = 'acp-devin') {
+  const session = (id: string, model: string, provider: string, child = false) => ({
+    id,
+    header: child ? { origin: 'subagent', parentSession: 'lead' } : {},
+    isOwnSeq: () => true,
+    requestHeader: () => ({ config: { model, provider } }),
+  })
+  const lead = {
+    id: 'lead',
+    session: session('lead', 'lead-current', rootProvider),
+    options: { provider: rootProvider },
   }
-  const ctx = {
-    get: (key: string) =>
-      key === 'agents'
-        ? agents
-        : key === 'agentTeams'
-          ? teams
-          : key === 'sessions'
-            ? { get: () => undefined }
-            : undefined,
-  } as unknown as Context
+  const child = {
+    id: 'child',
+    status: 'idle',
+    session: session('child', 'child-current', 'acp-devin', true),
+    options: { provider: 'acp-devin', model: 'child-old' },
+  }
+  Object.assign(lead, { model: { current: () => lead.session.requestHeader().config } })
+  Object.assign(child, { model: { current: () => child.session.requestHeader().config } })
+  const live = new Map<string, any>([
+    ['lead', lead],
+    ['child', child],
+  ])
+  const rows = [
+    { kind: 'child', id: 'child', parentId: 'lead', mode: 'continuable', path: 'worker', label: 'Research' },
+    { kind: 'child', id: 'cold', parentId: 'child', mode: 'continuable', path: 'worker/checker', label: 'Check' },
+  ]
+  const agents = { get: (id: string) => live.get(id) }
+  const subagents = {
+    rootOf: (value: unknown) => (value === lead || value === child ? lead : undefined),
+    namesOf: () => ({ self: 'worker' }),
+    listDescendants: vi.fn(async () => rows),
+  }
+  const resolveAgent = vi.fn(async () => {
+    live.set('lead', lead)
+    return { agent: lead }
+  })
+  const release = vi.fn()
+  const observeSession = vi.fn(async (id: string) => {
+    if (id === 'missing') throw new SessionQueryError('missing', 'SESSION_QUERY_SESSION_NOT_FOUND')
+    return {
+      header: { id, origin: id === 'child' ? 'subagent' : 'user' },
+      cursor: 3,
+      inheritedEventCount: 2,
+      projections: { values: { subagent: null as null | { seq: number }, subagentCatalog: rows } },
+      [Symbol.dispose]: release,
+    }
+  })
+  const services: Record<string, unknown> = {
+    agents,
+    subagents,
+    agentTeams: { isEnabled: () => false },
+    sessions: { get: () => undefined },
+    sessionController: { resolveAgent },
+    sessionQuery: { observeSession },
+    sessionProjections: {
+      snapshot: () => ({
+        values: { subagent: { seq: 0, mode: 'continuable' }, acpExecution: { externalSubagent: false } },
+      }),
+    },
+  }
+  const ctx = { get: (key: string) => services[key] } as unknown as Context
+  const binding = vi.fn(async (id: string) => (id === 'missing' ? undefined : 'acp-devin'))
   return {
-    service: createTeamManagement(
-      ctx,
-      (value) => value === 'acp-devin',
-      async (id) => (id === 'cold' ? provider : undefined),
-    ),
-    teams,
+    service: createTeamManagement(ctx, (value) => value.startsWith('acp-'), binding),
+    subagents,
     lead,
     child,
+    live,
     rows,
+    resolveAgent,
+    binding,
+    release,
+    observeSession,
   }
 }
-describe('Lead member management', () => {
-  it('uses each member’s committed model and leaves an unavailable model unknown', async () => {
-    const { service } = fixture()
-    expect(await service.members('lead')).toMatchObject([
-      { sessionId: 'child', model: 'child-current' },
-      { sessionId: 'cold', model: null },
+
+describe('native tree ACP member management', () => {
+  it('uses each member model and live state, leaving an unavailable cold model unknown', async () => {
+    const h = fixture()
+    expect(await h.service.members('lead')).toMatchObject([
+      { sessionId: 'child', name: 'worker', profileId: 'devin', model: 'child-current', status: 'inactive' },
+      { sessionId: 'cold', name: 'worker/checker', profileId: 'devin', model: null, status: 'inactive' },
     ])
+    h.child.status = 'running'
+    expect(await h.service.members('lead')).toMatchObject([
+      { sessionId: 'child', status: 'running' },
+      { sessionId: 'cold', status: 'inactive' },
+    ])
+    expect(h.resolveAgent).not.toHaveBeenCalled()
   })
-  it('groups members by their own ACP profile, never by the subagent backend', async () => {
-    const { service, child } = fixture()
-    expect(await service.members('lead')).toMatchObject([{ profileId: 'devin' }, { profileId: 'devin' }])
-    child.session.requestHeader = () => ({ config: { model: 'other', provider: 'native' } })
-    expect(await service.members('lead')).toMatchObject([{ profileId: null }, { profileId: 'devin' }])
+
+  it('supports a native root while filtering native children and keeping ACP profiles separate', async () => {
+    const h = fixture('native')
+    h.child.session.requestHeader = () => ({ config: { model: 'other', provider: 'acp-codex' } })
+    expect(await h.service.members('lead')).toMatchObject([{ profileId: 'codex' }, { profileId: 'devin' }])
+    h.child.session.requestHeader = () => ({ config: { model: 'other', provider: 'native' } })
+    expect(await h.service.members('lead')).toMatchObject([{ sessionId: 'cold', profileId: 'devin' }])
   })
-  it('rejects member-as-lead, unbound sessions and native-provider lead', async () => {
-    await expect(fixture().service.members('child')).rejects.toThrow('LEAD_UNAVAILABLE')
-    await expect(fixture().service.members('missing')).rejects.toThrow('LEAD_REQUIRED')
-    await expect(fixture('native').service.members('lead')).rejects.toThrow('LEAD_REQUIRED')
+
+  it('treats a live child, a dormant child and a missing root as ineligible without activation', async () => {
+    const h = fixture()
+    expect(await h.service.members('child')).toEqual([])
+    h.live.delete('child')
+    expect(await h.service.members('child')).toEqual([])
+    expect(await h.service.members('missing')).toEqual([])
+    expect(h.resolveAgent).not.toHaveBeenCalled()
+    expect(h.subagents.listDescendants).not.toHaveBeenCalled()
+    expect(h.release).toHaveBeenCalledOnce()
   })
-  it('activates a bound dormant Lead through the host without prompting or using the member as authority', async () => {
-    const { lead, rows, teams } = fixture()
-    let active = false
-    const resolveAgent = vi.fn(async () => {
-      active = true
-      return { agent: lead }
+
+  it.each(['native', 'acp-devin'])(
+    'reads a dormant %s root and its local ACP descendants without activation',
+    async (provider) => {
+      const h = fixture(provider)
+      h.live.clear()
+      h.binding.mockImplementation(async (id) => (id === 'cold' ? 'acp-devin' : undefined))
+      expect(await h.service.members('lead')).toMatchObject([
+        { resourcePath: ['lead', 'child', 'cold'], profileId: 'devin' },
+      ])
+      expect(h.binding).not.toHaveBeenCalledWith('lead')
+      expect(h.resolveAgent).not.toHaveBeenCalled()
+      expect(h.release).toHaveBeenCalledOnce()
+      h.binding.mockClear()
+      expect(await h.service.members('lead', (id) => id !== 'child')).toEqual([])
+      expect(h.binding).not.toHaveBeenCalled()
+    },
+  )
+
+  it('checks owned legacy descriptors and accepts inherited descriptors on independent forks', async () => {
+    const h = fixture()
+    h.live.clear()
+    const observation = await h.observeSession('lead')
+    for (const [seq, expected] of [
+      [2, 0],
+      [1, 2],
+    ] as const) {
+      h.observeSession.mockResolvedValueOnce({
+        ...observation,
+        projections: { values: { subagent: { seq }, subagentCatalog: h.rows } },
+      })
+      expect(await h.service.members('lead')).toHaveLength(expected)
+    }
+    expect(h.resolveAgent).not.toHaveBeenCalled()
+  })
+
+  it('propagates a cold catalog read failure and rejects activation during a dormant directory read', async () => {
+    const h = fixture()
+    h.live.clear()
+    h.observeSession.mockRejectedValueOnce(new Error('disk unavailable'))
+    await expect(h.service.members('lead')).rejects.toThrow('disk unavailable')
+    h.subagents.listDescendants.mockImplementationOnce(async () => {
+      h.live.set('lead', h.lead)
+      return h.rows
     })
-    const ctx = {
-      get: (key: string) =>
-        key === 'agents'
-          ? { get: (id: string) => (active && id === 'lead' ? lead : undefined) }
-          : key === 'agentTeams'
-            ? teams
-            : key === 'sessionController'
-              ? { resolveAgent }
-              : undefined,
-    } as unknown as Context
-    const service = createTeamManagement(
-      ctx,
-      (provider) => provider === 'acp-devin',
-      async () => 'acp-devin',
-    )
-    expect(await service.members('lead')).toHaveLength(rows.length - 1)
-    expect(resolveAgent).toHaveBeenCalledExactlyOnceWith('lead')
-    await service.members('lead')
-    expect(resolveAgent).toHaveBeenCalledTimes(1)
+    await expect(h.service.members('lead')).rejects.toMatchObject({ code: 'ACP_SUBAGENT_OWNER_CHANGED' })
+    expect(h.release).toHaveBeenCalledOnce()
   })
-  it('does not activate an unowned cold session and preserves host activation errors', async () => {
-    const resolveAgent = vi.fn(async () => ({ error: new Error('session/not-found') }))
-    const ctx = {
-      get: (key: string) => (key === 'agentTeams' ? {} : key === 'sessionController' ? { resolveAgent } : undefined),
-    } as unknown as Context
-    const create = (provider: string | undefined) =>
-      createTeamManagement(
-        ctx,
-        (value) => value === 'acp-devin',
-        async () => provider,
-      )
-    await expect(create('native').members('lead')).rejects.toThrow('LEAD_REQUIRED')
-    await expect(create(undefined).members('lead')).rejects.toThrow('LEAD_REQUIRED')
-    expect(resolveAgent).not.toHaveBeenCalled()
-    await expect(create('acp-devin').members('lead')).rejects.toThrow('session/not-found')
+
+  it('rejects root replacement across an awaited directory read', async () => {
+    const h = fixture()
+    h.subagents.listDescendants.mockImplementationOnce(async () => {
+      h.live.set('lead', { ...h.lead })
+      return h.rows
+    })
+    await expect(h.service.members('lead')).rejects.toMatchObject({ code: 'ACP_SUBAGENT_OWNER_CHANGED' })
+  })
+
+  it('indexes each wide catalog cut once and reflects the next catalog immediately', async () => {
+    const h = fixture()
+    h.rows.length = 0
+    let idReads = 0
+    for (let index = 0; index < 128; index++) {
+      const id = `worker-${index}`
+      h.rows.push({
+        kind: 'child',
+        get id() {
+          idReads++
+          return id
+        },
+        parentId: 'lead',
+        mode: 'continuable',
+        path: id,
+        label: id,
+      })
+    }
+    const members = await h.service.members('lead')
+    expect(members.map((member) => member.resourcePath)).toEqual(
+      Array.from({ length: 128 }, (_, index) => ['lead', `worker-${index}`]),
+    )
+    // Re-indexing all 128 rows for each path would read each id at least 128 times.
+    expect(idReads).toBeLessThan(16 * h.rows.length)
+    h.rows.splice(1)
+    expect(await h.service.members('lead')).toHaveLength(1)
+  })
+
+  it('does not turn a diagnostic or external execution into a controllable member', async () => {
+    const h = fixture()
+    h.rows[0]!.parentId = 'cold'
+    expect(await h.service.members('lead')).toEqual([])
+    h.rows[0]!.parentId = 'lead'
+    h.rows[0]!.mode = 'external'
+    expect(await h.service.members('lead')).toEqual([])
+    Object.assign(h.rows[1]!, { kind: 'diagnostic', reason: 'unavailable' })
+    expect(await h.service.members('lead')).toEqual([])
   })
 })

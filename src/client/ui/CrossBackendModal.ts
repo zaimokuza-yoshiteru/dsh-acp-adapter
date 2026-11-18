@@ -2,20 +2,42 @@ import { createElement as h, useEffect, useState, useSyncExternalStore } from 'r
 import type { ReactNode } from 'react'
 import { Button, DisclosureRow, IconInfoOutlineMedium, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { CrossBackendPhase } from '../data/cross-backend-controller.ts'
+import type { CrossBackendModelSelection } from '../data/cross-backend-controller.ts'
+import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
+import { isAcpCurrentConfigModel } from '../../contract/model-selection.ts'
 import type { CrossBackendCoordinator } from '../coordinator/cross-backend-coordinator.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import css from './CrossBackendModal.module.css'
 
 type Translate = (key: AcpLocaleKey, params?: Record<string, string | number>) => string
 
+export function crossBackendSelectionLabel(
+  selection: CrossBackendModelSelection,
+  catalog: ModelCatalog | null,
+  profileName: string | undefined,
+  t: Translate,
+): string {
+  const group = catalog?.groups.find((candidate) => candidate.id === selection.provider)
+  const provider = profileName ?? group?.name ?? t('crossBackendAgent')
+  const model = isAcpCurrentConfigModel(selection.model)
+    ? t('agentCurrentConfiguration')
+    : (group?.models.find((candidate) => candidate.id === selection.model)?.name ?? selection.model)
+  return `${provider} · ${model}`
+}
+
 export function CrossBackendModal({
   coordinator,
+  loadModelCatalog,
+  profileName,
   t,
 }: {
   coordinator: CrossBackendCoordinator
+  loadModelCatalog: () => Promise<ModelCatalog | null>
+  profileName: (provider: string) => string | undefined
   t: Translate
 }): ReactNode {
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
+  const [catalog, setCatalog] = useState<ModelCatalog | null>(null)
   const snapshot = useSyncExternalStore(
     (listener) => coordinator.subscribe(listener),
     () => coordinator.getSnapshot(),
@@ -25,23 +47,49 @@ export function CrossBackendModal({
   useEffect(() => {
     setDiagnosticsOpen(false)
   }, [pending?.ticket.key])
+  useEffect(() => {
+    if (pending === null) return
+    let active = true
+    void loadModelCatalog()
+      .then((value) => {
+        if (active) setCatalog(value)
+      })
+      .catch(() => {
+        if (active) setCatalog(null)
+      })
+    return () => {
+      active = false
+    }
+  }, [loadModelCatalog, pending?.ticket.key])
   if (pending === null) return null
   const source = pending.ticket.sourceSelection
   const target = pending.ticket.targetSelection
-  const description =
-    source === undefined
-      ? t('crossBackendExistingHistory')
-      : `${t('crossBackendFromTo', {
-          source: `${source.provider} · ${source.model}`,
-          target: `${target.provider} · ${target.model}`,
-        })} ${t('crossBackendDescription')}`
+  const modelSwitch = pending.reason === 'model-switch'
+  const description = modelSwitch
+    ? t('crossBackendModelSwitchDescription', {
+        target: crossBackendSelectionLabel(target, catalog, profileName(target.provider), t),
+      })
+    : pending.ticket.sourceUnavailable
+      ? t('crossBackendSourceUnavailable')
+      : source === undefined
+        ? t('crossBackendExistingHistory')
+        : `${t('crossBackendFromTo', {
+            source: crossBackendSelectionLabel(source, catalog, profileName(source.provider), t),
+            target: crossBackendSelectionLabel(target, catalog, profileName(target.provider), t),
+          })} ${t('crossBackendDescription')}`
   const phaseKey: Record<CrossBackendPhase, AcpLocaleKey> = {
+    'create-unknown': 'independentCreationUnknown',
+    'preset-unavailable': 'independentPresetUnavailable',
     'restore-source': 'crossBackendFailureRestore',
     'create-destination': 'crossBackendFailureCreate',
+    'ungrouped-destination': 'unroutedHistoryUngrouped',
     'select-destination': 'crossBackendFailureSelect',
     'open-destination': 'crossBackendFailureOpen',
-    completed: 'crossBackendFailureUnknown',
   }
+  const hasDestination =
+    pending.failure?.phase === 'ungrouped-destination' ||
+    pending.failure?.phase === 'select-destination' ||
+    pending.failure?.phase === 'open-destination'
   const error =
     pending.failure !== null
       ? t(phaseKey[pending.failure.phase])
@@ -55,9 +103,9 @@ export function CrossBackendModal({
       onClose: () => {
         void coordinator.cancel()
       },
-      title: t('crossBackendTitle'),
+      title: t(modelSwitch ? 'crossBackendModelSwitchTitle' : 'crossBackendTitle'),
       description,
-      closeLabel: t('crossBackendCancel'),
+      closeLabel: t(modelSwitch ? 'crossBackendKeepModel' : 'crossBackendCancel'),
       backdropBlur: false,
       ...(css.dialog === undefined ? {} : { className: css.dialog }),
       ...(css.content === undefined ? {} : { contentClassName: css.content }),
@@ -73,7 +121,7 @@ export function CrossBackendModal({
               void coordinator.cancel()
             },
           },
-          t('crossBackendCancel'),
+          t(modelSwitch ? 'crossBackendKeepModel' : 'crossBackendCancel'),
         ),
         h(
           Button,
@@ -81,10 +129,22 @@ export function CrossBackendModal({
             variant: 'primary',
             disabled: pending.busy || !pending.confirmable,
             onClick: () => {
-              void coordinator.confirm()
+              void coordinator.confirm(pending.ticket.key, pending.failure?.phase === 'preset-unavailable')
             },
           },
-          pending.busy ? t('crossBackendWorking') : t('crossBackendContinue'),
+          pending.busy
+            ? t('crossBackendWorking')
+            : t(
+                pending.failure?.phase === 'create-unknown'
+                  ? 'independentCheckCreated'
+                  : pending.failure?.phase === 'preset-unavailable'
+                    ? 'independentUseDefault'
+                    : hasDestination
+                      ? 'unroutedHistoryOpen'
+                      : modelSwitch
+                        ? 'crossBackendNewModelSession'
+                        : 'crossBackendContinue',
+              ),
         ),
       ),
     },

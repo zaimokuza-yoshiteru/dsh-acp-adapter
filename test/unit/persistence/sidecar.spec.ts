@@ -676,9 +676,38 @@ describe(' binding 语义门槛（readLatestBinding 三态）', () => {
     ])
       await expect(store.commitDirectoryFork(id, BINDING_A, invalid)).rejects.toThrow('parent continuity')
     expect(await store.list(id)).toHaveLength(1)
+    for (const failurePoint of [
+      "audit WHEN NEW.kind = 'session-fork'",
+      "recovery_states WHEN json_extract(NEW.payload, '$.kind') = 'healthy'",
+    ]) {
+      const db = rawDb()
+      try {
+        db.exec(
+          `CREATE TRIGGER fail_fork BEFORE INSERT ON ${failurePoint} BEGIN SELECT RAISE(ABORT, 'fork write failed'); END`,
+        )
+        await expect(store.commitDirectoryFork(id, BINDING_A, next)).rejects.toThrow('fork write failed')
+        // A new reader sees the complete parent generation if either of the later writes failed.
+        const reader = createAcpSidecar({ root })
+        extraStores.push(reader)
+        expect(await reader.readLatestBinding(id)).toMatchObject({ status: 'ok', binding: BINDING_A })
+        expect(await reader.readRecoveryState(id)).toMatchObject({
+          cause: 'fork-intent',
+          acpSessionId: BINDING_A.agentSessionId,
+        })
+        expect((await reader.list(id)).map((entry) => entry.kind)).toEqual(['binding'])
+        db.exec('DROP TRIGGER fail_fork')
+      } finally {
+        db.close()
+      }
+    }
     await store.commitDirectoryFork(id, BINDING_A, next)
     expect(await latestBinding(id)).toMatchObject(next)
-    expect(await store.list(id)).toHaveLength(2)
+    expect(await store.readRecoveryState(id)).toMatchObject({
+      kind: 'healthy',
+      acpSessionId: next.agentSessionId,
+      generation: 2,
+    })
+    expect((await store.list(id)).map((entry) => entry.kind)).toEqual(['binding', 'binding', 'session-fork'])
     await expect(store.commitDirectoryFork(id, BINDING_A, next)).rejects.toThrow('parent changed')
   })
 
@@ -1046,6 +1075,7 @@ describe('listBindings 全量 binding 索引（双绑守卫扫描面）', () => 
     // 无 binding 记录的行集（纯 permission）不出现在索引里
     await store.append(SessionId('sess-3'), { kind: 'permission', time: 40, data: permissionData('req-2') })
 
+    expect(await store.listBoundProviders()).toEqual(['acp-devin'])
     const bindings = await store.listBindings()
     expect(bindings.map((entry) => entry.dshSessionId).sort()).toEqual(['sess-1', 'sess-2'])
     // 最新优先：sess-1 的最新 binding 是 BINDING_B（permission 行不干扰）
@@ -1063,12 +1093,21 @@ describe('listBindings 全量 binding 索引（双绑守卫扫描面）', () => 
       time: 20,
       data: { provider: 'acp-devin', agentSessionId: 'agent-session-9' } as unknown as AcpBindingData,
     })
+    await store.append(SessionId('sess-other'), {
+      kind: 'binding',
+      time: 21,
+      data: { provider: 'native-provider' } as AcpBindingData,
+    })
+    // Indexed names are candidates. Only the binding payload proves a session's identity.
+    expect([...(await store.listBoundProviders())].sort()).toEqual(['acp-devin', 'native-provider'])
+    expect(await store.readLatestBinding(SessionId('sess-1'))).toEqual({ status: 'outdated' })
     expect(await store.listBindings()).toEqual([])
     expect(warns.some((message) => message.includes('outdated binding row(s)'))).toBe(true)
   })
 
   it('只读容错：root/库不存在 → []', async () => {
     const missing = createAcpSidecar({ root: path.join(root, 'missing'), warn: (message) => warns.push(message) })
+    expect(await missing.listBoundProviders()).toEqual([])
     expect(await missing.listBindings()).toEqual([])
     expect(fs.existsSync(path.join(root, 'missing'))).toBe(false)
   })

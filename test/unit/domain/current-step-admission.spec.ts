@@ -1,3 +1,4 @@
+import type {} from '@deepseek-ai/dsh-session-title-llm'
 import { withSessionFacts } from '../../support/session-facts.ts'
 import { describe, expect, it } from 'vitest'
 import { markAgentLoopRequest, createUserMessage } from '@deepseek-ai/dsh-llm'

@@ -70,7 +70,11 @@ export function AcpTeamApprovals({
   const enabled = isCurrent(sessionId) && !readOnly.has(sessionId)
   const candidates = pendingChildCandidates(sessionId, summaries, snapshot, readOnly)
   const revision = JSON.stringify(candidates.map((id) => [id, summaries[id]?.parentId]))
-  const [actionError, setActionError] = useState<string | undefined>(undefined)
+  const [actionError, setActionError] = useState<
+    | { key: 'teamApprovalLoadFailed' | 'teamApprovalRechecking' | 'teamApprovalOpenFailed' }
+    | { key: 'teamAnswerFailed'; count: number }
+    | undefined
+  >(undefined)
   const pendingCarriers = candidates.map((id) => ({ sessionId: id, pending: snapshot.get(id)!.pendingInteraction! }))
   const pendingKeys = pendingCarriers
     .map(({ sessionId: memberId, pending }) => {
@@ -123,7 +127,7 @@ export function AcpTeamApprovals({
       .catch((error: unknown) => {
         if (!active() || !isStableTeamMemberReadError(error)) return
         setEligible({ sessionId, revision, pendingKeys, failed: true })
-        setActionError(t('teamApprovalLoadFailed'))
+        setActionError({ key: 'teamApprovalLoadFailed' })
       })
     return () => {
       cancelled = true
@@ -177,7 +181,7 @@ export function AcpTeamApprovals({
         () => active() && requestSetIsCurrent(),
         {
           onFailure: () => {
-            if (active() && requestSetIsCurrent()) setActionError(t('teamApprovalRechecking'))
+            if (active() && requestSetIsCurrent()) setActionError({ key: 'teamApprovalRechecking' })
           },
           signal: controller.signal,
         },
@@ -193,9 +197,9 @@ export function AcpTeamApprovals({
       )
       settling = true
       const failures = await answerTeamRequests(requests, status.getSnapshot, allowed, active, inFlight.current)
-      if (active() && failures > 0) setActionError(t('teamAnswerFailed', { count: failures }))
+      if (active() && failures > 0) setActionError({ key: 'teamAnswerFailed', count: failures })
     } catch {
-      if (active()) setActionError(t('teamApprovalLoadFailed'))
+      if (active()) setActionError({ key: 'teamApprovalLoadFailed' })
     } finally {
       unsubscribe()
       if (runController.current === controller) runController.current = undefined
@@ -209,7 +213,7 @@ export function AcpTeamApprovals({
   const batch = (outcome: 'allowed-once' | 'rejected'): void => {
     void run(approvals.map((request) => ({ pending: request, answer: () => request.answer(outcome) })))
   }
-  const error = actionError
+  const error = actionError === undefined ? undefined : t(actionError.key, actionError)
   const loading = pendingKeys !== '' && children === undefined
   if (!enabled || (waiting.length === 0 && error === undefined && !loading)) return null
   const pendingTitle =
@@ -299,7 +303,9 @@ export function AcpTeamApprovals({
                         variant: 'outline',
                         'aria-label': t('teamApprovalEntry', { name: member.name }),
                         onClick: () => {
-                          void openMember(sessionId, member).catch(() => setActionError(t('teamApprovalOpenFailed')))
+                          void openMember(sessionId, member).catch(() =>
+                            setActionError({ key: 'teamApprovalOpenFailed' }),
+                          )
                         },
                       },
                       t('teamPendingOpen'),

@@ -2,6 +2,8 @@ import type { MockSession, PromptMessage, MockPeer } from './types.ts'
 // Keyless product scenarios. Profiles vary wire representations, never assertions.
 import fs from 'node:fs'
 import { basename, dirname, join } from 'node:path'
+import { creatorTurn } from './creator-turn.ts'
+import { presetTurn } from './preset-turn.ts'
 import { teamTurn } from './team-turn.ts'
 import { teamWaitTurn } from './team-wait-turn.ts'
 import { hostToolsTurn } from './host-tools-turn.ts'
@@ -19,6 +21,8 @@ export async function regressionTurn(
   msg: PromptMessage,
   { sendUpdate, sendAgentRequest, respond, log }: MockPeer,
 ) {
+  if (await creatorTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
+  if (await presetTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
   if (await teamWaitTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
   if (await permissionOptionsTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
   if (await committedRepliesTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
@@ -566,7 +570,7 @@ export async function regressionTurn(
             kind: 'execute',
             rawInput: { command: 'echo E2E_APPROVED' },
           },
-          options: profile === 'kimi' ? [...options].reverse() : options,
+          options,
         }),
         cancelled.then(() => null),
       ])

@@ -12,6 +12,7 @@ import {
 } from './stderr.ts'
 import type { AcpSubprocessHandle, SubprocessSeam } from './subprocess.ts'
 import { stopSubprocess } from './cleanup.ts'
+import { processWarningReporter } from './warnings.ts'
 import { isSubprocessLaunchFailure } from './subprocess.ts'
 import { waitWithin } from './timeout.ts'
 import type { AcpProcessExit, AcpProcessOptions } from './types.ts'
@@ -91,11 +92,7 @@ export class AcpAgentProcess {
     this.eofGraceMs = options.eofGraceMs ?? DEFAULT_EOF_GRACE_MS
     this.termGraceMs = options.termGraceMs ?? DEFAULT_TERM_GRACE_MS
     this.exitWaitMs = options.exitWaitMs ?? DEFAULT_EXIT_WAIT_MS
-    this.onWarn =
-      options.onProcessWarn ??
-      ((message: string): void => {
-        console.error(message)
-      })
+    this.onWarn = processWarningReporter(options.onProcessWarn)
     this.stderrRing = new StderrRing(
       options.stderrMaxLines ?? DEFAULT_STDERR_MAX_LINES,
       options.stderrMaxBytes ?? DEFAULT_STDERR_MAX_BYTES,

@@ -203,8 +203,8 @@ async function fixture(repair = false, catalogBarrier = false) {
   const adapter = ctx.plugin({
     name: 'external-projection-composition',
     inject: ['sessionProjections', 'llm', 'sessions', 'dshHomePath'],
-    apply(scope: Context) {
-      installInstalledProfileRegistry(scope, {
+    async apply(scope: Context) {
+      await installInstalledProfileRegistry(scope, {
         agents: { get: () => ({ claude: { name: 'Claude fixture', command: 'unused', args: [], env: {} } }) },
         toolApprovalDefault: { get: () => 'auto' },
       })
@@ -228,6 +228,7 @@ async function fixture(repair = false, catalogBarrier = false) {
   return {
     ctx,
     adapter,
+    adapters,
     provider,
     parent,
     entered,
@@ -359,3 +360,40 @@ it.each(['root', 'provider'] as const)(
     expect((f.sidecar as Sidecar.AcpSidecar & { db?: DatabaseSync }).db).toBeUndefined()
   },
 )
+
+it('drains an already-running session cleanup failure and still releases registry storage', async () => {
+  const f = await fixture()
+  f.release.resolve()
+  await f.start()
+  const db = (f.sidecar as Sidecar.AcpSidecar & { db?: DatabaseSync }).db!
+  const sessionScope = new Context()
+  contexts.push(sessionScope)
+  const entered = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  f.adapters[0]!.disposeSession = async () => {
+    entered.resolve()
+    await release.promise
+    throw new Error('fixture final session write failed')
+  }
+  f.ctx.emit('agent/created', { agent: { ctx: sessionScope, id: f.parent.id, session: f.parent } } as never)
+  const retiringSession = sessionScope.fiber.dispose()
+  await entered.promise
+  let disposed = false
+  const closing = f.ctx.acpHostContinuity.close().finally(() => {
+    disposed = true
+  })
+  const failedCleanup = expect(closing).rejects.toThrow('ACP Host continuity cleanup failed')
+  try {
+    await f.drainStarted.promise
+    // Let the synchronous registry drain reach the already-running Agent cleanup.
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(disposed).toBe(false)
+    expect(db.isOpen).toBe(true)
+  } finally {
+    release.resolve()
+  }
+  await retiringSession
+  await failedCleanup
+  expect(db.isOpen).toBe(false)
+  expect((f.sidecar as Sidecar.AcpSidecar & { db?: DatabaseSync }).db).toBeUndefined()
+})

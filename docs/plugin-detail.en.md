@@ -1,0 +1,7 @@
+## Get started
+
+1. Install the Agent on the computer running DSH and sign in if required.
+2. **Add Agent** below, save, then **Re-check** the connection.
+3. Start a new session and choose the Agent and model in the model menu.
+
+[Help](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.3.1/README.en.md#connect-an-agent) · [Report a problem](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues)

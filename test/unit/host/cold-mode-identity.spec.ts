@@ -134,18 +134,18 @@ it('keeps a cold mode ID intact when it shares its 128-character prefix with ano
   try {
     await drain(firstAdapter, messages[0]!)
     await firstAdapter.close()
-    const cold = await firstAdapter.agentSessionSnapshot(sessionId)
+    nextAdapter = makeAdapter()
+    const cold = await nextAdapter.agentSessionSnapshot(sessionId)
     const choices = teamModeChoices(cold)
     expect(cold).toMatchObject({ freshness: 'stale', modeWritable: true })
     expect(choices.map((choice) => choice.id)).toEqual(['code', target, prefix])
     const selected = choices[1]!
     expect(selected.id).toBe(target)
-    const saved = await firstAdapter.setTeamMemberMode(sessionId, selected.id)
+    const saved = await nextAdapter.setTeamMemberMode(sessionId, selected.id)
     const intent = await sidecar.readModeIntent(sessionId as never)
     expect(saved.pendingModeId).toBe(target)
     expect(intent?.modeId).toBe(target)
 
-    nextAdapter = makeAdapter()
     events = [
       ...events,
       { type: 'step/start', seq: 3, data: { turn: 2, step: 0 } },

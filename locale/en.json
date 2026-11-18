@@ -1,6 +1,7 @@
 {
   "meta": {
     "title": "ACP adapter",
-    "description": "Add and manage agents available from the DSH session UI through ACP."
+    "description": "Use external ACP agents in DSH conversations.",
+    "detail": "docs/plugin-detail.en.md"
   }
 }
