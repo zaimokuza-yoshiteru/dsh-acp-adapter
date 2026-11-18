@@ -50,11 +50,17 @@ export function apply(ctx) {
   )
 }
 
-it('keeps native Creator mode usable through ACP while installing, toggling and restoring a real local tool bundle', async () => {
+it.each(['named', 'managed'] as const)(
+  'keeps Creator tools usable through install, refresh and restore on a %s route',
+  verifyCreator,
+  120_000,
+)
+
+async function verifyCreator(route: 'named' | 'managed') {
   const host = await launchAdapterWorld()
   let browser: TestBrowser | undefined
   const errors: string[] = []
-  const evidence = join(root, '.local/e2e-creator-flow')
+  const evidence = join(root, '.local/e2e-creator-flow', route)
   mkdirSync(evidence, { recursive: true })
   const results = join(host.workspaceCwd, 'creator-results.jsonl')
   const agentLog = join(host.workspaceCwd, 'creator-agent.log')
@@ -77,6 +83,7 @@ it('keeps native Creator mode usable through ACP while installing, toggling and 
             HOME: host.workspaceCwd,
             MOCK_SCENARIO: 'regression',
             MOCK_PROFILE: 'codex',
+            ...(route === 'managed' ? { MOCK_AGENT_NAME: 'OpenCode' } : {}),
             MOCK_CREATOR_RESULTS: results,
             MOCK_UNIQUE_SESSION_IDS: '1',
             MOCK_LOG: agentLog,
@@ -126,6 +133,12 @@ it('keeps native Creator mode usable through ACP while installing, toggling and 
     expect((await composer.innerText()).trim()).toBe('')
     await page.getByRole('button', { name: 'Creator mode', exact: true }).waitFor()
     expect(host.ctx.agentPresets.defaultId).toBe('standard')
+    if (route === 'managed') {
+      await conversation.getByRole('button', { name: /^Select model, current Mock Model A/ }).click()
+      await page.getByRole('menuitem', { name: /^Model/ }).click()
+      await page.getByRole('menuitemradio', { name: 'Agent-managed model', exact: true }).click()
+      await conversation.getByRole('button', { name: /^Select model, current Agent-managed model/ }).waitFor()
+    }
     const run = async (plan: CreatorPlan, sessionId = owner) => {
       const active = page.locator(`[data-conversation-session="${sessionId}"]`)
       const settled = host.whenTurnSettled()
@@ -145,6 +158,9 @@ it('keeps native Creator mode usable through ACP while installing, toggling and 
       expect(id).toBe(sessionId)
       expect(records(plan.label).filter((row) => row.kind === 'failure')).toEqual([])
       expect(records(plan.label).filter((row) => row.kind === 'complete')).toHaveLength(1)
+      if (route === 'managed' && plan.label !== 'official-skill') {
+        expect(records(plan.label)[0]).toMatchObject({ model: 'mock-model-b', sessionId: initialRemote })
+      }
       await page.getByText(`E2E_CREATOR_DONE ${plan.label}`, { exact: true }).waitFor()
       return records(plan.label)
     }
@@ -154,6 +170,12 @@ it('keeps native Creator mode usable through ACP while installing, toggling and 
       calls: [{ name: 'skill', arguments: { name: 'dsh-doc' } }, { name: 'cordis_inspect_list' }],
     })
     const initialRemote = initial[0]!.sessionId
+    if (route === 'managed') {
+      await conversation.getByRole('button', { name: /Mock Model A/ }).click()
+      await page.getByRole('menuitem', { name: /^Model\b/ }).click()
+      await page.getByRole('menuitem', { name: /^Mock Model B\b/ }).click()
+      await conversation.getByRole('button', { name: /Mock Model B/ }).waitFor()
+    }
     const skill = initial.find((row) => row.kind === 'call' && row.name === 'skill')?.text
     const skillDirectory = skill?.match(/Base directory for this skill: ([^\n]+)/)?.[1]
     if (skillDirectory === undefined) throw new Error('Official skill did not identify its resource directory')
@@ -199,6 +221,7 @@ it('keeps native Creator mode usable through ACP while installing, toggling and 
     expect(host.ctx.agentPresets.defaultId).toBe('standard')
     expect(errors).toEqual([])
     await page.screenshot({ path: join(evidence, 'creator-restored.png') })
+    if (route === 'managed') return
     const [reopening] = await Promise.all([
       page.waitForResponse('**/api/session/create'),
       page.getByRole('button', { name: 'New session', exact: true }).filter({ hasText: 'New Session' }).click(),
@@ -261,4 +284,4 @@ it('keeps native Creator mode usable through ACP while installing, toggling and 
     await browser?.close()
     await host.close()
   }
-}, 120_000)
+}

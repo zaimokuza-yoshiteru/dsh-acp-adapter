@@ -48,7 +48,7 @@ The plugin ships with a snapshot of the [official ACP Agent catalog](https://age
 
 > If an Agent has no model catalog, select **Agent current configuration** to use its current settings.
 >
-> In the published version, selecting another model lets you keep the current model or start a blank session in the same mode. Your history and draft stay in the original session. In the RC.4 development build, **ACP mode** can switch between models offered by the same Agent within the conversation.
+> In the RC.4 development build, choose **Agent-managed model** in a new CodeBuddy or OpenCode chat. After the first reply, select the current model name by the composer to switch in the same chat. Dedicated **ACP mode** also supports switching via the native picker. Other chats started with a named model can open a separate session in the same mode, keeping the original history and draft.
 
 Launch and sign-in commands for common Agents:
 

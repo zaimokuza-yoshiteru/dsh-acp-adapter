@@ -12,6 +12,7 @@ const runtime = vi.hoisted(() => ({
   streamEvents: [] as string[],
   agentReadFailed: undefined as (() => void) | undefined,
   policyReadFailed: undefined as (() => void) | undefined,
+  managed: false,
 }))
 
 // Run the component's actual handlers and effect cleanup around a held RPC.
@@ -58,7 +59,30 @@ const agentSnapshot = (sessionId: string): AcpAgentSessionSnapshotView => ({
     { id: 'plan', name: 'Plan' },
   ],
   currentModeId: 'code',
-  configOptions: null,
+  configOptions: runtime.managed
+    ? [
+        {
+          type: 'select',
+          category: 'model',
+          id: 'engine',
+          name: 'Engine',
+          currentValue: 'a',
+          options: [
+            { value: 'a', name: 'Large' },
+            { value: 'b', name: 'Small' },
+          ],
+        },
+      ]
+    : null,
+  ...(runtime.managed
+    ? {
+        managedModel: {
+          optionId: 'engine',
+          confirmed: 'a',
+          capacityRisks: [{ model: 'b', lastUsed: 16280, targetSize: 12288 }],
+        },
+      }
+    : {}),
   contextUsage: null,
   note: null,
 })
@@ -201,9 +225,35 @@ beforeEach(() => {
   runtime.streamEvents = []
   runtime.agentReadFailed = undefined
   runtime.policyReadFailed = undefined
+  runtime.managed = false
 })
 afterEach(() => {
   for (const cleanup of runtime.cleanups.values()) cleanup()
+})
+
+it('waits for an explicit choice before switching to a smaller model and checks access at confirmation', () => {
+  runtime.managed = true
+  const h = setup()
+  const dialog = () =>
+    (
+      render(h.props).props as unknown as {
+        confirmation: { props: { model: string; cancel(): void; confirm(): void } }
+      }
+    ).confirmation
+  const ask = () => {
+    const menu = render(h.props)
+    const small = menu.props.groups.flatMap((group) => group.choices).find((choice) => choice.label === 'Small')!
+    menu.props.onSelect(small)
+    expect(dialog().props.model).toBe('Small')
+    expect(h.remote.setAgentSessionOption).not.toHaveBeenCalled()
+  }
+  ask()
+  dialog().props.cancel()
+  ask()
+  const approved = dialog().props.confirm
+  h.revoke()
+  approved()
+  expect(h.remote.setAgentSessionOption).not.toHaveBeenCalled()
 })
 
 it('keeps the full source identity and limits wrapping to source-session failure toasts', () => {

@@ -23,6 +23,7 @@ type Props = {
   readonly align?: 'start' | 'end'
   readonly onOpenChange: (open: boolean) => void
   readonly onSelect: (choice: AgentControlChoice) => void
+  readonly confirmation?: ReactNode
 }
 
 /** One native menu for main sessions, member modes and batch modes.
@@ -40,6 +41,7 @@ export function AgentSessionMenu({
   align = 'start',
   onOpenChange,
   onSelect,
+  confirmation,
 }: Props): ReactNode {
   const [pane, setPane] = useState<string | null>(null)
   const anchor = useRef<HTMLSpanElement>(null)
@@ -158,5 +160,6 @@ export function AgentSessionMenu({
       }),
       ...(footer === undefined || footer.length === 0 ? {} : { footer }),
     }),
+    confirmation,
   )
 }

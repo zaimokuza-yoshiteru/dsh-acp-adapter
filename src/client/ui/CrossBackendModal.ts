@@ -4,7 +4,7 @@ import { Button, DisclosureRow, IconInfoOutlineMedium, Modal } from '@deepseek-a
 import type { CrossBackendPhase } from '../data/cross-backend-controller.ts'
 import type { CrossBackendModelSelection } from '../data/cross-backend-controller.ts'
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
-import { isAcpCurrentConfigModel } from '../../contract/model-selection.ts'
+import { isAcpAgentManagedModel, isAcpCurrentConfigModel } from '../../contract/model-selection.ts'
 import type { CrossBackendCoordinator } from '../coordinator/cross-backend-coordinator.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import css from './CrossBackendModal.module.css'
@@ -21,7 +21,9 @@ export function crossBackendSelectionLabel(
   const provider = profileName ?? group?.name ?? t('crossBackendAgent')
   const model = isAcpCurrentConfigModel(selection.model)
     ? t('agentCurrentConfiguration')
-    : (group?.models.find((candidate) => candidate.id === selection.model)?.name ?? selection.model)
+    : isAcpAgentManagedModel(selection.model)
+      ? t('agentManagedModel')
+      : (group?.models.find((candidate) => candidate.id === selection.model)?.name ?? selection.model)
   return `${provider} · ${model}`
 }
 

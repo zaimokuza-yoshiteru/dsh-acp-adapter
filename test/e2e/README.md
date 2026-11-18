@@ -2,7 +2,7 @@
 
 本目录验证 DSH 与 ACP 的集成行为。浏览器场景启动目标版本的 Loader、真实 ACP 子进程和浏览器，并加载构建后的插件与 DSH UI；源码／jsdom 场景和仅 Host 场景的范围在下文分别说明。协议夹具提供可控 ACP 输入，覆盖 UI 与宿主集成；真实 Agent 行为另由 opt-in 检查验证。Web scaffold 或 Electron 窗口中的适配器检查不等于完整桌面产品的打包、preload、升级或跨平台验收。运行真实 Agent 会使用本机登录和模型额度。
 
-当前源码锁定 DSH RC.4。参见 [RC.4 兼容评估](../../docs/assessments/dsh-0.2.2-rc.4.md) 和 [RC.3 迁移记录](../../docs/assessments/dsh-0.2.2-rc.3.md)。专用 ACP 预设的同会话切模由 `acp-model-switch.e2e.ts` 验证远端确认、拒绝、取消、断线和重试。`acp-preset.e2e.ts` 验证原生选择器、后续工具调用，以及重发原消息和附件时保留新草稿。标准、创造、PTC、极简预设仍保留独立会话出口，Teams 已有成员继续使用其模型保护。
+当前源码锁定 DSH RC.4。参见 [RC.4 兼容评估](../../docs/assessments/dsh-0.2.2-rc.4.md) 和 [RC.3 迁移记录](../../docs/assessments/dsh-0.2.2-rc.3.md)。专用 ACP 预设的同会话切模由 `acp-model-switch.e2e.ts` 验证远端确认、拒绝、取消、断线和重试。`acp-preset.e2e.ts` 验证原生选择器、后续工具调用，以及重发原消息和附件时保留新草稿。标准、创造、PTC、极简预设可在新主会话选择「由 Agent 管理模型」。同文件覆盖拒绝、断线、最终连接与重试；`managed-model-menu.e2e.ts` 覆盖中英文 390px，`creator-flow.e2e.ts` 覆盖原生创造入口与工具热加载，`managed-default.e2e.ts` 覆盖专用预设及子会话继承原生默认值。具名会话与 Teams 成员保留原有选择规则。设置 `DSH_E2E_ADAPTER_DIRECTORY` 可用同一个已解包候选运行这些场景。
 
 `generic-agent.e2e.ts` 使用三个无密钥 ACP 子进程变体：无 `configOptions`、ID 为 `model` 但无 `category`、未知 `category`。它要求原生选择器能选“Agent current configuration”并完成首次 prompt；有普通配置的两个变体验证会话菜单修改后下一轮保持实际值、宿主路由不变，且从未把占位路由提交为 Agent 模型。对应夹具开关为 `MOCK_NO_CONFIG_OPTIONS=1`、`MOCK_MODEL_OPTION_CATEGORY=absent` 和 `MOCK_MODEL_OPTION_CATEGORY=vendor-choice`。运行 `pnpm test:e2e test/e2e/generic-agent.e2e.ts`；截图写入 `${DSH_E2E_EVIDENCE_DIR}/generic-agent/`，未设置时为 `.local/e2e-evidence/generic-agent/`。此用例不读取认证或调用真实模型；新增用例本身不构成通过记录。
 

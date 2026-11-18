@@ -92,7 +92,7 @@
 }
 /* Scope the portal to our own content, preserving native menu styling. */
 .menuList {
-  width: min(348px, 65vw);
+  width: min(348px, calc(100vw - 24px));
 }
 .menuAnchor {
   display: inline-flex;
@@ -103,6 +103,13 @@
   display: flex;
   flex-direction: column;
   white-space: normal;
+  overflow-wrap: anywhere;
+}
+.confirmActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 .choiceDescription {
   font-size: 12px;

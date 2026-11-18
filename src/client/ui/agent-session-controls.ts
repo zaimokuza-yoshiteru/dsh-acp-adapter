@@ -1,8 +1,9 @@
 import type { AcpAgentSessionSnapshotView, AcpAgentSessionOptionWrite } from '../data/acp-remote.ts'
 import type { ToolApprovalPolicySnapshot } from '../data/tool-approval-policy-stream.ts'
 import type { AcpLocaleKey } from './locales.ts'
-import { isAcpModelOrReasoningOption } from '../../contract/config-options.ts'
+import { isAcpModelOrReasoningOption, normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
 import { teamModeLabel } from '../../contract/session-modes.ts'
+import { disambiguateModelLabels } from '../../contract/model-labels.ts'
 
 export type AgentControlTranslate = (key: AcpLocaleKey, params?: Record<string, unknown>) => string
 type Translate = AgentControlTranslate
@@ -22,9 +23,11 @@ export interface AgentControlChoice {
   readonly write:
     AcpAgentSessionOptionWrite | { readonly kind: 'tool-approval-policy'; readonly policy: 'auto' | 'ask' }
   readonly disabled: boolean
+  readonly capacityRisk?: { readonly lastUsed: number; readonly targetSize: number }
+  readonly requiresModelAccess?: true
 }
 export interface AgentControlGroup {
-  readonly kind: 'mode' | 'config' | 'policy'
+  readonly kind: 'mode' | 'config' | 'policy' | 'model'
   readonly id: string
   readonly name: string
   readonly current: string
@@ -32,8 +35,27 @@ export interface AgentControlGroup {
   readonly choices: readonly AgentControlChoice[]
 }
 
+type ManagedModel = NonNullable<AcpAgentSessionSnapshotView['managedModel']>
+
+function managedModelLabels(
+  option: Extract<NonNullable<AcpAgentSessionSnapshotView['configOptions']>[number], { type: 'select' }>,
+) {
+  const choices = option.options.flatMap((entry) => ('value' in entry ? [entry] : entry.options))
+  const labels = disambiguateModelLabels(choices.map((choice) => ({ ...choice, id: choice.value })))
+  return new Map(labels.map(({ id, name }) => [id, name]))
+}
+
+function capacityWarning(model: ManagedModel | undefined, value: string): Pick<AgentControlChoice, 'capacityRisk'> {
+  const capacityRisk = model?.capacityRisks?.find((risk) => risk.model === value)
+  return capacityRisk ? { capacityRisk } : {}
+}
+
 /** Normalize ACP settings once; native Menu owns selection styling and keyboard navigation. */
-export function agentControlMenuGroups(snapshot: AcpAgentSessionSnapshotView, t: Translate): AgentControlGroup[] {
+export function agentControlMenuGroups(
+  snapshot: AcpAgentSessionSnapshotView,
+  t: Translate,
+  maySelectModel = true,
+): AgentControlGroup[] {
   const groups: AgentControlGroup[] = []
   const disabled = !snapshot.editable || snapshot.freshness !== 'live'
   // configOptions is canonical; legacy modes are only a fallback.
@@ -53,8 +75,16 @@ export function agentControlMenuGroups(snapshot: AcpAgentSessionSnapshotView, t:
     })
   }
   for (const option of snapshot.configOptions ?? []) {
-    // Model and reasoning remain exclusively in DSH's native ModelPicker.
-    if (isAcpModelOrReasoningOption(option)) continue
+    const model =
+      option.type === 'select' && option.id === snapshot.managedModel?.optionId ? snapshot.managedModel : undefined
+    const nativeOption = isAcpModelOrReasoningOption(option)
+    const reasoning =
+      nativeOption &&
+      normalizeAcpConfigOptionKey(option.category ?? '') !== 'model' &&
+      snapshot.managedModel?.confirmed != null &&
+      snapshot.freshness === 'live'
+    if (nativeOption && !model && !reasoning) continue
+    const labels = model && option.type === 'select' ? managedModelLabels(option) : undefined
     const choices: AgentControlChoice[] =
       option.type === 'boolean'
         ? [false, true].map((value) => ({
@@ -67,22 +97,32 @@ export function agentControlMenuGroups(snapshot: AcpAgentSessionSnapshotView, t:
         : option.options.flatMap((entry) =>
             ('value' in entry ? [entry] : entry.options).map((value) => ({
               id: `config:${option.id}:${value.value}`,
-              label: value.name,
+              label: labels?.get(value.value) ?? value.name,
               ...(value.description == null ? {} : { description: value.description }),
               ...('group' in entry ? { group: entry.name } : {}),
               current:
                 value.value ===
-                (isModeConfigOption(option) ? (snapshot.pendingModeId ?? option.currentValue) : option.currentValue),
+                (model
+                  ? model.confirmed
+                  : isModeConfigOption(option)
+                    ? (snapshot.pendingModeId ?? option.currentValue)
+                    : option.currentValue),
               write: { kind: 'config' as const, id: option.id, value: value.value },
-              disabled,
+              disabled:
+                (disabled && !(model && snapshot.freshness === 'stale')) ||
+                ((model !== undefined || reasoning) && !maySelectModel),
+              ...(model || reasoning ? { requiresModelAccess: true as const } : {}),
+              ...capacityWarning(model, value.value),
             })),
           )
     groups.push({
-      kind: isModeConfigOption(option) ? 'mode' : 'config',
+      kind: model ? 'model' : isModeConfigOption(option) ? 'mode' : 'config',
       id: `config:${option.id}`,
-      name: option.name,
-      current: choices.find((choice) => choice.current)?.label ?? String(option.currentValue),
-      ...(option.description == null ? {} : { description: option.description }),
+      name: model ? t('teamModelLabel') : option.name,
+      current:
+        choices.find((choice) => choice.current)?.label ??
+        (model ? t('managedModelUnconfirmed') : String(option.currentValue)),
+      ...(model || option.description == null ? {} : { description: option.description }),
       choices,
     })
   }
@@ -109,7 +149,17 @@ export function toolApprovalPolicyGroup(snapshot: ToolApprovalPolicySnapshot, t:
   }
 }
 
-export function agentControlLabel(snapshot: AcpAgentSessionSnapshotView, t: Translate): string {
+export function agentControlLabel(
+  snapshot: AcpAgentSessionSnapshotView,
+  t: Translate,
+  groups?: readonly AgentControlGroup[],
+): string {
+  if (snapshot.managedModel) {
+    return (
+      (groups ?? agentControlMenuGroups(snapshot, t)).find((group) => group.kind === 'model')?.current ??
+      t('managedModelUnconfirmed')
+    )
+  }
   return `${t('agentControlTitle')} · ${teamModeLabel(snapshot, t('agentControlDefault'))}`
 }
 
