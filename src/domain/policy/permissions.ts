@@ -2,7 +2,12 @@
 import { randomUUID } from 'node:crypto'
 import { Buffer } from 'node:buffer'
 import type * as acp from '@agentclientprotocol/sdk'
-import type { AcpExternalPolicyDecision, AcpExternalPolicyRequest } from '../../contract/permission-policy.ts'
+import {
+  readExternalPolicyDecision,
+  type AcpExternalPolicyDecision,
+  type AcpExternalPolicyExplanation,
+  type AcpExternalPolicyRequest,
+} from '../../contract/permission-policy.ts'
 import { isAntigravityInteractionCall } from './antigravity-question.ts'
 import type {
   AcpNativeQuestionUnavailable,
@@ -56,6 +61,7 @@ export interface AcpExternalPermissionPolicyRequest extends Omit<AcpExternalPoli
 }
 export interface AcpNativeApprovalService {
   evaluateExternal?(request: AcpExternalPermissionPolicyRequest): Promise<AcpExternalPolicyDecision>
+  evaluateBinary?(request: AcpExternalPermissionPolicyRequest): Promise<AcpExternalPolicyDecision>
   request(req: {
     readonly agent: unknown
     readonly toolName: string
@@ -68,7 +74,15 @@ export interface AcpNativeApprovalService {
     readonly commandLine?: string
   }): Promise<'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'>
 }
+/** Ephemeral context for an independently admitted prompt on the same ACP connection. */
+export interface AcpPermissionFeedback {
+  readonly text: string
+  readonly isCurrentOwner: () => boolean
+}
 export interface AcpNativePermissionBridgeDeps {
+  readonly onPolicyDenial?: (feedback: AcpPermissionFeedback) => void
+  /** Local elicitation can also use the approval card, but its synthetic choices are not an ACP request. */
+  readonly syntheticApproval?: boolean
   readonly userQuestions?: AcpNativeUserQuestionService
   /** External permission-only presentation; ordinary interaction calls keep their native owner. */
   readonly permissionQuestions?: AcpPermissionQuestionService
@@ -352,15 +366,18 @@ export function createAcpNativePermissionHandler(
     const id = requestId()
     const nativeInteractionCall =
       deps.nativeQuestionProfile === 'antigravity' && isAntigravityInteractionCall(params.toolCall)
-    const useExternalPolicy =
-      !nativeInteractionCall &&
-      deps.permissionProfile !== 'devin' &&
-      deps.approval?.evaluateExternal !== undefined &&
-      binaryApprovalOptions(params.options) === undefined
-    let agent = useExternalPolicy ? deps.getAgent() : undefined
+    let evaluate: AcpNativeApprovalService['evaluateExternal']
+    let agent: unknown
     try {
       assertBounds(params.toolCall.toolCallId, params.options)
-      if (useExternalPolicy) {
+      if (!nativeInteractionCall && !deps.syntheticApproval && deps.permissionProfile !== 'devin') {
+        evaluate =
+          binaryApprovalOptions(params.options) === undefined
+            ? deps.approval?.evaluateExternal
+            : deps.approval?.evaluateBinary
+      }
+      if (evaluate !== undefined) {
+        agent = deps.getAgent()
         // Keep the policy facts, audit and eventual option mapping on the same
         // snapshot, including while the first durable append is pending.
         const team = (params.toolCall as { readonly [dshTeamPresentation]?: DshTeamPermissionPresentation })[
@@ -394,6 +411,8 @@ export function createAcpNativePermissionHandler(
       ))
     )
       return cancelled()
+    let humanPolicyReason: string | undefined
+    let denialReason: string | undefined
     let presentation: AcpPermissionPresentation | undefined
     const decide = async (
       init: {
@@ -414,13 +433,20 @@ export function createAcpNativePermissionHandler(
           ...(presentation === undefined ? {} : { presentation }),
         }),
       )
-      if (!ok || init.outcome === 'cancelled' || (useExternalPolicy && (signal?.aborted || deps.getAgent() !== agent)))
-        return cancelled()
+      if (!ok || (evaluate !== undefined && (signal?.aborted || deps.getAgent() !== agent))) return cancelled()
+      if (denialReason !== undefined && decisionVia === 'external-policy') {
+        const tool = safeText(params.toolCall.name ?? params.toolCall.title ?? params.toolCall.kind ?? copy.acpTool)
+        deps.onPolicyDenial?.({
+          text: copy.policyDenial(tool, safeText(params.toolCall.toolCallId), denialReason),
+          isCurrentOwner: () => deps.getAgent() === agent,
+        })
+      }
+      if (init.outcome === 'cancelled') return cancelled()
       return { outcome: { outcome: 'selected', optionId: init.optionId! } }
     }
     if (signal !== undefined && signal.aborted) return decide({ outcome: 'cancelled', note: 'cancelled' })
-    if (!useExternalPolicy) agent = deps.getAgent()
-    if (agent === undefined || (useExternalPolicy && deps.getAgent() !== agent))
+    if (evaluate === undefined) agent = deps.getAgent()
+    if (agent === undefined || (evaluate !== undefined && deps.getAgent() !== agent))
       return decide({ outcome: 'cancelled', note: 'agent-unavailable' })
     const binary = binaryApprovalOptions(params.options)
     const nativeInteractionQuestion =
@@ -428,22 +454,28 @@ export function createAcpNativePermissionHandler(
       params.options.length > 0 &&
       params.options.every((option) => option.kind === 'allow_once')
 
-    if (useExternalPolicy) {
-      let outcome: AcpExternalPolicyDecision
+    if (evaluate !== undefined) {
+      let parsed: AcpExternalPolicyExplanation
       try {
-        outcome = await deps.approval!.evaluateExternal!({
-          agent,
-          requestId: id,
-          profile: deps.permissionProfile ?? 'generic',
-          params,
-          ...(signal === undefined ? {} : { signal }),
-        })
+        parsed = readExternalPolicyDecision(
+          await evaluate.call(deps.approval, {
+            agent,
+            requestId: id,
+            profile: deps.permissionProfile ?? 'generic',
+            params,
+            ...(signal === undefined ? {} : { signal }),
+          }),
+        )
       } catch {
-        outcome = 'failed'
+        parsed = { decision: 'failed' }
       }
-      // Defensive normalization also covers non-TypeScript policy integrations.
-      if (!['allow-once', 'deny-once', 'not-applicable', 'cancelled', 'failed'].includes(outcome)) outcome = 'failed'
-      if (signal?.aborted || deps.getAgent() !== agent) outcome = 'cancelled'
+      if (signal?.aborted || deps.getAgent() !== agent) parsed = { decision: 'cancelled' }
+      const outcome = parsed.decision
+      const reason = parsed.reason && safeText(parsed.reason, 512)
+      if (reason) {
+        if (outcome === 'deny-once' || outcome === 'cancelled') denialReason = reason
+        else if (outcome === 'not-applicable' || outcome === 'allow-once') humanPolicyReason = copy.policyReason(reason)
+      }
       if (outcome === 'failed') {
         try {
           await deps.onUnavailable?.({
@@ -482,6 +514,7 @@ export function createAcpNativePermissionHandler(
           ...(commandLine === undefined ? {} : { commandLine }),
           reason: [
             nativePermissionReason(params.toolCall, copy),
+            ...(humanPolicyReason === undefined ? [] : [humanPolicyReason]),
             `${copy.allowOnce}: ${visibleCommand(binary.allow.name)}`,
             ...(binary.reject === undefined ? [] : [`${copy.rejectOnce}: ${visibleCommand(binary.reject.name)}`]),
           ].join('\n'),
@@ -523,7 +556,9 @@ export function createAcpNativePermissionHandler(
             id: questionId,
             question: nativeInteractionQuestion
               ? params.toolCall.title!
-              : permissionQuestionFacts(params.toolCall, copy, deps.nativeQuestionProfile),
+              : [permissionQuestionFacts(params.toolCall, copy, deps.nativeQuestionProfile), humanPolicyReason]
+                  .filter((part) => part !== undefined)
+                  .join('\n\n'),
             ...(nativeInteractionQuestion ? {} : { header: copy.permission }),
             ...(detail === undefined ? {} : { detail }),
             options: renderedLabels.map((label) => ({ label })),

@@ -4,7 +4,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
-import ApprovalService from '@deepseek-ai/dsh-user-approval'
+import ApprovalService, { type ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
 import type * as acp from '@agentclientprotocol/sdk'
 import AcpPermissionPolicy from '../../../src/host/composition/external-permission-policy.ts'
 import { externalAgentApproval } from '../../../src/host/composition/external-agent-approval.ts'
@@ -13,6 +13,7 @@ import {
   createAcpNativePermissionHandler,
   type AcpNativePermissionBridgeDeps,
   type AcpPermissionAuditRecord,
+  type AcpPermissionFeedback,
 } from '../../../src/domain/policy/permissions.ts'
 import type {
   AcpNativeQuestionUnavailable,
@@ -75,7 +76,8 @@ async function fixture({ service = true, profile = 'antigravity', policy = 'ask'
   const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async ({ questions }) => ({
     answers: [{ id: questions[0]!.id, selected: ['Always allow'] }],
   }))
-  const legacy = vi.fn(async () => 'allowed-once' as const)
+  const legacy = vi.fn(async (_req: Pick<ApprovalRequest, 'reason'>) => 'allowed-once' as const)
+  const feedback = vi.fn<(item: AcpPermissionFeedback) => void>()
   ctx.on('approval/request', legacy)
   const notify = vi.fn(async (_issue: AcpNativeQuestionUnavailable): Promise<void> => {})
   const deps = {
@@ -87,6 +89,7 @@ async function fixture({ service = true, profile = 'antigravity', policy = 'ask'
     audit: { append },
     locale,
     onUnavailable: notify,
+    onPolicyDenial: feedback,
   } satisfies AcpNativePermissionBridgeDeps
   return {
     ctx,
@@ -98,6 +101,7 @@ async function fixture({ service = true, profile = 'antigravity', policy = 'ask'
     append,
     ask,
     legacy,
+    feedback,
     notify,
     handle: (params = request(), signal?: AbortSignal) => createAcpNativePermissionHandler(deps)(params, signal),
     replace: () => {
@@ -240,6 +244,75 @@ describe('complete ACP options with an explicitly installed machine policy', () 
     expect(f.legacy).toHaveBeenCalledOnce()
     expect(decided(f.records).decisionVia).toBe('native-approval')
   })
+
+  it.each(['allow-once', 'deny-once', 'cancelled', 'failed'] as const)(
+    'applies the explicitly registered binary %s without a native grant',
+    async (decision) => {
+      const f = await fixture()
+      f.ctx.on('dsh-acp/binary-permission-policy', async () => ({ decision, reason: 'Workspace rule' }))
+      const input = request()
+      input.options = [input.options[0]!, input.options[2]!]
+      expect(await f.handle(input)).toEqual(
+        decision === 'allow-once' ? selected('once') : decision === 'deny-once' ? selected('deny') : cancelled,
+      )
+      expect(f.legacy).not.toHaveBeenCalled()
+      expect(decided(f.records).decisionVia).toBe('external-policy')
+      expect(f.feedback).toHaveBeenCalledTimes(decision === 'deny-once' || decision === 'cancelled' ? 1 : 0)
+    },
+  )
+
+  it.each(['en', 'zh'])('shows the %s policy scope on both original human surfaces', async (locale) => {
+    const f = await fixture({ locale })
+    const scope = 'Only the build cache may be written.'
+    const handler = async () => ({ decision: 'not-applicable' as const, reason: scope })
+    f.ctx.on('dsh-acp/binary-permission-policy', handler)
+    f.ctx.on('dsh-acp/permission-policy', handler)
+    const input = request()
+    expect(await f.handle({ ...input, options: [input.options[0]!, input.options[2]!] })).toEqual(selected('once'))
+    expect(await f.handle(input)).toEqual(selected('always'))
+    const binary = f.legacy.mock.calls[0]![0].reason
+    const rich = f.ask.mock.calls[0]![0].questions[0]!
+    for (const surface of [binary, rich.question]) {
+      expect(surface).toContain(locale === 'zh' ? '审批规则：' + scope : 'Approval rule: ' + scope)
+      expect(surface).toContain('printf fixture-only')
+    }
+    expect(binary).toContain('Deny')
+    expect(rich.options?.map((option) => option.label)).toEqual(['Allow once', 'Always allow', 'Deny'])
+    expect(f.feedback).not.toHaveBeenCalled()
+  })
+
+  it.each(['devin', 'synthetic'] as const)('keeps %s requests out of the binary policy', async (kind) => {
+    const f = await fixture({ profile: kind === 'devin' ? 'devin' : 'generic' })
+    const provider = vi.fn(async () => 'deny-once' as const)
+    f.ctx.on('dsh-acp/binary-permission-policy', provider)
+    const input = request()
+    input.options = [input.options[0]!]
+    expect(
+      await createAcpNativePermissionHandler({ ...f.deps, syntheticApproval: kind === 'synthetic' })(input),
+    ).toEqual(selected('once'))
+    expect(provider).not.toHaveBeenCalled()
+    expect(f.legacy).toHaveBeenCalledOnce()
+  })
+
+  it.each(['cancel', 'replace', 'audit'] as const)(
+    'discards a reason when %s invalidates a binary denial',
+    async (cause) => {
+      const f = await fixture()
+      const controller = new AbortController()
+      f.ctx.on('dsh-acp/binary-permission-policy', async () => ({ decision: 'deny-once', reason: 'Stale reason' }))
+      f.append.mockImplementation(async (record) => {
+        if (record.data.phase !== 'decided') return
+        if (cause === 'cancel') controller.abort()
+        if (cause === 'replace') f.replace()
+        if (cause === 'audit') throw new Error('disk unavailable')
+      })
+      const input = request()
+      input.options = [input.options[0]!]
+      expect(await f.handle(input, controller.signal)).toEqual(cancelled)
+      expect(f.feedback).not.toHaveBeenCalled()
+      expect(f.legacy).not.toHaveBeenCalled()
+    },
+  )
 
   it('keeps Antigravity interaction questions with their original question owner', async () => {
     const f = await fixture()

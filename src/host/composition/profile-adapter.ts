@@ -85,7 +85,11 @@ import { createAcpTerminalHandlers } from '../../runtime/client-capabilities/ter
 import { HostTerminalOutcomes } from './terminal-outcomes.ts'
 import { activityHostToolControlOutcome, type AcpHostToolControlOutcome } from '../../contract/tool-control-outcome.ts'
 import type { AcpTerminalJobStarter } from '../../runtime/client-capabilities/terminal-job.ts'
-import { createAcpNativePermissionHandler, type AcpNativeApprovalService } from '../../domain/policy/permissions.ts'
+import {
+  createAcpNativePermissionHandler,
+  type AcpNativeApprovalService,
+  type AcpNativePermissionBridgeDeps,
+} from '../../domain/policy/permissions.ts'
 import { createPermissionCheckAudit } from '../../domain/policy/events.ts'
 import type { AcpPermissionAuditChannel } from '../../domain/policy/permissions.ts'
 import { createAcpNativeElicitationHandler } from '../../domain/policy/elicitation.ts'
@@ -4199,6 +4203,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     const handlePermission = async (
       params: acp.RequestPermissionRequest,
       signal?: AbortSignal,
+      policy?: Pick<AcpNativePermissionBridgeDeps, 'onPolicyDenial' | 'syntheticApproval'>,
     ): Promise<acp.RequestPermissionResponse> => {
       const binding = this.resolveQuestions?.(sessionId)
       if (binding === undefined) return { outcome: { outcome: 'cancelled' } }
@@ -4207,6 +4212,7 @@ export class AcpProfileAdapter extends LlmAdapter {
           ? undefined
           : { append: (record) => this.sidecar!.append(sessionId as never, record) }
       return await createAcpNativePermissionHandler({
+        ...policy,
         ...(binding.userQuestions === undefined ? {} : { userQuestions: binding.userQuestions }),
         ...(binding.permissionQuestions === undefined ? {} : { permissionQuestions: binding.permissionQuestions }),
         ...(binding.approval === undefined ? {} : { approval: binding.approval }),
@@ -4271,7 +4277,8 @@ export class AcpProfileAdapter extends LlmAdapter {
           audit: appendTerminalAudit,
           onExit: (event) => terminalOutcomes.observe(event),
         }),
-      onPermissionRequest: handlePermission,
+      onPermissionRequest: (params, signal, onPolicyDenial) =>
+        handlePermission(params, signal, onPolicyDenial === undefined ? undefined : { onPolicyDenial }),
       onPermissionCheck: async (check, request) => {
         await this.sidecar?.append(sessionId as never, {
           kind: 'permission',
@@ -4335,6 +4342,7 @@ export class AcpProfileAdapter extends LlmAdapter {
                       ],
                     },
                     approvalSignal,
+                    { syntheticApproval: true },
                   )
                   return response.outcome.outcome === 'selected' && response.outcome.optionId === 'once'
                 },

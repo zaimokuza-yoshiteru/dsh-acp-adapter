@@ -71,14 +71,19 @@ describe('explicit ACP machine policy contract', () => {
     },
   )
 
-  it.each(['allow-always', '', undefined, null, true, { outcome: 'allow-once' }])(
-    'fails closed for invalid provider result %j',
-    async (decision) => {
-      const f = await fixture()
-      f.ctx.on('dsh-acp/permission-policy', async () => decision as AcpExternalPolicyDecision)
-      expect(await f.service.evaluate(f.request)).toBe('failed')
-    },
-  )
+  it.each([
+    'allow-always',
+    '',
+    undefined,
+    null,
+    true,
+    { outcome: 'allow-once' },
+    { decision: 'allow-once', reason: 5 },
+  ])('fails closed for invalid provider result %j', async (decision) => {
+    const f = await fixture()
+    f.ctx.on('dsh-acp/permission-policy', async () => decision as AcpExternalPolicyDecision)
+    expect(await f.service.evaluate(f.request)).toBe('failed')
+  })
 
   it('contains provider exceptions without exposing their details', async () => {
     const f = await fixture()
