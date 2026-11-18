@@ -4,6 +4,11 @@
 
 Find installation commands, release dates, and package checksums on [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases).
 
+## Unreleased
+
+- 适配 DSH `0.2.2-rc.4`。ACP Agent 拒绝继续时，提示会说明下次请求会跳过本轮内容。
+- Support DSH `0.2.2-rc.4`. When an ACP Agent refuses to continue, the message explains which turn it will skip on the next request.
+
 ## 0.2.2-rc.3.1
 
 ### 中文

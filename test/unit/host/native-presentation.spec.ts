@@ -166,7 +166,13 @@ describe('native ACP activity presentation', () => {
     })
     expect(await finishWithoutVisibleText(true, undefined, 'refusal')).toMatchObject({
       type: 'finish',
-      reason: { kind: 'error', failure: { code: 'ACP_REFUSAL' } },
+      reason: {
+        kind: 'error',
+        failure: {
+          code: 'ACP_REFUSAL',
+          message: 'The ACP agent declined this request. When you continue, it will skip this turn.',
+        },
+      },
     })
     expect(
       await finishWithoutVisibleText(
@@ -189,7 +195,7 @@ describe('native ACP activity presentation', () => {
       type: 'finish',
       reason: {
         kind: 'error',
-        failure: { code: 'ACP_REFUSAL', message: 'ACP 智能体拒绝了此请求。' },
+        failure: { code: 'ACP_REFUSAL', message: 'ACP 智能体拒绝了此请求。继续对话时，它会跳过本轮内容。' },
       },
     })
     expect(

@@ -19,7 +19,6 @@ import { createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { RequestPermissionRequest, CreateElicitationRequest } from '@agentclientprotocol/sdk'
-import { fileURLToPath } from 'node:url'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
 import { createDshToolBridge, createDshToolBridgeKey } from '../../../src/host/tools/bridge.ts'
@@ -212,7 +211,7 @@ it('records actual MCP-to-Host execution correlation and isolates a throwing tra
   expect(fixture.execute).toHaveBeenCalledTimes(3)
 })
 
-async function setup(
+function createBridgeFixture(
   wireProfile?: string,
   registeredTools: readonly string[] = [],
   hasTeams = true,
@@ -337,16 +336,43 @@ async function setup(
     description: definition.description ?? definition.name,
     parameters: definition.parameters,
   }))
-  const lease = (await createDshToolBridge(
+  async function openLease(transport: 'stdio' | 'http') {
+    const lease = (await createDshToolBridge(
+      ctx,
+      'lead',
+      { mcpCapabilities: { http: transport === 'http' } },
+      wireProfile,
+      policy ?? (async () => 'auto'),
+      onPolicyContextChange,
+      schemas,
+    ))!
+    cleanup.push(() => lease.close())
+    return lease
+  }
+  return {
     ctx,
-    'lead',
-    { mcpCapabilities: { http: true } },
-    wireProfile,
-    policy ?? (async () => 'auto'),
-    onPolicyContextChange,
-    schemas,
-  ))!
-  cleanup.push(() => lease.close())
+    services,
+    openLease,
+    execute,
+    definitions,
+    agent,
+    session,
+    listeners,
+    hidden,
+    membership,
+    replaceCurrentAgent: (replacement: typeof agent) => {
+      currentAgent = replacement
+      services.agents = {
+        get: (id: string) => (id === 'lead' ? currentAgent : id === 'team-root' ? rootAgent : undefined),
+        withInitiator,
+      }
+    },
+  }
+}
+
+async function setup(...args: Parameters<typeof createBridgeFixture>) {
+  const fixture = createBridgeFixture(...args)
+  const lease = await fixture.openLease('http')
   const server = lease.servers[0]!
   if (!('url' in server)) throw new Error('Expected HTTP')
   const client = new Client({ name: 'fixture', version: '1' })
@@ -364,30 +390,7 @@ async function setup(
     },
     options: [{ optionId: 'yes', kind: 'allow_once', name: 'Allow once' }],
   })
-  return {
-    ctx,
-    services,
-    execute,
-    definitions,
-    agent,
-    session,
-    lease,
-    server,
-    client,
-    tools,
-    name,
-    permission,
-    listeners,
-    hidden,
-    membership,
-    replaceCurrentAgent: (replacement: typeof agent) => {
-      currentAgent = replacement
-      services.agents = {
-        get: (id: string) => (id === 'lead' ? currentAgent : id === 'team-root' ? rootAgent : undefined),
-        withInitiator,
-      }
-    },
-  }
+  return { ...fixture, lease, server, client, tools, name, permission }
 }
 
 async function rawMcp(server: { url: string }, message: Record<string, unknown>, protocolVersion?: string) {
@@ -2779,12 +2782,18 @@ describe('session-owned native Teams MCP bridge', () => {
     expect(first.execute).toHaveBeenCalledTimes(2)
   })
   it('forwards cancellation through the stdio session proxy into native execution', async () => {
-    const { lease, execute, server, name } = await setup()
+    const { openLease, execute } = createBridgeFixture()
+    const lease = await openLease('stdio')
     lease.beginPrompt(new AbortController().signal)
+    const server = lease.servers[0]!
+    if (!('command' in server)) throw new Error('Expected stdio')
+    const env = Object.fromEntries(server.env.map(({ name, value }) => [name, value]))
+    expect(env.ELECTRON_RUN_AS_NODE).toBe('1')
     const transport = new StdioClientTransport({
-      command: process.execPath,
-      args: [fileURLToPath(new URL('../../../src/runtime/session/team-mcp-stdio.ts', import.meta.url))],
-      env: { DSH_ACP_TEAM_MCP_URL: server.url, ELECTRON_RUN_AS_NODE: '1' },
+      command: server.command,
+      // This unit suite loads the TypeScript entry. The emitted command targets its built .js file.
+      args: server.args.map((arg) => arg.replace(/team-mcp-stdio\.js$/, 'team-mcp-stdio.ts')),
+      env,
       stderr: 'pipe',
     })
     const client = new Client({ name: 'stdio-cancellation-fixture', version: '1' })
@@ -2793,6 +2802,8 @@ describe('session-owned native Teams MCP bridge', () => {
       await transport.close()
     })
     await client.connect(transport)
+    const name = 'list_agents'
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toContain(name)
     let receiveAbort!: (signal: AbortSignal) => void
     const executionStarted = new Promise<AbortSignal>((resolve) => {
       receiveAbort = resolve

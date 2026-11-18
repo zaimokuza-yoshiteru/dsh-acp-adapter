@@ -224,7 +224,9 @@ function finishReason(stopReason: string, locale?: string): FinishReason {
       kind: 'error',
       failure: {
         code: 'ACP_REFUSAL',
-        message: isChinese ? 'ACP 智能体拒绝了此请求。' : 'The ACP agent declined to answer this request.',
+        message: isChinese
+          ? 'ACP 智能体拒绝了此请求。继续对话时，它会跳过本轮内容。'
+          : 'The ACP agent declined this request. When you continue, it will skip this turn.',
       },
     }
   if (stopReason === 'max_turn_requests')
