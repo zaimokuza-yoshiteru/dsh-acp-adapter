@@ -22,8 +22,6 @@ jobs:
   real-devin:
     if: github.event_name == 'workflow_dispatch' && inputs.allow_model_usage == true && github.repository == 'zaimokuza-yoshiteru/dsh-acp-adapter'
     environment: devin-e2e
-    env:
-      DEVIN_TEST_VERSION: '3000.12.43'
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -48,17 +46,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          case "$DEVIN_TEST_VERSION/$(uname -m)" in
-            3000.12.43/arm64) platform=aarch64-apple-darwin; sha=87b2f032672e20fd6076e85d563901713b2c26c5192c011141c31cfcdbb2419e ;;
-            3000.12.43/x86_64) platform=x86_64-apple-darwin; sha=da8c3c8f08c1828caa0d1084b19fdfc2e4a4bc68b87c9080b682f7aa316e8518 ;;
-            *) exit 1 ;;
-          esac
-          mkdir "$RUNNER_TEMP/devin-real"
-          curl --fail --location --silent --show-error --retry 3 "https://static.devin.ai/cli/$DEVIN_TEST_VERSION/devin-$DEVIN_TEST_VERSION-$platform.tar.gz" -o "$RUNNER_TEMP/devin-real/archive.tar.gz"
-          echo "$sha  $RUNNER_TEMP/devin-real/archive.tar.gz" | shasum -a 256 --check
-          tar -xzf "$RUNNER_TEMP/devin-real/archive.tar.gz" -C "$RUNNER_TEMP/devin-real"
-          devin_exe="$(find "$RUNNER_TEMP/devin-real" -type f -name devin)"
-          "$devin_exe" version | grep -F "devin $DEVIN_TEST_VERSION ("
+          devin_exe="$(node scripts/install-ci-devin.mjs "$RUNNER_TEMP")"
           echo "DEVIN_TEST_EXE=$devin_exe" >> "$GITHUB_ENV"
           node scripts/check-devin-mcp.ts "$devin_exe"
       - name: Authenticated native DSH Teams (macOS)

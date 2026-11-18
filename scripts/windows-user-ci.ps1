@@ -29,22 +29,8 @@ pnpm test --no-file-parallelism
 pnpm build
 }
 # Test actual session-supplied MCP discovery without login or model calls.
-$devinVersion = if ($env:DEVIN_TEST_VERSION) { $env:DEVIN_TEST_VERSION } else { '3000.12.43' }
-$devinSha = switch ($devinVersion) {
-  '3000.12.43' { 'a76947bbcda169b64fd00b9faaab2baf4f92c613db28dec1b8dce5c48ba80fcd' }
-  default { throw 'Unsupported Devin test version' }
-}
-$devinZip = Join-Path $AuditRoot 'devin.zip'
-Invoke-WebRequest -Uri "https://static.devin.ai/cli/$devinVersion/devin-$devinVersion-x86_64-pc-windows.zip" -OutFile $devinZip
-if ((Get-FileHash -Algorithm SHA256 $devinZip).Hash.ToLowerInvariant() -ne $devinSha) { throw 'Devin archive integrity mismatch' }
-$devinRoot = Join-Path $AuditRoot 'devin'
-Expand-Archive -Path $devinZip -DestinationPath $devinRoot
-$devinExe = @(Get-ChildItem $devinRoot -Recurse -Filter devin.exe)
-if ($devinExe.Count -ne 1) { throw 'Expected one Devin executable' }
-$actualVersion = & $devinExe[0].FullName version
-Write-Output $actualVersion
-if (!$actualVersion.StartsWith("devin $devinVersion (")) { throw 'Devin executable version mismatch' }
-node scripts/check-devin-mcp.ts $devinExe[0].FullName ([Environment]::GetFolderPath('ApplicationData'))
+$devinExe = node scripts/install-ci-devin.mjs $AuditRoot
+node scripts/check-devin-mcp.ts $devinExe ([Environment]::GetFolderPath('ApplicationData'))
 if ($Live) {
   if (!$env:WINDSURF_API_KEY) { throw 'Missing DEVIN_CLI_TOKEN Secret in ordinary-user process' }
   if ($DevinTestModel -cne 'swe-2-high') { throw 'Missing configured Devin test model in ordinary-user process' }
@@ -54,7 +40,7 @@ if ($Live) {
   $env:DEVIN_LIVE_TRACE_DIR = Join-Path $AuditRoot 'devin-live-diagnostics'
   New-Item -ItemType Directory -Path $env:DEVIN_LIVE_TRACE_DIR -Force | Out-Null
   $env:DEVIN_TEST_MODEL = $DevinTestModel
-  node scripts/check-devin-live.ts $devinExe[0].FullName
+  node scripts/check-devin-live.ts $devinExe
 } else {
   npm pack --ignore-scripts
 }

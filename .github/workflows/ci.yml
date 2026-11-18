@@ -58,21 +58,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Same release and probe as Windows. Never install into the runner's profile.
-          devin_version=3000.12.43
-          case "$(uname -m)" in
-            arm64) devin_platform=aarch64-apple-darwin; devin_sha=87b2f032672e20fd6076e85d563901713b2c26c5192c011141c31cfcdbb2419e ;;
-            x86_64) devin_platform=x86_64-apple-darwin; devin_sha=da8c3c8f08c1828caa0d1084b19fdfc2e4a4bc68b87c9080b682f7aa316e8518 ;;
-            *) exit 1 ;;
-          esac
-          devin_root="$(mktemp -d "$RUNNER_TEMP/devin-mcp.XXXXXX")"
-          trap 'rm -rf "$devin_root"' EXIT
-          curl --fail --location --silent --show-error --retry 3 "https://static.devin.ai/cli/$devin_version/devin-$devin_version-$devin_platform.tar.gz" -o "$devin_root/devin.tar.gz"
-          echo "$devin_sha  $devin_root/devin.tar.gz" | shasum -a 256 --check
-          tar -xzf "$devin_root/devin.tar.gz" -C "$devin_root"
-          devin_exe="$(find "$devin_root" -type f -name devin)"
-          test -x "$devin_exe"
-          "$devin_exe" version
+          devin_exe="$(node scripts/install-ci-devin.mjs "$RUNNER_TEMP")"
           node scripts/check-devin-mcp.ts "$devin_exe"
       - name: Install, verify and pack as an ordinary Windows user
         if: runner.os == 'Windows'
