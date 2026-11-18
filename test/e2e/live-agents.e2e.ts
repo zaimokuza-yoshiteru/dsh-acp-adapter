@@ -30,7 +30,8 @@ if (retain && selected?.length !== 1) throw new Error('Retained review requires 
 const teams = process.env.DSH_E2E_LIVE_TEAMS === '1'
 const multimodel = process.env.DSH_E2E_LIVE_TEAMS_MULTIMODEL === '1'
 const steering = process.env.DSH_E2E_LIVE_STEERING === '1'
-const devinPermissions = process.env.DSH_E2E_LIVE_DEVIN_PERMISSIONS === '1'
+const inspectDevinPermission = process.env.DSH_E2E_LIVE_DEVIN_PERMISSIONS === 'inspect'
+const devinPermissions = process.env.DSH_E2E_LIVE_DEVIN_PERMISSIONS === '1' || inspectDevinPermission
 const nativeTeamApproval = process.env.DSH_E2E_LIVE_TEAMS_APPROVAL === '1'
 if (teams && steering) throw new Error('Choose either the live Teams or live steering scenario')
 if (nativeTeamApproval && (!teams || devinPermissions))
@@ -48,13 +49,15 @@ if (multimodel && (!teams || selected?.length !== 1 || selected[0] !== 'devin'))
 // Explicitly opt in: these use the user's Agent login and may consume credits.
 describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
   it.each(profiles.filter((profile) => selected === undefined || selected.includes(profile.id)))(
-    devinPermissions
-      ? '$id preserves member permission decisions and cancellation'
-      : teams
-        ? '$id completes native shared tasks and member messaging'
-        : steering
-          ? '$id delivers steering after real generation begins'
-          : '$id preserves host guidance and renders a real response',
+    inspectDevinPermission
+      ? '$id observes and cancels the first real member permission'
+      : devinPermissions
+        ? '$id preserves member permission decisions and cancellation'
+        : teams
+          ? '$id completes native shared tasks and member messaging'
+          : steering
+            ? '$id delivers steering after real generation begins'
+            : '$id preserves host guidance and renders a real response',
     async (profile) => {
       let devinEnvironment: Awaited<ReturnType<typeof prepareLiveDevinEnvironment>> | undefined
       let host!: AdapterWorld
@@ -213,6 +216,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
               provider,
               model,
               evidence: lifecycleEvidence,
+              inspectOnly: inspectDevinPermission,
               context: required(devinManualApproval),
             })
           } else {

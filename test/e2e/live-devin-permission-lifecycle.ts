@@ -32,6 +32,7 @@ export async function verifyLiveDevinPermissionLifecycle({
   model,
   evidence,
   context,
+  inspectOnly,
 }: {
   host: AdapterWorld
   page: Page
@@ -39,12 +40,14 @@ export async function verifyLiveDevinPermissionLifecycle({
   model: string
   evidence: Record<string, unknown> & { directory: string }
   context: DevinLiveFixtureContext
+  inspectOnly: boolean
 }) {
   if (provider !== 'acp-devin' || model.trim() === '') throw new Error('LIVE_DEVIN_PERMISSION_EXPLICIT_ROUTE_REQUIRED')
   const token = `PERMISSION_${randomUUID().slice(0, 8)}`
   const memberName = `permission-${token.slice(-8)}`
   mkdirSync(evidence.directory, { recursive: true })
-  const phases = (['allow', 'reject', 'stop'] as const).map((kind) => ({
+  const phaseKinds = inspectOnly ? (['stop'] as const) : (['allow', 'reject', 'stop'] as const)
+  const phases = phaseKinds.map((kind) => ({
     kind,
     expected: { file_path: join(host.workspaceCwd, `${token}-${kind}.txt`), content: `${token}_${kind}` },
     requestId: undefined as string | undefined,
@@ -274,13 +277,6 @@ export async function verifyLiveDevinPermissionLifecycle({
           row.data.toolCallId === asked.toolCall.toolCallId,
       )
       expect(bridges).toHaveLength(1)
-      const validated = validateDevinMarkerPermission({
-        asked,
-        bridge: required(bridges[0]).data,
-        detail: question.detail,
-        expected: phase.expected,
-        cliVersion: context.cliVersion,
-      })
       await context.assertIsolatedSessionMcp(required(child.session.header.cwd))
       expect(question.options?.map((item) => item.label)).toEqual(asked.options.map((item) => item.name))
       const card = page.locator('[data-question-key]:visible').filter({ hasText: question.question })
@@ -294,11 +290,25 @@ export async function verifyLiveDevinPermissionLifecycle({
       await card.screenshot({ path: join(evidence.directory, `${token}-${phase.kind}-pending.png`) })
       const row: Record<string, unknown> = {
         phase: phase.kind,
-        asked,
-        identity: validated.identity,
+        asked: {
+          optionCount: asked.optionCount,
+          options: asked.options,
+          toolCall: { title: asked.toolCall.title, rawInputHash: asked.toolCall.rawInputHash },
+        },
+        identitySource: required(bridges[0]).data.identitySource,
+        structuredIdentityPresent: required(bridges[0]).data.structuredIdentityPresent,
         admissions: phase.admissions,
       }
       results.push(row)
+      const validated = validateDevinMarkerPermission({
+        asked,
+        bridge: required(bridges[0]).data,
+        detail: question.detail,
+        expected: phase.expected,
+        cliVersion: context.cliVersion,
+      })
+      row.identity = validated.identity
+      row.matchesRequestedWrite = true
       const standingApproval = host.ctx.approval.overrideOf(child.session)
       const standingSandbox = host.ctx.sandboxPolicy.resolve({ session: child.session }).mode
       const assertPending = () => {
@@ -364,6 +374,13 @@ export async function verifyLiveDevinPermissionLifecycle({
         path: join(evidence.directory, `${token}-${currentPhase.kind}-settled.png`),
         fullPage: true,
       })
+    }
+    if (inspectOnly) {
+      expect(acpPermissionAudit(host, 'asked').filter((row) => row.sessionId === childId)).toHaveLength(1)
+      expect(acpPermissionAudit(host, 'decided').filter((row) => row.sessionId === childId)).toHaveLength(1)
+      Object.assign(evidence, { status: 'observed-and-cancelled', phases })
+      passed = true
+      return
     }
     phase = undefined
     const resumeTurnStart = turns.length

@@ -240,7 +240,9 @@ node scripts/check-devin-live.ts "$(command -v devin)"
 
 RC.2 的真实浏览器共享任务验收使用 `live-agents.e2e.ts`，显式设置 `DSH_E2E_LIVE=1 DSH_E2E_LIVE_PROFILES=devin DSH_E2E_LIVE_TEAMS=1 DEVIN_LIVE_AUTH=existing DSH_E2E_LIVE_DEVIN_MODEL=<精确模型>`。它通过原生界面逐项回答本次两个任务和一个成员的原始一次授权，验证依赖任务、成员消息及收到消息后的主会话回复。对于仅含标题的请求，测试驱动仅在 CLI 与 CI 固定版本一致、隔离会话的工具及参数匹配且原生选项逐项匹配时，才代为点击一次授权。选项变化时驱动停止，诊断保留对应阶段。历史审批样本不能作为新版本的真实 Teams 验收。CLI 发布版本由同一可执行文件的有界 `--version` 取得；ACP 握手版本单独记录，不能混用。
 
-在以上设置中加 `DSH_E2E_LIVE_DEVIN_PERMISSIONS=1`，改为单独验收真实子会话的 Allow、Reject、待审批时 Stop 和继续，避免重复执行共享任务。该专项明确使用隔离 Ask 配置，只有各阶段精确的临时 marker 写入属于授权范围；成员创建由测试调用公开原生接口控制，不能据此声称模型自己创建成员。它与旧 `DSH_E2E_LIVE_TEAMS_APPROVAL` 的 native bash sandbox escalation 是不同场景，不互相替代。两项入口均使用临时认证副本、HOME/XDG 和 profile，结束后清理，不修改用户日常配置。
+更新 Devin CLI 后，可先在以上设置中加 `DSH_E2E_LIVE_DEVIN_PERMISSIONS=inspect`，观察首张真实子会话审批卡。驱动逐项核对原始选项与原生界面后，在子会话点击 Stop，并检查请求取消、没有派发和文件未创建。
+
+设为 `DSH_E2E_LIVE_DEVIN_PERMISSIONS=1`，则单独验收真实子会话的 Allow、Reject、待审批时 Stop 和继续，避免重复执行共享任务。该专项明确使用隔离 Ask 配置，只有各阶段精确的临时 marker 写入属于授权范围；成员创建由测试调用公开原生接口控制，不能据此声称模型自己创建成员。它与旧 `DSH_E2E_LIVE_TEAMS_APPROVAL` 的 native bash sandbox escalation 是不同场景，不互相替代。两项入口均使用临时认证副本、HOME/XDG 和 profile，结束后清理，不修改用户日常配置。
 
 Claude 使用 DeepSeek 等第三方服务时，应同时核对 `ANTHROPIC_BASE_URL`、认证变量及模型映射，并通过 `DSH_E2E_LIVE_CLAUDE_ENV_KEYS` 传入所需配置。模型目录可返回不代表生成已认证，模型别名也不能证明实际供应商。遇到意外 OAuth 报错时，先检查临时 profile 的有效路由和认证配置，再判断是否需要登录。
 

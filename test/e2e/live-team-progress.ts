@@ -1,6 +1,20 @@
 import type { TurnEndReason } from '@deepseek-ai/dsh-session'
 import { vi } from 'vitest'
 
+/** The result must appear outside the token and task IDs in the final reply. */
+export function hasTeamCalculationResult(reply: string | undefined, token: string): boolean {
+  return reply?.includes(token) === true && /(?<![\w.+-])\+?2(?:\.0+)?(?!\w|\.\d)/.test(reply.replaceAll(token, ' '))
+}
+
+/** Both native board reads return complete tasks. A filtered list can return an empty page. */
+export function includesReadTask(tool: string, value: unknown, subject: string): boolean {
+  const matches = (task: unknown) =>
+    typeof task === 'object' && task !== null && 'subject' in task && task.subject === subject
+  if (tool === 'team_task_get') return matches(value)
+  if (tool !== 'team_task_list' || typeof value !== 'object' || value === null || !('tasks' in value)) return false
+  return Array.isArray(value.tasks) && value.tasks.some(matches)
+}
+
 /** A completed turn may precede a teammate relay; only an error ends this live scenario. */
 export function createLiveTeamProgress() {
   let failure: Error | undefined
