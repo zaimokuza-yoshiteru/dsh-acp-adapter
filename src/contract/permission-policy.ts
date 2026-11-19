@@ -44,3 +44,13 @@ export interface AcpExternalPolicyRequest {
   readonly params: AcpPermissionFacts<acp.RequestPermissionRequest>
   readonly signal?: AbortSignal
 }
+
+/** The official agy CLI reports the operation before creating an ACP permission request. */
+export interface AcpPreToolPolicyRequest {
+  readonly agent: Agent
+  readonly profile: 'antigravity'
+  readonly params: AcpPermissionFacts<{ sessionId: string; toolCall: acp.ToolCallUpdate }>
+  readonly signal: AbortSignal
+}
+
+export type AcpPreToolPolicyDecision = 'not-applicable' | { readonly decision: 'deny-once'; readonly reason: string }

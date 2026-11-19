@@ -74,6 +74,20 @@ export async function apply(ctx: Context): Promise<void> {
 
 策略决定不直接替代 Sidecar 持久化。现有权限处理器继续记录同一组 `asked` / `decided`，完成审计、取消和实例身份检查后才回复 ACP。服务不另设规则库、授权缓存或持久化 owner。
 
+## 让 Antigravity 在同一轮读到命令拒绝理由
+
+在 Apple 芯片 Mac 上，以 `agy acp` 或 `agy acp --stdio` 启动已验证的 Google 官方 `agy` 1.5.12 时，策略插件可以在同一服务注册 `dsh-acp/pre-tool-policy`，检查 CLI 即将执行的原生命令 `run_command`。适配器会为这个进程加载 Google 的 `PreToolUse` 钩子。用户可以沿用当前工作区和已有的钩子文件。
+
+```ts
+ctx.on('dsh-acp/pre-tool-policy', async (request, next) => {
+  if (request.params.toolCall.kind === 'execute')
+    return { decision: 'deny-once', reason: '此工作区只允许只读操作。' }
+  return next()
+})
+```
+
+事件提供执行操作的 Agent、ACP 会话、工具调用和取消信号。公开类型为 `AcpPreToolPolicyRequest` 和 `AcpPreToolPolicyDecision`。规则可以附公开理由拒绝本次调用、调用 `next()` 交给下一条规则，或返回 `not-applicable` 交回 CLI。拒绝决定单独写入 `phase: 'pre-tool'` 的权限审计，关联真实工具调用 ID，Antigravity 在当前轮就能收到理由。规则交回 CLI 后，原有规则继续生效，需要人工确认时仍显示原始选项。已有策略插件可以单独接入这个事件，保留自己的 ACP 审批处理器。
+
 ## 多策略顺序与生命周期
 
 事件沿用 Cordis waterfall，而不是汇总投票：
@@ -91,7 +105,7 @@ export async function apply(ctx: Context): Promise<void> {
 - 已确认身份的 DSH 工具桥 Auto 保留原路径和真实 `tools.execute` 检查。此扩展不改变 Auto、Full access、bypass 或子会话原生 `never` 的含义。
 - Devin 完整授权保持保守人工路径。不能从 Agent 自报 metadata 或模式推断企业强制 Ask 可被自动回答。
 - 父页面只代呈原子会话的审批；回复、执行身份和审计仍归原子会话。取消、实例替换和迟到决定不能授予已失效请求。
-- 这里只处理 Agent 实际发来的 ACP 授权请求，不会拦截 Agent 私有进程里没有发来请求的操作，也不会把这些工具接入 DSH Auto Review。ACP 客户端提供的文件和终端操作仍有各自独立的控制路径。
+- 两个 ACP 授权事件处理 Agent 实际发来的请求。上述 Antigravity 执行前事件覆盖它的原生命令工具。ACP 客户端提供的文件和终端操作仍有各自独立的控制路径。
 - 无规则且无人在线时仍等待人工；浏览器连接状态不能当作自动允许的条件。不能承诺普遍无人值守或 Host 崩溃后恢复未完成的机器策略调用。
 
 接入方需要验证自己的规则和部署顺序。测试策略的结果不代表 Issue 作者实际插件已经兼容，也不代表所有 Agent、企业策略或操作系统都已通过验收。用户安装说明保持在 README；实际运行记录和验证证据不属于此公共 API 文档。

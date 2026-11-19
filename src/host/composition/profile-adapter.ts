@@ -58,6 +58,8 @@ import {
   profileLaunchIdentityHash,
 } from '../../domain/session/launch-fingerprint.ts'
 import { prepareAgentLaunch } from './agent-launch.ts'
+import { isAgyPreToolUseCandidate } from '../../runtime/process/agy-pre-tool-use.ts'
+import { agyPreToolPolicy } from './agy-pre-tool-policy.ts'
 import { buildAcpSpawnPlan } from '../../domain/policy/sandbox.ts'
 import { effectiveRuntimeOf, retiredAgentReason } from '../../contract/agent-config.ts'
 import {
@@ -4881,8 +4883,26 @@ export class AcpProfileAdapter extends LlmAdapter {
           }),
       config: profile,
       subprocess: processSeam,
+      ...(this.hostRoot !== undefined &&
+      this.sidecar !== undefined &&
+      isAgyPreToolUseCandidate([profile.command, ...profile.args])
+        ? agyPreToolPolicy(this.hostRoot, sessionId as never, (data) =>
+            this.sidecar!.append(sessionId as never, { kind: 'permission', data }),
+          )
+        : {}),
       cwd,
-      prepareLaunch: (config) => prepareAgentLaunch(runtime, config as AcpStubAgentConfig),
+      prepareLaunch: (config, cwd, preToolUse) =>
+        prepareAgentLaunch(
+          runtime,
+          config as AcpStubAgentConfig,
+          preToolUse === undefined
+            ? undefined
+            : {
+                cwd,
+                onPreToolUse: preToolUse,
+                resolveExecutable: (command, env) => processSeam.resolveExecutable(command, env),
+              },
+        ),
       createFileSystemHandlers: () =>
         createAcpFileSystemHandlers({
           profileId: this.profileId,

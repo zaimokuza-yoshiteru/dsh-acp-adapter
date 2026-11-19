@@ -260,6 +260,7 @@ export interface AcpProjectedSubagentsView {
 export type AcpAuditSummaryCode =
   | 'binding.established'
   | 'permission.asked'
+  | 'permission.pre-tool-denied'
   | 'permission.bridge'
   | 'permission.decided'
   | 'reconciliation.required'

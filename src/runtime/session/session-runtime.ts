@@ -11,6 +11,11 @@ import type * as acp from '@agentclientprotocol/sdk'
 import { AcpClientConnection, supportsFork } from '../../protocol/v1/connection.ts'
 import type { AcpConnectionSpec, AcpSpawnPlanView } from '../process/types.ts'
 import type { SubprocessSeam } from '../process/subprocess.ts'
+import type { AgyPreToolUseInput, AgyPreToolUseReply } from '../process/agy-pre-tool-use.ts'
+import { AgyPreToolCalls } from './agy-pre-tool.ts'
+import { HOOK_UNAVAILABLE } from '../process/agy-hook-wire.ts'
+import { realpath } from 'node:fs/promises'
+import { processWarningReporter } from '../process/warnings.ts'
 import type { AcpFileSystemHandlers } from '../client-capabilities/filesystem.ts'
 import { acpConfigOptionsSnapshot } from '../../protocol/v1/config-options.ts'
 import type { AcpSessionNotification, AcpTerminalHandlers } from '../../protocol/v1/types.ts'
@@ -118,6 +123,8 @@ export interface AcpRuntimeLaunch {
   readonly argv: readonly string[]
   readonly env: Record<string, string>
   readonly spawnPlan: AcpSpawnPlanView
+  /** Release per-process customizations. Concurrent shutdown paths share the same result. */
+  readonly close?: () => Promise<void>
 }
 
 export interface AcpRuntimeContextUsage {
@@ -139,7 +146,11 @@ export interface AcpSessionRuntimeOptions {
   readonly config: AcpRuntimeConfig
   readonly subprocess: SubprocessSeam
   readonly cwd: string
-  readonly prepareLaunch: (config: AcpRuntimeConfig, cwd: string) => Promise<AcpRuntimeLaunch>
+  readonly prepareLaunch: (
+    config: AcpRuntimeConfig,
+    cwd: string,
+    preToolUse?: (input: AgyPreToolUseInput, signal: AbortSignal) => Promise<AgyPreToolUseReply>,
+  ) => Promise<AcpRuntimeLaunch>
   /** Optional host capability handlers, created after the native launch environment is known. */
   readonly createFileSystemHandlers?: (context: {
     readonly cwd: string
@@ -158,6 +169,12 @@ export interface AcpSessionRuntimeOptions {
     onPolicyDenial?: (feedback: AcpPermissionFeedback) => void,
   ) => Promise<acp.RequestPermissionResponse>
   readonly onPermissionCheck?: (check: AcpPermissionCheck, request: acp.RequestPermissionRequest) => Promise<void>
+  readonly hasAgyPreToolPolicy?: () => boolean
+  readonly onAgyPreToolUse?: (
+    sessionId: string,
+    call: acp.ToolCallUpdate,
+    signal: AbortSignal,
+  ) => Promise<AgyPreToolUseReply>
   /** Host-owned form elicitation bridge; URL elicitation is intentionally not advertised. */
   readonly onElicitationRequest?: (
     params: acp.CreateElicitationRequest,
@@ -454,6 +471,7 @@ export class AcpSessionRuntime {
   private closing: Promise<void> | undefined
   private cancelledRefreshController: AbortController | undefined
   private launch: AcpRuntimeLaunch | undefined
+  private preToolPolicyAtLaunch = false
   private replayHandler: ((notification: AcpSessionNotification) => void) | undefined
   private restoringSessionId: string | undefined
   private connectionAbort: AbortController | undefined
@@ -491,6 +509,7 @@ export class AcpSessionRuntime {
   /** One map per active prompt. Tool call ids are only meaningful inside this
    * lifetime for permission enrichment and must never leak into another turn. */
   private promptToolSnapshots: Map<string, acp.ToolCallUpdate> | undefined
+  private readonly preToolCalls = new AgyPreToolCalls()
   private readonly cancelGraceMs: number
   private readonly retiredMcpLeases = new Set<AcpMcpLease>()
 
@@ -705,6 +724,7 @@ export class AcpSessionRuntime {
         this.connection.isTransportAvailable === false ||
         this.mcpLease?.signal.aborted === true ||
         this.mcpLease?.needsRefresh?.() === true ||
+        this.preToolPolicyAtLaunch !== (this.options.hasAgyPreToolPolicy?.() === true) ||
         this.mcpKey !== this.options.mcpKey?.())
     )
   }
@@ -1377,7 +1397,7 @@ export class AcpSessionRuntime {
             this.cancelGraceMs,
           )
     const connectionClose = connection?.close()
-    const results = await Promise.allSettled([leaseClose, connectionClose])
+    const results = await Promise.allSettled([leaseClose, connectionClose, launch?.close?.()])
     // A close request does not prove the Agent's private work has stopped.
     // Release native job waiters only after cleanup reports its actual result.
     qwenTasks?.close(connection?.isCleanupConfirmed === true)
@@ -1514,9 +1534,35 @@ export class AcpSessionRuntime {
     this.connectionAbort = connectionAbort
     const setupSignal =
       signal === undefined ? connectionAbort.signal : AbortSignal.any([signal, connectionAbort.signal])
-    const launch = await this.options.prepareLaunch(this.options.config, this.options.cwd)
-    setupSignal.throwIfAborted()
-    this.launch = launch
+    const policyAtLaunch = this.options.hasAgyPreToolPolicy?.() === true
+    const launch = await this.options.prepareLaunch(
+      this.options.config,
+      this.options.cwd,
+      policyAtLaunch
+        ? (input, transportSignal) =>
+            this.handleAgyPreToolUse(input, AbortSignal.any([connectionAbort.signal, transportSignal]))
+        : undefined,
+    )
+    try {
+      setupSignal.throwIfAborted()
+      this.launch = launch
+      this.preToolPolicyAtLaunch = policyAtLaunch
+      await this.startPreparedConnection(starting, setupSignal, launch)
+    } catch (error) {
+      if (this.launch === launch) this.launch = undefined
+      // A concurrent close can precede prepareLaunch acquiring its resources.
+      // The startup owner still releases them before close() can finish.
+      await launch.close?.()
+      throw error
+    }
+  }
+
+  private async startPreparedConnection(
+    starting: RuntimeStartup,
+    setupSignal: AbortSignal,
+    launch: AcpRuntimeLaunch,
+  ): Promise<void> {
+    const connectionAbort = starting.controller
     const spec: AcpConnectionSpec = {
       argv: [...launch.argv],
       cwd: this.options.cwd,
@@ -1633,6 +1679,13 @@ export class AcpSessionRuntime {
       },
     })
     starting.connection = connection
+    if (launch.close !== undefined) {
+      const closeLaunch = launch.close
+      const report = processWarningReporter(this.options.onProcessWarn)
+      void connection.failed
+        .catch(closeLaunch)
+        .catch(() => report('Failed to release ACP process customizations after disconnect'))
+    }
     try {
       await connection.initialize({ signal: setupSignal })
       setupSignal.throwIfAborted()
@@ -2138,6 +2191,29 @@ export class AcpSessionRuntime {
     if (signals.length === 0) return undefined
     if (signals.length === 1) return signals[0]
     return AbortSignal.any(signals)
+  }
+
+  private async handleAgyPreToolUse(
+    input: AgyPreToolUseInput,
+    transportSignal: AbortSignal,
+  ): Promise<AgyPreToolUseReply> {
+    const info = this.connection?.agentInfo
+    const snapshots = this.promptToolSnapshots
+    const evaluate = this.options.onAgyPreToolUse
+    if (input.toolName !== 'run_command') return { decision: 'delegate' }
+    if (!evaluate || info?.name !== 'Antigravity ACP Server' || info.version !== '1.5.12') return HOOK_UNAVAILABLE
+    const promptSignal = this.permissionSignal()
+    if (!this.promptActive || !snapshots || !promptSignal || input.sessionId !== this.sessionId || !input.cwd)
+      return HOOK_UNAVAILABLE
+    const signal = AbortSignal.any([promptSignal, transportSignal])
+    if (input.cwd !== this.options.cwd) {
+      try {
+        if ((await realpath(input.cwd)) !== (await realpath(this.options.cwd))) return HOOK_UNAVAILABLE
+      } catch {
+        return HOOK_UNAVAILABLE
+      }
+    }
+    return this.preToolCalls.decide(input, snapshots, signal, evaluate)
   }
 
   private async handlePermissionRequest(params: acp.RequestPermissionRequest): Promise<acp.RequestPermissionResponse> {

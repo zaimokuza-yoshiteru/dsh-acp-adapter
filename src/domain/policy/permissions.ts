@@ -49,7 +49,7 @@ export function withDshTeamPermissionPresentation<T extends acp.ToolCallUpdate>(
 export interface AcpPermissionAuditRecord {
   readonly kind: typeof ACP_PERMISSION_AUDIT_KIND
   readonly time: number
-  readonly data: AcpPermissionAuditData
+  readonly data: Extract<AcpPermissionAuditData, { phase: 'asked' | 'decided' }>
 }
 export interface AcpPermissionAuditChannel {
   append(record: AcpPermissionAuditRecord): Promise<void>
@@ -502,7 +502,7 @@ export function createAcpNativePermissionHandler(
       deps.log?.(`dsh-acp native permission rejected by bounds: ${errorMessage(error)}`)
       return cancelled()
     }
-    const append = async (data: AcpPermissionAuditData): Promise<boolean> => {
+    const append = async (data: AcpPermissionAuditRecord['data']): Promise<boolean> => {
       if (deps.audit === undefined) return true
       try {
         await deps.audit.append({ kind: ACP_PERMISSION_AUDIT_KIND, time: deps.now?.() ?? Date.now(), data })

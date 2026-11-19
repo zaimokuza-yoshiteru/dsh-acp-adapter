@@ -4,12 +4,16 @@ import {
   readExternalPolicyDecision,
   type AcpExternalPolicyDecision,
   type AcpExternalPolicyRequest,
+  type AcpPreToolPolicyDecision,
+  type AcpPreToolPolicyRequest,
 } from '../../contract/permission-policy.ts'
 
 export type {
   AcpExternalPolicyDecision,
   AcpExternalPolicyRequest,
   AcpPermissionFacts,
+  AcpPreToolPolicyDecision,
+  AcpPreToolPolicyRequest,
 } from '../../contract/permission-policy.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -17,6 +21,12 @@ declare module '@deepseek-ai/cordis' {
     acpPermissionPolicy: AcpPermissionPolicy
   }
   interface Events {
+    /** Optional machine denial for an agy native command, before ACP offers permission choices. */
+    'dsh-acp/pre-tool-policy'(
+      this: ReturnType<typeof agentCarrier>,
+      request: AcpPreToolPolicyRequest,
+      next: () => Promise<AcpPreToolPolicyDecision>,
+    ): Promise<AcpPreToolPolicyDecision>
     /**
      * Opt-in machine policy. Call `next()` to defer; never open UI here.
      * This event has no connection to the native `approval/request` chain.
@@ -51,6 +61,12 @@ function freezeFacts(value: unknown): void {
   for (const child of Object.values(value)) freezeFacts(child)
 }
 
+function snapshot<T>(facts: T): T {
+  const cloned = structuredClone(facts)
+  freezeFacts(cloned)
+  return cloned
+}
+
 /**
  * Host-local dispatch only. The existing permission handler owns asked/decided
  * audit, response mapping, and complete human fallback; this service owns no
@@ -83,25 +99,70 @@ export default class AcpPermissionPolicy extends Service {
     return this.dispatch('dsh-acp/binary-permission-policy', request)
   }
 
+  hasPreToolPolicy(agent: AcpPreToolPolicyRequest['agent']): boolean {
+    return (
+      this.accepting &&
+      this.ctx.events.dispatch('waterfall', [agentCarrier(agent), 'dsh-acp/pre-tool-policy']).length > 0
+    )
+  }
+
+  async evaluatePreTool(request: AcpPreToolPolicyRequest): Promise<AcpPreToolPolicyDecision | 'failed' | 'cancelled'> {
+    const result = await this.run(request.signal, (signal) => {
+      const input = Object.freeze({
+        agent: request.agent,
+        profile: request.profile,
+        params: snapshot(request.params),
+        signal,
+      })
+      return () =>
+        this.ctx.waterfall(
+          agentCarrier(input.agent),
+          'dsh-acp/pre-tool-policy',
+          input,
+          async (): Promise<AcpPreToolPolicyDecision> => 'not-applicable',
+        )
+    })
+    if (result === 'not-applicable' || result === 'cancelled') return result
+    return typeof result === 'object' &&
+      result.decision === 'deny-once' &&
+      typeof result.reason === 'string' &&
+      result.reason.trim()
+      ? { decision: 'deny-once', reason: result.reason }
+      : 'failed'
+  }
+
   private dispatch(
     event: 'dsh-acp/permission-policy' | 'dsh-acp/binary-permission-policy',
     request: AcpExternalPolicyRequest,
   ): Promise<AcpExternalPolicyDecision> {
-    if (!this.accepting || request.signal?.aborted) return Promise.resolve('cancelled')
-    const signal = AbortSignal.any([this.lifetime.signal, ...(request.signal ? [request.signal] : [])])
-    let input: AcpExternalPolicyRequest
-    try {
-      // Capture before yielding: mutation of the original request between
-      // evaluate() and provider dispatch must not change the authorization facts.
-      const params = structuredClone(request.params)
-      freezeFacts(params)
-      input = Object.freeze({
+    return this.run(request.signal, (signal) => {
+      const input = Object.freeze({
         agent: request.agent,
         requestId: request.requestId,
         profile: request.profile,
-        params,
+        params: snapshot(request.params),
         signal,
       })
+      return () =>
+        this.ctx.waterfall(
+          agentCarrier(input.agent),
+          event,
+          input,
+          async (): Promise<AcpExternalPolicyDecision> => 'not-applicable',
+        )
+    })
+  }
+
+  private run(
+    requestSignal: AbortSignal | undefined,
+    capture: (signal: AbortSignal) => () => Promise<AcpExternalPolicyDecision>,
+  ): Promise<AcpExternalPolicyDecision> {
+    if (!this.accepting || requestSignal?.aborted) return Promise.resolve('cancelled')
+    const signal = AbortSignal.any([this.lifetime.signal, ...(requestSignal ? [requestSignal] : [])])
+    let dispatch: () => Promise<AcpExternalPolicyDecision>
+    try {
+      // Snapshot before yielding. A caller may retain and change the original facts.
+      dispatch = capture(signal)
     } catch {
       return Promise.resolve(signal.aborted ? 'cancelled' : 'failed')
     }
@@ -114,12 +175,7 @@ export default class AcpPermissionPolicy extends Service {
     const settled = Promise.resolve()
       .then(async (): Promise<AcpExternalPolicyDecision> => {
         if (signal.aborted) return 'cancelled'
-        const decision = await this.ctx.waterfall(
-          agentCarrier(input.agent),
-          event,
-          input,
-          async (): Promise<AcpExternalPolicyDecision> => 'not-applicable',
-        )
+        const decision = await dispatch()
         const parsed = readExternalPolicyDecision(decision)
         return parsed.reason === undefined ? parsed.decision : parsed
       })
