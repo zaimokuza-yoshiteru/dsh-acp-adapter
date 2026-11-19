@@ -625,8 +625,8 @@ export function createAcpNativePermissionHandler(
           ...(params.toolCall.rawInput === undefined ? {} : { toolArgs: params.toolCall.rawInput }),
           ...(commandLine === undefined ? {} : { commandLine }),
           reason: [
-            nativePermissionReason(params.toolCall, copy),
             ...(humanPolicyReason === undefined ? [] : [humanPolicyReason]),
+            nativePermissionReason(params.toolCall, copy),
             binaryChoiceLine(copy.allowOnce, binary.allow),
             ...(binary.reject === undefined ? [] : [binaryChoiceLine(copy.rejectOnce, binary.reject)]),
           ].join('\n'),
@@ -669,7 +669,7 @@ export function createAcpNativePermissionHandler(
             id: questionId,
             question: nativeInteractionQuestion
               ? params.toolCall.title!
-              : [permissionQuestionFacts(params.toolCall, copy, deps.nativeQuestionProfile, file), humanPolicyReason]
+              : [humanPolicyReason, permissionQuestionFacts(params.toolCall, copy, deps.nativeQuestionProfile, file)]
                   .filter((part) => part !== undefined)
                   .join('\n\n'),
             ...(nativeInteractionQuestion ? {} : { header: copy.permission }),

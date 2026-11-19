@@ -1025,10 +1025,12 @@ export class AcpSessionRuntime {
             : { ...notification, update: { ...update, ...presented } as typeof update },
         )
       }
+      let remoteTurnMayHaveStarted = adoptedTurn !== undefined
       const wirePrompt = async (
         wireContent: acp.ContentBlock[],
         projection?: AcpPromptProjection,
       ): Promise<acp.PromptResponse> => {
+        remoteTurnMayHaveStarted = false
         this.wirePromptActive = true
         try {
           const context: acp.ContentBlock[] = []
@@ -1043,13 +1045,10 @@ export class AcpSessionRuntime {
               ),
             })
           const candidate = this.beginModelProjection(wireContent, projection)
-          for (const note of this.policyFeedback.splice(0)) {
-            if (note.sessionId === sessionId && note.feedback.isCurrentOwner())
-              context.push({ type: 'text', text: generatedContextBlock(note.feedback.text) })
-          }
+          const blocks = [...context, ...candidate.content]
           const response = await connection.prompt(
             sessionId,
-            [...context, ...candidate.content],
+            blocks,
             (notification) => {
               // Qwen's discrete "background task completed" line is task state,
               // not part of the assistant answer.
@@ -1063,6 +1062,24 @@ export class AcpSessionRuntime {
             {
               beforeDispatch: () => {
                 promptOptions.beforeDispatch?.()
+                // Host work has drained. Resolve ownership and consume the pending reasons
+                // here so a rejected local admission leaves them for the real next prompt.
+                if (
+                  setupSignal.aborted ||
+                  connection.isClosed ||
+                  this.connection !== connection ||
+                  this.sessionId !== sessionId
+                )
+                  throw new AcpPromptNotDispatchedError()
+                const reasons = this.policyFeedback
+                  .filter((note) => note.sessionId === sessionId && note.feedback.isCurrentOwner())
+                  .map((note): acp.ContentBlock => ({
+                    type: 'text',
+                    text: generatedContextBlock(note.feedback.text),
+                  }))
+                blocks.splice(context.length, 0, ...reasons)
+                this.policyFeedback.length = 0
+                remoteTurnMayHaveStarted = true
                 if (instructionsChanged) this.deliveredMcpInstructions = undefined
               },
             },
@@ -1074,6 +1091,7 @@ export class AcpSessionRuntime {
           return response
         } catch (error) {
           this.modelProjection = undefined
+          if (!remoteTurnMayHaveStarted && isAborted(signal)) return { stopReason: 'cancelled' }
           throw error
         } finally {
           this.wirePromptActive = false
@@ -1149,7 +1167,12 @@ export class AcpSessionRuntime {
         // process connection. Natural completion must cancel an unresolved host
         // question just as Stop does, before another turn can begin.
         const externallyAborted = isAborted(signal)
-        if (externallyAborted || promptResponse === undefined || promptResponse.stopReason === 'cancelled')
+        if (
+          this.connection === connection &&
+          (externallyAborted ||
+            (promptResponse === undefined && remoteTurnMayHaveStarted) ||
+            promptResponse?.stopReason === 'cancelled')
+        )
           this.policyFeedback.length = 0
         this.mcpLease?.endPrompt({
           ...(promptResponse === undefined ? {} : { stopReason: promptResponse.stopReason }),
