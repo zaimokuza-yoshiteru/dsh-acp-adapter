@@ -15,6 +15,7 @@ type WireEvent = {
   pid: number
   model?: string
   target?: string
+  selectorId?: string
   applied?: string
   markers?: string[]
   images?: string[]
@@ -418,6 +419,41 @@ it.each(['refuse', 'unconfirmed', 'disconnect-before', 'disconnect-after'])(
     }
   },
 )
+
+it('keeps input available when the original Agent reloads with a renamed model selector', async () => {
+  const host = await launchAdapterWorld()
+  try {
+    const run = await start(host, 'standard', true)
+    const session = run.agent.session
+    const manager = host.ctx.pluginManager
+    const plugin = (await manager.listPlugins()).find((entry) => entry.moduleName === '@zaimokuza/dsh-acp-adapter')!
+    expect(await manager.setPluginEnabled(plugin.entryId, false)).toMatchObject({ application: 'applied' })
+    run.fault('renamed-selector')
+    expect(await manager.setPluginEnabled(plugin.entryId, true)).toMatchObject({ application: 'applied' })
+    await vi.waitFor(() => expect(host.ctx.llm.listProviders().some((entry) => entry.id === provider)).toBe(true))
+    expect((await run.submit('SECOND')).kind).toBe('error')
+    const loads = run.events().filter((entry) => entry.method === 'session/load')
+    expect(loads.at(-1)).toMatchObject({ selectorId: 'llm_model', model: 'a' })
+    expect(run.events().filter((entry) => entry.method === 'session/set_config_option')).toHaveLength(0)
+    expect(run.prompts()).toHaveLength(1)
+    const unsent = host.ctx.sessionProjections.snapshot(session).values.acpExecution?.unsentModelSwitch
+    expect(unsent).toBeDefined()
+    run.fault('none')
+    const settled = host.whenTurnSettled()
+    const controls = host.ctx.get('dshAcp') as AcpRemoteService
+    await controls.retryModelSwitchInput(session.id, unsent!.failureSeq, new AbortController().signal)
+    expect(await settled).toBe(session.id)
+    expect(run.prompts()).toHaveLength(2)
+    expect(run.prompts()[1]).toMatchObject({
+      session: run.prompts()[0]!.session,
+      model: 'a',
+      markers: ['SWITCH_TEST_SECOND'],
+      history: ['SWITCH_TEST_FIRST'],
+    })
+  } finally {
+    await host.close()
+  }
+})
 
 it('retries a verified final-lease failure once without duplicating the native user message', async () => {
   const host = await launchAdapterWorld()

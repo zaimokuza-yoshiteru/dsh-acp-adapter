@@ -13,10 +13,10 @@ const splitImageSupport = process.env.OPENCODE_CONFIG_CONTENT !== undefined
 const modelIds = splitImageSupport ? ['fixture/text', 'fixture/vision'] : ['a', 'b']
 const send = (message: object) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n')
 const save = (id: string, state: State) => writeFileSync(statePath(id), JSON.stringify(state))
-const options = (model: string) => [
+const options = (model: string, id = 'model') => [
   {
     type: 'select',
-    id: 'model',
+    id,
     category: 'model',
     name: 'Model',
     currentValue: model,
@@ -62,10 +62,11 @@ input.on('line', async (line) => {
         state.model = 'a'
         save(session, state)
       }
-      log({ model: state.model })
+      const selectorId = fault === 'renamed-selector' ? 'llm_model' : 'model'
+      log({ model: state.model, selectorId })
       if (fault === 'unavailable') return fail('The original session could not be loaded')
       if (fault === 'no-snapshot') return result({})
-      return result({ configOptions: options(state.model) })
+      return result({ configOptions: options(state.model, selectorId) })
     case 'session/set_config_option': {
       const target = params.value
       log({ target, model: state.model, fault })
