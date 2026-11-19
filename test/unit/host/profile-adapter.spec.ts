@@ -237,6 +237,7 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
         const nativeView = acpSessionView(ctx, native)!
         const adapterView = Object.create(nativeView) as typeof nativeView
         const sent: unknown[] = []
+        let afterProjection: unknown
         const adapter = new AcpProfileAdapter(
           'test',
           () => profile(),
@@ -247,8 +248,9 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
           () => ({
             acpSessionId: 'native-before-acp-remote',
             start: async () => undefined,
-            prompt: async (prompt) => {
+            prompt: async (prompt, _update, _signal, _report, _conclusion, _result, options) => {
               sent.push(prompt)
+              afterProjection = prompt.slice(options?.projection?.prefixLength)
               return { stopReason: 'end_turn' } as never
             },
             close: async () => undefined,
@@ -268,6 +270,11 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
         expect(JSON.stringify(sent)).toContain('Current DSH mode: read-only.')
         expect(JSON.stringify(sent)).toContain('office-docx')
         expect(JSON.stringify(sent)).not.toContain('older native question')
+        // The real transport may drop only the generated prefix when the
+        // complete projection has already been confirmed on its connection.
+        expect(JSON.stringify(afterProjection)).toContain('Current question')
+        expect(JSON.stringify(afterProjection)).not.toContain('office-docx')
+        expect(JSON.stringify(afterProjection)).not.toContain('Current DSH mode: read-only.')
       } finally {
         await ctx.fiber.dispose()
       }

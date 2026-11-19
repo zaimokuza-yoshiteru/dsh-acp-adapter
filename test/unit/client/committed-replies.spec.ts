@@ -15,6 +15,7 @@ function response(
     route?: 'acp' | 'native'
     committed?: boolean
     synthetic?: boolean
+    historicalLookup?: true
   } = {},
 ) {
   const activity: AcpActivityNodeData = {
@@ -24,6 +25,7 @@ function response(
     agentSessionId: 'remote',
     committedActivitySeq: step,
     settled: true,
+    ...(options.historicalLookup ? { historicalLookup: true } : {}),
   }
   const finalNode = {
     kind: 'assistant',
@@ -66,6 +68,29 @@ const replies = (nodes: readonly ChatConversationViewNode[]) =>
   nodes.filter((node): node is ChatNode<'assistant-step'> => node.kind === 'assistant-step')
 
 describe('committed ACP replies across native automatic follow-up steps', () => {
+  it('keeps a foreign interrupted answer native until the original session and input own activity', () => {
+    const { node, activity } = response(1, [thought('Original'), text('Stopped')], { historicalLookup: true })
+    const row = {
+      kind: 'tool',
+      activityId: 'original-tool',
+      activitySeq: 1,
+      revisionSeq: 1,
+      status: 'completed',
+      presentation: 'Inspect',
+      time: 1,
+      dshSessionId: 'session',
+      ownerDshSessionId: 'session',
+      promptAnchorMessageId: 'input-1',
+    } as const
+    const windows = new Map<string, ActivityWindow>([
+      [activityWindowKey({ ...activity, ownerDshSessionId: 'foreign' }), { unavailable: false, rows: [row] }],
+      [activityWindowKey({ ...activity, promptAnchorMessageId: 'another-input' }), { unavailable: false, rows: [row] }],
+      [activityWindowKey(activity), { unavailable: false, rows: [] }],
+    ])
+    expect(normalizeAcpChatNodes([node], windows)).toEqual([node])
+    windows.set(activityWindowKey(activity), { unavailable: false, rows: [row] })
+    expect(normalizeAcpChatNodes([node], windows).filter((entry) => entry.kind === 'tool-call')).toHaveLength(1)
+  })
   it.each([
     ['Main report with [file](./report.html).', 'No new information.'],
     ['OK', 'A long correction. '.repeat(30)],

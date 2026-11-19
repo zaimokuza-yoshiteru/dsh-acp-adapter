@@ -215,7 +215,7 @@ describe('ACP activity conversation node', () => {
     })
   })
 
-  it('silences only the typed first-binding wait, not a message match or a lost established binding', () => {
+  it('silences the typed first-binding wait, not a message match or a lost established binding', () => {
     const pending = Object.assign(new Error('binding is not committed yet'), {
       code: 'dsh-acp/activity-binding-pending',
     })
@@ -545,6 +545,42 @@ describe('ACP activity conversation node', () => {
       }) as never
     expect(definition.match(event('deepseek'))).toBeNull()
     expect(definition.match(event('acp-third-party'))).toBeNull()
+  })
+
+  it('uses a historical route only as a settled, same-step journal lookup and never as a live card', () => {
+    const definition = createAcpActivityDefinition(
+      () => false,
+      (id) => id === 'acp-retired',
+    )
+    const step = stepLocation(2, 1)
+    const event = {
+      type: 'assistant/message',
+      seq: 20,
+      data: { interrupted: true, message: { source: { kind: 'model', provider: 'acp-retired' } } },
+    }
+    expect(definition.match(event as never)).toEqual({ id: 'interrupted:20', role: 'start' })
+    expect(
+      definition.match({
+        type: 'request/header',
+        seq: 10,
+        data: { header: { config: { provider: 'acp-retired' } } },
+      } as never),
+    ).toBeNull()
+    for (const location of [step, stepLocation(1, 1)]) {
+      const state = definition.start(
+        {} as never,
+        { event, location: step } as never,
+        {
+          previous: (kind: string) =>
+            kind === 'acp-prompt-anchor' ? { state: { location, anchorMessageId: 'old-user' } } : undefined,
+        } as never,
+      )
+      expect(definition.buildViewNode!({ state } as never)).toBeNull()
+      const data = definition.buildLocationData!({ state } as never, 'step', null)
+      if (location === step)
+        expect(data?.value).toMatchObject({ historicalLookup: true, settled: true, promptAnchorMessageId: 'old-user' })
+      else expect(data).toBeNull()
+    }
   })
 
   it.each([
@@ -1483,6 +1519,40 @@ describe('ACP activity conversation node', () => {
       expect(starts).toBe(2)
       expect(handle.ready()).toBe(true)
       expect(handle.feedback()).toBe('quiet')
+    } finally {
+      handle.release()
+      vi.useRealTimers()
+    }
+  })
+
+  it('retries a temporary ownership failure quietly, then offers a bounded manual retry', async () => {
+    vi.useFakeTimers()
+    let reads = 0
+    let available = false
+    const remote = {
+      async *activityFollow(_sessionId: string, _request: unknown, signal: AbortSignal) {
+        reads++
+        if (!available)
+          throw Object.assign(new Error('storage unavailable'), { code: 'dsh-acp/activity-owner-unavailable' })
+        yield { type: 'opened' as const, cursor: 1, head: 1, activities: [journalRow(1)] }
+        await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
+      },
+    }
+    const hub = new AcpActivityJournalHub(remote as never, activityStreamFactory() as never)
+    const handle = hub.acquire('dsh-1', 'dsh-1', 'anchor', () => undefined)
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(handle.feedback()).toBe('quiet')
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(reads).toBe(4)
+      expect(handle.snapshot()).toEqual([])
+      expect(handle.canRetry()).toBe(true)
+      expect(handle.feedback()).toBe('unavailable')
+      available = true
+      handle.retry()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(handle.feedback()).toBe('quiet')
+      expect(handle.snapshot().map((row) => row.activityId)).toEqual(['a-1'])
     } finally {
       handle.release()
       vi.useRealTimers()

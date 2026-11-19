@@ -4,7 +4,7 @@
  * @module @zaimokuza/dsh-acp-adapter/domain/session/agent-config
  */
 
-import type { AcpAgentConfig, AcpConfiguredRuntime, AcpStubAgentConfig } from '../../contract/agent-config.ts'
+import type { AcpAgentConfig } from '../../contract/agent-config.ts'
 export * from '../../contract/agent-config.ts'
 
 /**
@@ -28,54 +28,6 @@ export function acpVersionCompatibility(
   if (referenceVersion === undefined || referenceVersion === null || referenceVersion === '') return null
   if (agentVersion === undefined || agentVersion === null) return null
   return agentVersion.trim() === referenceVersion ? 'current' : 'different'
-}
-
-// ---------- probe 缓存键（launch 影响面） ----------
-// （内置一键模板已随 catalog 化移除：add-menu 目录与预填由
-// src/client/data/catalog.ts 从 registry 快照合成。）
-
-/**
- * Stable serialization of the probe-affecting config (command + args + env **键名
- * 集合** + `runtime` 绑定, env key-order normalized). The probe cache is keyed on it: a rename or a
- * loginHint edit must NOT re-probe, an env reorder must not either, and any real
- * change must. `runtime` 参与键：它决定 runtime 身份（边界），绑定变了
- * runtime 绑定变化会改变实际启动配置，probe 结果可能不同——必须重探。The hash is the
- * canonical JSON itself — no crypto needed for an in-memory cache key. Generic
- * parameter so a full {@link AcpStubAgentConfig} passes without tripping
- * excess-property checks.
- *
- * env 分量是 **secret-free 键名 + 值 hash**（排序固定）：env 值变化必须 bust
- * 缓存，避免凭证轮换后继续展示旧探测结果；明文值绝不进入 key。这函数同时服务 llm-stub
- * 缓存命中、五态新鲜度与创建门，三处消费同一口径。
- *
- * 自 src/host/composition/llm-stub.ts 下沉到本叶子：remote 层的 health
- * 新鲜度判定与 installed-profile registry 的会话创建门都要消费它，放 host
- * 组合层会造成不必要的跨层依赖。
- */
-export function acpProbeConfigKey<
-  C extends Pick<AcpStubAgentConfig, 'command' | 'args' | 'env'> & { readonly runtime?: AcpConfiguredRuntime },
->(config: C): string {
-  const envKeys = Object.keys(config.env).sort()
-  const envHashes = Object.entries(config.env)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => [key, shortSecretHash(value)])
-  return JSON.stringify({
-    command: config.command,
-    args: config.args,
-    envKeys,
-    envHashes,
-    runtime: config.runtime ?? null,
-  })
-}
-
-/** Deterministic short hash for cache identity; never returns the secret itself. */
-function shortSecretHash(value: string): string {
-  let hash = 2166136261
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index)
-    hash = Math.imul(hash, 16777619)
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0')
 }
 
 /**

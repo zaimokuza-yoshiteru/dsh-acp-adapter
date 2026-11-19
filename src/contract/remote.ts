@@ -41,6 +41,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'dsh-acp/agent-crash': AcpRemoteErrorDetails
     'dsh-acp/user-rejected': AcpRemoteErrorDetails
     'dsh-acp/activity-binding-pending': AcpRemoteErrorDetails
+    'dsh-acp/activity-owner-unavailable': AcpRemoteErrorDetails
     'dsh-acp/resume-conflict': AcpRemoteErrorDetails
     'dsh-acp/native-fork-rejected': AcpNativeForkErrorDetails
     'dsh-acp/native-fork-scope-unavailable': { readonly sessionId: string }

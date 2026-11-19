@@ -220,15 +220,80 @@ describe('AcpPanelController targeted health checks', () => {
     if (action !== 'dispose') controller.dispose()
   })
 
-  it('does not start a check for a refused add or a saved edit', async () => {
+  it('does not start a check for a refused add or a display-name edit', async () => {
     const health = vi.fn()
     const { controller, mutate } = panel(health)
     const draft = { ...emptyDraft(), id: 'new-agent', name: 'New agent', command: 'manual-acp' }
     mutate.mockResolvedValueOnce(false)
     expect(await controller.saveAgent(undefined, draft)).toBe('refused')
-    expect(await controller.saveAgent('generic', { ...draft, id: 'generic' })).toBeUndefined()
+    expect(await controller.saveAgent('generic', { ...draft, id: 'generic', command: 'existing-acp' })).toBeUndefined()
     expect(mutate).toHaveBeenCalledTimes(2)
     expect(health).not.toHaveBeenCalled()
+    controller.dispose()
+  })
+
+  it('rechecks an edited launch and discards a late result after the same ID is edited elsewhere', async () => {
+    const probe = deferred<{ ok: true; value: AcpHealthView }>()
+    const checked: AcpProviderHealth = {
+      ...row('generic', '1'),
+      command: 'existing-acp',
+      state: 'ready',
+      probe: {
+        status: 'ok',
+        at: 1,
+        modelCount: 1,
+        authMethods: null,
+        agentInfo: null,
+        capabilities: null,
+        cleanup: null,
+        capabilityHash: null,
+        protocolVersion: 1,
+        versionCompatibility: null,
+        matrix: [],
+      },
+    }
+    const health = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, value: view([checked]) })
+      .mockReturnValueOnce(probe.promise)
+    const { controller, store, mutate, publishAgent } = panel(health)
+    await controller.refreshHealth()
+    expect(store.getSnapshot().health.rows[0]?.state).toBe('ready')
+    const updated = { name: 'Edited', command: 'new-program', args: [], env: { MODE: 'new' } }
+    mutate.mockImplementationOnce(async () => {
+      publishAgent('generic', updated)
+      return true
+    })
+    expect(
+      await controller.saveAgent('generic', {
+        ...emptyDraft(),
+        id: 'generic',
+        name: updated.name,
+        command: updated.command,
+        envText: 'MODE=new',
+      }),
+    ).toBeUndefined()
+    expect(store.getSnapshot().health.rows).toEqual([])
+    expect(store.getSnapshot().health.checkingAgentIds).toEqual(['generic'])
+    publishAgent('generic', { ...updated, name: 'Just a new label' })
+    expect(store.getSnapshot().health.checkingAgentIds).toEqual(['generic'])
+    publishAgent('generic', { ...updated, env: { MODE: 'third' } })
+    probe.resolve({ ok: true, value: view([{ ...checked, command: updated.command }]) })
+    await new Promise<void>((done) => setImmediate(done))
+    expect(store.getSnapshot().health.rows).toEqual([])
+    expect(store.getSnapshot().health.checkingAgentIds).toEqual([])
+    expect(health.mock.calls).toEqual([[undefined], [{ recheck: true, agentId: 'generic' }]])
+    controller.dispose()
+  })
+
+  it('discards obsolete rows from a panel-wide read while keeping unaffected rows', async () => {
+    const pending = deferred<{ ok: true; value: AcpHealthView }>()
+    const { controller, publishAgent, store } = panel(() => pending.promise)
+    const read = controller.refreshHealth()
+    publishAgent('generic', { name: 'Existing', command: 'existing-acp', args: ['--changed'], env: {} })
+    pending.resolve({ ok: true, value: view([row('generic', 'previous'), row('devin', 'unchanged')]) })
+    await read
+    expect(store.getSnapshot().health.rows.map((row) => row.id)).toEqual(['devin'])
     controller.dispose()
   })
 })

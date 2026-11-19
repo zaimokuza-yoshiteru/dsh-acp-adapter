@@ -333,7 +333,13 @@ function NormalizedChat({
   const visibleWindows = useMemo(() => new Map([...windows].filter(([key]) => anchors.has(key))), [windows, signature])
   const view = ctx.uiConversation.views.entries().find((value) => value.target === 'chat')
   const group = ctx.uiConversation.groups.forTarget('chat')
-  const hasAcp = anchors.size > 0 && view !== undefined
+  const hasAcp =
+    view !== undefined &&
+    [...anchors].some(([key, data]) => {
+      if (!data.historicalLookup) return true
+      const window = visibleWindows.get(key)
+      return window !== undefined && !window.unavailable && window.rows.length > 0
+    })
   const committedProjection = projectionRef.current
   const projection = !hasAcp
     ? undefined
@@ -368,7 +374,9 @@ function NormalizedChat({
     h(Native, {
       ...props,
       ...adapters,
-      ...(hasAcp && forkAt !== undefined ? { forkAt } : {}),
+      ...(hasAcp && forkAt !== undefined && [...anchors.values()].some((data) => !data.historicalLookup)
+        ? { forkAt }
+        : {}),
     } as unknown as EntryProps),
   )
 }

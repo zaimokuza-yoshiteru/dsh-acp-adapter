@@ -57,10 +57,14 @@ export async function parentPermissionOptionsTurn(session: MockSession, msg: Pro
         sessionId: session.id,
         toolCall: {
           toolCallId: `parent-scope-${key}`,
-          kind: fileWrite ? 'other' : 'execute',
-          title: fileWrite ? 'write' : `External ACP marker ${key}`,
+          kind: fileWrite ? 'edit' : 'execute',
+          title: fileWrite ? 'client_edit_file' : `External ACP marker ${key}`,
           rawInput: fileWrite
-            ? { content: 'A short review marker.', file_path: markerPath }
+            ? {
+                target_file: markerPath,
+                code_content: Array.from({ length: 120 }, (_, i) => `review line ${i + 1}`).join('\n'),
+                overwrite: true,
+              }
             : {
                 command,
                 cwd: session.cwd,

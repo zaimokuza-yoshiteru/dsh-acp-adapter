@@ -2,6 +2,7 @@ import { createSnapshotStore, type SnapshotSelectorHook } from '@deepseek-ai/dsh
 import type { AcpOwnedRoutesView } from '../../contract/remote.ts'
 
 const emptyRoutes: AcpOwnedRoutesView = { providers: [], historicalProviders: [] }
+const retryDelays = [250, 1_000, 4_000] as const
 
 export type UseRouteOwnership = SnapshotSelectorHook<AcpOwnedRoutesView>
 
@@ -14,15 +15,26 @@ export class ManagedAcpRouteCatalog {
   readonly store = createSnapshotStore(emptyRoutes)
   private revision = 0
   private disposed = false
+  private retry?: ReturnType<typeof setTimeout>
 
   constructor(private readonly read: () => Promise<AcpOwnedRoutesView | undefined>) {}
 
   owns = (provider: string | undefined): boolean => includesRoute(this.store.getSnapshot().providers, provider)
 
-  async refresh(): Promise<void> {
-    const revision = ++this.revision
+  refresh(): Promise<void> {
+    clearTimeout(this.retry)
+    return this.readRoutes(++this.revision, 0)
+  }
+
+  private async readRoutes(revision: number, attempt: number): Promise<void> {
+    if (this.disposed || revision !== this.revision) return
     const routes = await this.read().catch(() => undefined)
-    if (!this.disposed && revision === this.revision) this.store.set(routes ?? emptyRoutes)
+    if (this.disposed || revision !== this.revision) return
+    this.store.set(routes ?? emptyRoutes)
+    const delay = retryDelays[attempt]
+    if (routes === undefined && delay !== undefined) {
+      this.retry = setTimeout(() => void this.readRoutes(revision, attempt + 1), delay)
+    }
   }
 
   reset(): void {
@@ -32,6 +44,7 @@ export class ManagedAcpRouteCatalog {
 
   dispose(): void {
     this.disposed = true
+    clearTimeout(this.retry)
     this.store.set(emptyRoutes)
   }
 }

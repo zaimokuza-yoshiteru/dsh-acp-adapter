@@ -5,7 +5,7 @@ import { launchBrowser, newEnglishPage } from './browser.ts'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld } from './scaffold.ts'
 import { openNativeSettings } from './plugin-panel.helpers.ts'
-import type { AcpRemoteService } from '../../src/remote/service.js'
+import type { AcpRemoteService, AcpRemoteServiceDeps } from '../../src/remote/service.js'
 
 it.each(['en', 'zh'] as const)('keeps %s activity quiet while the initial ACP binding is committed', async (locale) => {
   const host = await launchAdapterWorld()
@@ -38,23 +38,29 @@ it.each(['en', 'zh'] as const)('keeps %s activity quiet while the initial ACP bi
   })
   await host.ctx.agentDefaultModel.saveSelection({ provider: 'acp-codex', model: 'mock-model-a' })
 
-  // Count real remote failures, without injecting an artificial failure. The
-  // workspace-only session/new gate keeps the durable binding pending while
-  // catalog probing and the rest of the Host continue normally.
+  // Hold the real first binding pending. In the Chinese run, also fail its first
+  // ownership read once to exercise the shipped RPC mapping and client retry.
   const service = host.ctx.get('dshAcp') as AcpRemoteService
+  const gates = (
+    service as unknown as { resolved: { activityReadStatus: NonNullable<AcpRemoteServiceDeps['activityReadStatus']> } }
+  ).resolved
+  const firstRead =
+    locale === 'zh'
+      ? vi.spyOn(gates, 'activityReadStatus').mockImplementationOnce(async () => {
+          throw new Error('temporary binding read failure')
+        })
+      : undefined
   const follow = service.activityFollow.bind(service)
   let pendingReads = 0
+  let failedOwnerReads = 0
   const observedFollow = vi.spyOn(service, 'activityFollow').mockImplementation(async function* (...args) {
     try {
       yield* follow(...args)
     } catch (error) {
-      if (
-        typeof error === 'object' &&
-        error !== null &&
-        'code' in error &&
-        error.code === 'dsh-acp/activity-binding-pending'
-      )
-        pendingReads++
+      if (typeof error === 'object' && error !== null && 'code' in error) {
+        if (error.code === 'dsh-acp/activity-binding-pending') pendingReads++
+        if (error.code === 'dsh-acp/activity-owner-unavailable') failedOwnerReads++
+      }
       throw error
     }
   })
@@ -101,6 +107,7 @@ it.each(['en', 'zh'] as const)('keeps %s activity quiet while the initial ACP bi
       )
       .toBe(true)
     await expect.poll(() => pendingReads).toBeGreaterThanOrEqual(2)
+    expect(failedOwnerReads).toBe(locale === 'zh' ? 1 : 0)
     expect(
       await page.evaluate(() => (window as typeof window & { startupActivityHints?: string[] }).startupActivityHints),
     ).toEqual([])
@@ -137,6 +144,7 @@ it.each(['en', 'zh'] as const)('keeps %s activity quiet while the initial ACP bi
     await settled
   } finally {
     observedFollow.mockRestore()
+    firstRead?.mockRestore()
     await writeFile(join(bindingGate, 'continue'), 'cleanup')
     await page.close()
     await browser.close()

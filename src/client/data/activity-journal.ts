@@ -182,12 +182,13 @@ type HubEntry = {
   retryExhausted: boolean
   retrying: boolean
   retryAttempts: number
+  ownerReadFailures: number
   initialLoading: boolean
 }
 
 export type ActivityJournalFeedback = 'quiet' | 'initial-read-retrying' | 'reconnecting' | 'unavailable'
 
-/** Only a recognized first-binding wait is silent; other read failures remain visible. */
+/** Keep a new session quiet during binding admission and bounded ownership-read retries. */
 export function activityJournalFeedback(input: {
   readonly ready: boolean
   readonly error: unknown
@@ -201,7 +202,8 @@ export function activityJournalFeedback(input: {
     typeof input.error === 'object' &&
     input.error !== null &&
     'code' in input.error &&
-    input.error.code === 'dsh-acp/activity-binding-pending'
+    (input.error.code === 'dsh-acp/activity-binding-pending' ||
+      input.error.code === 'dsh-acp/activity-owner-unavailable')
   )
     return 'quiet'
   return input.ready ? 'reconnecting' : 'initial-read-retrying'
@@ -209,6 +211,7 @@ export function activityJournalFeedback(input: {
 
 const INITIAL_OPEN_RETRY_BASE_MS = 100
 const INITIAL_OPEN_RETRY_MAX_MS = 8_000
+const MAX_OWNER_READ_RETRIES = 3
 
 function waitForRetry(entry: HubEntry, delay: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -321,6 +324,7 @@ export class AcpActivityJournalHub {
         entry!.initialLoading = true
         entry!.error = undefined
         entry!.retryAttempts = 0
+        entry!.ownerReadFailures = 0
         this.notifyAll(entry!)
         this.startEntry(sessionId, entry!)
       },
@@ -351,6 +355,7 @@ export class AcpActivityJournalHub {
       retryExhausted: false,
       retrying: false,
       retryAttempts: 0,
+      ownerReadFailures: 0,
       initialLoading: true,
     }
     this.entries.set(sessionId, entry)
@@ -359,8 +364,8 @@ export class AcpActivityJournalHub {
 
   /**
    * The conversation node can mount before the Agent startup commits its
-   * durable ACP binding. Retry transient open and terminal read failures for
-   * as long as a node subscribes; the delay is bounded, the retry count is not.
+   * durable ACP binding. Allow the binding to arrive while a node subscribes.
+   * Persistent ownership-read failures end in an explicit manual retry.
    * Carrier reconnect remains owned by DSH's RemoteJournalStream.
    */
   private startEntry(sessionId: string, entry: HubEntry): void {
@@ -399,6 +404,7 @@ export class AcpActivityJournalHub {
             entry.initialLoading = false
             entry.error = undefined
             entry.retrying = false
+            entry.ownerReadFailures = 0
             if (!wasReady) entry.retryAttempts = 0
             this.notifyAll(entry)
           },
@@ -439,7 +445,13 @@ export class AcpActivityJournalHub {
   private noteFailure(entry: HubEntry, error: unknown): boolean {
     entry.error = error
     entry.retrying = false
-    if (isStableActivityFailure(error)) {
+    const ownershipReadFailed =
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === 'dsh-acp/activity-owner-unavailable'
+    entry.ownerReadFailures = ownershipReadFailed ? entry.ownerReadFailures + 1 : 0
+    if (isStableActivityFailure(error) || entry.ownerReadFailures > MAX_OWNER_READ_RETRIES) {
       entry.retryExhausted = true
       entry.initialLoading = false
       this.notifyAll(entry)

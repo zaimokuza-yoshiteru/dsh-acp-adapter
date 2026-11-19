@@ -94,9 +94,9 @@ import { acpOptionsSnapshotOf } from '../../persistence/options-snapshot.ts'
 import type { AcpBindingData, AcpFileSystemAuditData, AcpRecoveryState, AcpSidecar } from '../../persistence/sidecar.ts'
 import type { AcpSessionForkReason, AcpTerminalAuditData } from '../../domain/policy/events.ts'
 import { hostSystemPrompt } from '../../domain/session/host-system-prompt.ts'
-import { AcpPromptContentError, skillRouteForTools, toAcpPrompt } from '../../domain/session/prompt-content.ts'
+import { AcpPromptContentError, prepareAcpPrompt, skillRouteForTools } from '../../domain/session/prompt-content.ts'
 import { currentModelContextSnapshots } from '../../domain/session/model-context-snapshots.ts'
-import { generatedContextBlock } from '../../runtime/text-block-boundary.ts'
+import { generatedContextBlock, type AcpPromptProjection } from '../../runtime/text-block-boundary.ts'
 import { createAcpFileSystemHandlers } from '../../runtime/client-capabilities/filesystem.ts'
 import { createAcpTerminalHandlers } from '../../runtime/client-capabilities/terminal.ts'
 import { HostTerminalOutcomes } from './terminal-outcomes.ts'
@@ -366,7 +366,11 @@ export interface AcpProfileRuntime {
    * without calling it is treated as acceptance-unknown; a response-time call
    * is too late to project intervening notifications safely.
    */
-  steer?(content: acp.ContentBlock[], onDispatch?: () => void): Promise<'injected' | 'promptRequired'>
+  steer?(
+    content: acp.ContentBlock[],
+    onDispatch?: () => void,
+    projection?: AcpPromptProjection,
+  ): Promise<'injected' | 'promptRequired'>
   /** ACP session-scoped writes. Implementations must confirm the resulting snapshot. */
   setConfigOption?(configId: string, value: string | boolean, signal?: AbortSignal): Promise<void>
   setMode?(modeId: string, signal?: AbortSignal): Promise<void>
@@ -1874,7 +1878,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       let terminalSettlementLifetime: (() => void) | undefined
       let stopWatchingTerminalOutcomes: (() => void) | undefined
       try {
-        let validatedPrompt: acp.ContentBlock[]
+        let validatedPrompt: Awaited<ReturnType<typeof prepareAcpPrompt>>
         let persistedRecovery: AcpRecoveryState | undefined
         let forceBlank = false
         let qwenPromptOptions: AcpPromptOptions = {}
@@ -1924,13 +1928,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             ...(self.attachments === undefined ? {} : { attachments: self.attachments }),
             signal: options.signal ?? new AbortController().signal,
           }
-          const prompt = await toAcpPrompt(messages, promptOptions)
-          if (prompt.length === 0)
-            throw new AcpPromptContentError(
-              'dsh-acp: the claimed message(s) carry no supported content; nothing was sent to the ACP agent',
-            )
-          // Store the validated prompt for the dispatch path below.
-          validatedPrompt = prompt
+          validatedPrompt = await prepareAcpPrompt(messages, promptOptions)
           const snapshots = modelContextSnapshots ?? currentModelContextSnapshots(messages)
           qwenContextKey = acpCanonicalHash16({
             system: promptSystem,
@@ -1961,9 +1959,10 @@ export class AcpProfileAdapter extends LlmAdapter {
               ]
             }
             qwenContextWillBeDelivered = followup.length !== 0
+            const retained = followup.length === 0 ? undefined : await prepareAcpPrompt(followup, promptOptions)
             qwenPromptOptions = {
               adoptAgentTurn: true,
-              ...(followup.length === 0 ? {} : { followupContent: await toAcpPrompt(followup, promptOptions) }),
+              ...(retained && { followupContent: retained.content, followupProjection: retained.projection }),
             }
           }
         } catch (error: unknown) {
@@ -1972,7 +1971,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             throw LlmError.fromFailure({ message: error.message, code: 'ACP_INPUT_NOT_SUPPORTED' })
           throw error
         }
-        const prompt = validatedPrompt
+        const prompt = validatedPrompt.content
         const dispatchKey = acpCanonicalHash16({
           provider: options.provider,
           model: options.model,
@@ -3067,7 +3066,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         })
         handoff.resume = async (nextOptions) => {
           let nextProof: CurrentStepProof | undefined
-          let nextPrompt: acp.ContentBlock[]
+          let nextPrompt: Awaited<ReturnType<typeof prepareAcpPrompt>>
           let nextSystem: string | undefined
           try {
             const nextMessages = admitCurrentStep(nextOptions, session, (proof) => {
@@ -3076,7 +3075,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             if (nextProof?.turn !== admissionProof?.turn) return false
             const modelContextSnapshots = session?.currentModelContextSnapshots?.()
             nextSystem = hostSystemPrompt(nextOptions)
-            nextPrompt = await toAcpPrompt(nextMessages, {
+            nextPrompt = await prepareAcpPrompt(nextMessages, {
               ...(promptSystem === nextSystem ? {} : { system: nextSystem }),
               ...(modelContextSnapshots === undefined ? {} : { modelContextSnapshots }),
               skillRoute: skillRouteForTools(nextOptions.tools),
@@ -3084,7 +3083,6 @@ export class AcpProfileAdapter extends LlmAdapter {
               ...(self.attachments === undefined ? {} : { attachments: self.attachments }),
               signal: promptSignal,
             })
-            if (nextPrompt.length === 0) throw new AcpPromptContentError('Steering input contains no supported content')
             if (remoteSettled || runtime.canSteer !== true || runtime.steer === undefined) return false
             // Finish notifications already admitted before the steering request.
             // Agents may emit new tools before acknowledging injection, so the
@@ -3103,7 +3101,7 @@ export class AcpProfileAdapter extends LlmAdapter {
                 profile,
                 managedDispatch.target,
                 runtime.agentCapabilities?.promptCapabilities?.image,
-                nextPrompt,
+                nextPrompt.content,
               )
             }
             // The original prompt can still report completed tools while the
@@ -3160,7 +3158,7 @@ export class AcpProfileAdapter extends LlmAdapter {
           }
           let result: 'injected' | 'promptRequired'
           try {
-            result = await runtime.steer(nextPrompt, applyProjectionAtDispatch)
+            result = await runtime.steer(nextPrompt.content, applyProjectionAtDispatch, nextPrompt.projection)
           } catch (error) {
             // From the point the RPC is invoked, rejection no longer proves
             // whether the Agent accepted the injected prompt. Only the concrete
@@ -3223,6 +3221,7 @@ export class AcpProfileAdapter extends LlmAdapter {
           },
           {
             ...qwenPromptOptions,
+            projection: validatedPrompt.projection,
             hostBodySignal,
             ...(managedDispatch ? { beforeDispatch: managedDispatch.verify } : {}),
           },

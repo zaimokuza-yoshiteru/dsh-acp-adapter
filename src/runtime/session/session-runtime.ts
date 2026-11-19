@@ -22,7 +22,7 @@ import type { AcpPermissionCheck } from '../../domain/policy/permission-check.ts
 import type { LiveDiagnosticTrace } from '../../contract/live-diagnostic-trace.ts'
 import { AcpClientError } from '../../protocol/v1/errors.ts'
 import { performance } from 'node:perf_hooks'
-import { generatedContextBlock } from '../text-block-boundary.ts'
+import { generatedContextBlock, type AcpPromptProjection } from '../text-block-boundary.ts'
 import { ACP_CONFIG_IDENTIFIER_MAX } from '../../contract/config-options.ts'
 import { isQwenUserQuestion } from '../../domain/policy/qwen-question.ts'
 import { RequestError } from '@agentclientprotocol/sdk'
@@ -231,6 +231,8 @@ export interface AcpPromptOptions {
    * to an ordinary prompt when no such turn is announced in time.
    */
   readonly adoptAgentTurn?: boolean
+  readonly projection?: AcpPromptProjection | undefined
+  readonly followupProjection?: AcpPromptProjection | undefined
   /** Already-admitted non-Qwen input, dispatched after a confirmed adopted terminal response. */
   readonly followupContent?: acp.ContentBlock[]
 }
@@ -471,6 +473,10 @@ export class AcpSessionRuntime {
   private currentMode: string | undefined
   private modeSnapshot: acp.SessionModeState | undefined
   private usageSnapshot: AcpRuntimeContextUsage | undefined
+  // Receipts are transport-local, including when resume returns the same ACP id.
+  private modelProjection: { key: string; confirmed: boolean } | undefined
+  // null confirms an absent bridge. A resumed/forked Agent may remember an older one.
+  private deliveredMcpInstructions: string | null | undefined
   private promptOrdinal = 0
   private configWrite: Promise<void> = Promise.resolve()
   /** Claim the complete prompt lifecycle, including lazy session setup. This is
@@ -635,9 +641,30 @@ export class AcpSessionRuntime {
     )
   }
 
-  async steer(content: acp.ContentBlock[], onDispatch?: () => void): Promise<'injected' | 'promptRequired'> {
+  private beginModelProjection(content: acp.ContentBlock[], projection?: AcpPromptProjection) {
+    const previous = this.modelProjection
+    const unchanged = projection !== undefined && previous?.confirmed === true && previous.key === projection.key
+    const receipt = projection && { key: projection.key, confirmed: unchanged }
+    this.modelProjection = receipt
+    return {
+      content: unchanged ? content.slice(projection.prefixLength) : content,
+      confirm: () => {
+        // A later steer or connection close may already have replaced this receipt.
+        if (receipt) receipt.confirmed = true
+      },
+    }
+  }
+
+  async steer(
+    content: acp.ContentBlock[],
+    onDispatch?: () => void,
+    projection?: AcpPromptProjection,
+  ): Promise<'injected' | 'promptRequired'> {
     if (!this.canSteer || !this.promptActive || this.sessionId === undefined) return 'promptRequired'
-    return await this.connection!.steer(this.sessionId, content, onDispatch)
+    const candidate = this.beginModelProjection(content, projection)
+    const result = await this.connection!.steer(this.sessionId, candidate.content, onDispatch)
+    if (result === 'injected') candidate.confirm()
+    return result
   }
 
   async start(signal?: AbortSignal): Promise<void> {
@@ -984,7 +1011,6 @@ export class AcpSessionRuntime {
       // Do not pass the turn signal into the RPC budget layer: abandoning an
       // in-flight JSON-RPC request poisons the connection. ACP cancellation is a
       // protocol notification followed by a bounded wait for this same prompt.
-      const instructions = this.mcpLease?.instructions
       const deliver = (notification: AcpSessionNotification): void => {
         const update = notification.update
         // Permission snapshots retain the original wire identity; only the presentation callback is normalized.
@@ -999,18 +1025,31 @@ export class AcpSessionRuntime {
             : { ...notification, update: { ...update, ...presented } as typeof update },
         )
       }
-      const wirePrompt = async (wireContent: acp.ContentBlock[]): Promise<acp.PromptResponse> => {
+      const wirePrompt = async (
+        wireContent: acp.ContentBlock[],
+        projection?: AcpPromptProjection,
+      ): Promise<acp.PromptResponse> => {
         this.wirePromptActive = true
         try {
           const context: acp.ContentBlock[] = []
-          if (instructions !== undefined) context.push({ type: 'text', text: generatedContextBlock(instructions) })
+          const instructions = this.mcpLease?.instructions ?? null
+          const instructionsChanged = this.deliveredMcpInstructions !== instructions
+          if (instructionsChanged)
+            context.push({
+              type: 'text',
+              text: generatedContextBlock(
+                instructions ??
+                  'Discard earlier DSH tool connection instructions. There are no current DSH connection instructions.',
+              ),
+            })
+          const candidate = this.beginModelProjection(wireContent, projection)
           for (const note of this.policyFeedback.splice(0)) {
             if (note.sessionId === sessionId && note.feedback.isCurrentOwner())
               context.push({ type: 'text', text: generatedContextBlock(note.feedback.text) })
           }
-          return await connection.prompt(
+          const response = await connection.prompt(
             sessionId,
-            [...context, ...wireContent],
+            [...context, ...candidate.content],
             (notification) => {
               // Qwen's discrete "background task completed" line is task state,
               // not part of the assistant answer.
@@ -1021,14 +1060,27 @@ export class AcpSessionRuntime {
               if (notification.sessionId === sessionId && this.liveAgentTurn()?.announced === false) return
               deliver(notification)
             },
-            promptOptions.beforeDispatch === undefined ? {} : { beforeDispatch: promptOptions.beforeDispatch },
+            {
+              beforeDispatch: () => {
+                promptOptions.beforeDispatch?.()
+                if (instructionsChanged) this.deliveredMcpInstructions = undefined
+              },
+            },
           )
+          if (response.stopReason === 'end_turn' && !setupSignal.aborted && this.connection === connection) {
+            candidate.confirm()
+            this.deliveredMcpInstructions = instructions
+          } else this.modelProjection = undefined
+          return response
+        } catch (error) {
+          this.modelProjection = undefined
+          throw error
         } finally {
           this.wirePromptActive = false
         }
       }
       const prompting = (async (): Promise<acp.PromptResponse> => {
-        if (adoptedTurn === undefined) return await wirePrompt(content)
+        if (adoptedTurn === undefined) return await wirePrompt(content, promptOptions.projection)
         const response = await this.adoptAgentTurn(connection, adoptedTurn, deliver)
         await connection.drainAgentTurnHostOperations(sessionId)
         const followup = promptOptions.followupContent
@@ -1051,7 +1103,7 @@ export class AcpSessionRuntime {
         beginLease()
         // This is independently admitted input, not a retry of the automatic
         // turn. Its own response determines whether that input completed.
-        return await wirePrompt(followup)
+        return await wirePrompt(followup, promptOptions.followupProjection)
       })()
       let settled = false
       void prompting.then(
@@ -1279,6 +1331,8 @@ export class AcpSessionRuntime {
     connectionAbort: AbortController | undefined,
   ): Promise<void> {
     this.policyFeedback.length = 0
+    this.modelProjection = undefined
+    this.deliveredMcpInstructions = undefined
     this.promptAbort?.abort(new Error('ACP session runtime closed'))
     for (const turn of this.agentTurns) turn.end({ error: new AcpAgentTurnOutcomeError('missing-terminal') })
     this.agentTurns = []
@@ -1382,6 +1436,7 @@ export class AcpSessionRuntime {
       if (staged?.currentModeId !== undefined) this.currentMode = staged.currentModeId
       this.applySessionSnapshot(session)
       this.sessionId = session.sessionId
+      this.deliveredMcpInstructions = null
     } catch (error) {
       if (this.connection === connection && this.connectionAbort === connectionAbort)
         await (starting.cleanup ??= this.closeResources(connection, this.mcpLease, this.launch, connectionAbort)).catch(

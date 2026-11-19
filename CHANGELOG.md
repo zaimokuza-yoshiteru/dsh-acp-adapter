@@ -4,6 +4,22 @@
 
 Find installation commands, release dates, and package checksums on [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases).
 
+## 0.2.2-rc.5.2
+
+### 中文
+
+- 停止回复并删除 Agent 后，重开原对话仍可查看该轮的工具调用。新会话首次读取活动记录遇到临时错误时会自动重试。
+- 文件编辑审批会显示目标路径、覆盖提示和简短预览，展开详情可查看完整变更。
+- 修改 Agent 的启动命令、参数、环境变量或运行时后，插件会自动重新检查连接。
+- 同一 ACP 连接续聊时会省略已经送达的工具桥说明和技能目录。目录撤销时会通知 Agent，重连后会重新同步。感谢 lukstei 提供复现和参考实现。
+
+### English
+
+- Tool calls remain visible when you reopen a stopped reply after removing its Agent. New sessions automatically retry temporary errors while loading Agent activity.
+- File edit approvals show the target path, overwrite behavior, and a short preview. Expand the details to review the full change.
+- The plugin checks the connection again when you change an Agent’s command, arguments, environment, or runtime.
+- Follow-up messages on the same ACP connection omit tool bridge instructions and skill catalogs already delivered. The Agent receives catalog withdrawals and a fresh snapshot on reconnect. Thanks to lukstei for the reproduction and reference implementation.
+
 ## 0.2.2-rc.5.1
 
 ### 中文

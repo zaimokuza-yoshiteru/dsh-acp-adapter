@@ -22,6 +22,8 @@ declare module '@deepseek-ai/dsh-client-ui-chat/client' {
 
 export interface AcpActivityNodeData {
   readonly settled?: true
+  /** Retired route. Its name only warrants a lookup in this session's journal. */
+  readonly historicalLookup?: true
   readonly ownerDshSessionId: string
   readonly promptAnchorMessageId: string
   readonly profileId: string
@@ -66,19 +68,20 @@ export function followAcpActivityDefinitions(
   catalog: ManagedAcpRouteCatalog,
   register: (definition: ConversationNodeDefinition) => () => void,
 ): () => void {
-  let current: ReadonlySet<string> | undefined
+  let current: string | undefined
   let removeLive: (() => void) | undefined
   let removeSettled: (() => void) | undefined
   const reconcile = (): void => {
-    const providers = new Set(catalog.store.getSnapshot().providers)
-    const previous = current
-    if (previous?.size === providers.size && [...providers].every((provider) => previous.has(provider))) return
-    current = providers
+    const { providers, historicalProviders } = catalog.store.getSnapshot()
+    const historyOnly = new Set(historicalProviders.filter((provider) => !providers.includes(provider)))
+    const signature = JSON.stringify([[...providers].sort(), [...historyOnly].sort()])
+    if (current === signature) return
+    current = signature
     removeSettled?.()
     removeLive?.()
     // DSH coalesces synchronous registry changes into one history rebuild.
     removeLive = register(createAcpLiveActivityDefinition(catalog.owns))
-    removeSettled = register(createAcpActivityDefinition(catalog.owns))
+    removeSettled = register(createAcpActivityDefinition(catalog.owns, (provider) => historyOnly.has(provider)))
   }
   reconcile()
   const unsubscribe = catalog.store.subscribe(reconcile)
@@ -226,6 +229,7 @@ function interruptedAssistantProvider(event: { readonly type: string; readonly d
 function activityNodeData(state: AcpActivityState): AcpActivityNodeData {
   return {
     ...(state.settled === true ? { settled: true } : {}),
+    ...(state.historicalLookup ? { historicalLookup: true } : {}),
     ownerDshSessionId: state.ownerDshSessionId,
     promptAnchorMessageId: state.promptAnchorMessageId,
     profileId: state.profileId,
@@ -253,7 +257,10 @@ export const acpPromptAnchorDefinition: ConversationNodeDefinition<AcpPromptAnch
 }
 
 /** An ACP request plus its durable replay marker produces a read-only activity view. */
-export function createAcpActivityDefinition(ownsRoute: OwnsAcpRoute): ConversationNodeDefinition<AcpActivityState> {
+export function createAcpActivityDefinition(
+  ownsRoute: OwnsAcpRoute,
+  historicalRoute: (provider: string) => boolean = () => false,
+): ConversationNodeDefinition<AcpActivityState> {
   return {
     kind: 'acp-activity',
     target: 'chat',
@@ -265,7 +272,7 @@ export function createAcpActivityDefinition(ownsRoute: OwnsAcpRoute): Conversati
           role: 'start',
         }
       const interruptedProvider = interruptedAssistantProvider(event)
-      if (interruptedProvider !== undefined && ownsRoute(interruptedProvider))
+      if (interruptedProvider !== undefined && (ownsRoute(interruptedProvider) || historicalRoute(interruptedProvider)))
         return { id: `interrupted:${event.seq}`, role: 'start' }
       const provider = requestProvider(event)
       return provider !== undefined && ownsRoute(provider) ? { id: `request:${event.seq}`, role: 'start' } : null
@@ -304,10 +311,12 @@ export function createAcpActivityDefinition(ownsRoute: OwnsAcpRoute): Conversati
           return { ...previous, settled: true, seq: match.event.seq, location: match.location }
         }
       }
+      const historicalLookup = interruptedProvider !== undefined && !ownsRoute(interruptedProvider)
       return {
         ...(interruptedProvider === undefined ? {} : { settled: true as const }),
+        ...(historicalLookup ? { historicalLookup: true as const } : {}),
         ownerDshSessionId: '',
-        promptAnchorMessageId: anchor ?? `request:${match.event.seq}`,
+        promptAnchorMessageId: anchor ?? (historicalLookup ? '' : `request:${match.event.seq}`),
         profileId: provider,
         agentSessionId: '',
         committedActivitySeq: 0,
@@ -319,6 +328,7 @@ export function createAcpActivityDefinition(ownsRoute: OwnsAcpRoute): Conversati
     buildLocationData: (context, scope) => {
       const state = context.state
       if (scope !== 'step' || state?.settled !== true || state.location.kind !== 'step') return null
+      if (!state.promptAnchorMessageId) return null
       return {
         kind: 'step',
         turn: state.location.turn.turn,
@@ -328,7 +338,9 @@ export function createAcpActivityDefinition(ownsRoute: OwnsAcpRoute): Conversati
       }
     },
     buildViewNode: (context): ActivityNode | null => {
-      if (context.state === undefined) return null
+      // A historical name alone must never mount an activity card (or its failure feedback)
+      // in a foreign session. The chat normalizer consumes the step hint once it has matching rows.
+      if (context.state === undefined || context.state.historicalLookup) return null
       return {
         key: context.key,
         kind: 'acp-activity',
