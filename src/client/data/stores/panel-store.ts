@@ -59,10 +59,6 @@ const initialPanelState = (): AcpPanelSnapshot => ({
 
 /** The panel's complete write set — every glue publish routes through one of these. */
 const panelActions = {
-  /** Mirror the settings scope's current projection (scope subscription + attach resync). */
-  settingsMirrored(draft: AcpPanelSnapshot, settings: PanelSettingsState): void {
-    draft.settings = settings
-  },
   /** A health refresh started (concurrent refreshes fold in the glue). */
   healthLoading(draft: AcpPanelSnapshot): void {
     draft.health.status = 'loading'

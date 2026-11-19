@@ -55,6 +55,33 @@ export interface AcpStubAgentConfig {
 /** One ACP agent's stored configuration (the `dsh-acp-adapter` settings per-id value). */
 export type AcpAgentConfig = AcpStubAgentConfig
 
+/** Identity of a probe result. Labels, login guidance and environment ordering do not change the launch. */
+export function acpProbeConfigKey<
+  C extends Pick<AcpStubAgentConfig, 'command' | 'args' | 'env'> & { readonly runtime?: AcpConfiguredRuntime },
+>(config: C): string {
+  const envKeys = Object.keys(config.env).sort()
+  const envHashes = Object.entries(config.env)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => [key, shortSecretHash(value)])
+  return JSON.stringify({
+    command: config.command,
+    args: config.args,
+    envKeys,
+    envHashes,
+    runtime: config.runtime ?? null,
+  })
+}
+
+/** Deterministic short hash for cache identity; never returns the secret itself. */
+function shortSecretHash(value: string): string {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
 // Runtime identities are shared; their trusted execution behavior stays host-side.
 
 /** Explicitly supported ACP backend identity bindings. */

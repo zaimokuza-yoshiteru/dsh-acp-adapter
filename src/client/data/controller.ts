@@ -25,6 +25,7 @@ import {
   validateAgentDraft,
 } from './logic.ts'
 import type { AcpProviderHealth, AcpScopeSnapshot, AgentDraft } from './logic.ts'
+import { acpProbeConfigKey } from '../../contract/agent-config.ts'
 import type { AcpRemoteLike } from './acp-remote.ts'
 import type { AcpPanelSnapshot, AcpPanelStoreActions, HealthState } from './stores/panel-store.ts'
 
@@ -62,7 +63,8 @@ export class AcpPanelController {
   private readonly remote: AcpRemoteLike
   private readonly write: AcpPanelControllerDeps['mutate']
   private readonly refusedMessage: () => string
-  private readonly pendingFirstChecks = new Set<string>()
+  private readonly pendingChecks = new Set<string>()
+  private readonly changedDuringRead = new Set<string>()
   private readonly activeAgentChecks = new Map<string, symbol>()
   private disposed = false
 
@@ -72,8 +74,17 @@ export class AcpPanelController {
     this.refusedMessage = deps.refusedMessage
     this.remote = deps.remote
     this.unsubscribeScope = deps.scope.subscribe(() => {
+      const previous = this.scopeSnapshot.value?.agents
       this.scopeSnapshot = deps.scope.getSnapshot()
-      this.sink?.settingsMirrored(panelSettingsOf(this.scopeSnapshot))
+      const current = this.scopeSnapshot.value?.agents
+      if (previous && current) {
+        for (const [id, config] of Object.entries(previous)) {
+          const next = current[id]
+          if (next !== config && (!next || acpProbeConfigKey(next) !== acpProbeConfigKey(config)))
+            this.forgetAgentHealth(id)
+        }
+      }
+      this.sink?.resync(this.project())
     })
   }
 
@@ -91,7 +102,7 @@ export class AcpPanelController {
   /** Drop the scope subscription and the mirror; the controller publishes nothing afterwards. */
   dispose(): void {
     this.disposed = true
-    this.pendingFirstChecks.clear()
+    this.pendingChecks.clear()
     this.activeAgentChecks.clear()
     this.unsubscribeScope()
     this.sink = null
@@ -121,11 +132,12 @@ export class AcpPanelController {
         this.failHealth(result.error.message)
         return
       }
-      const rows = decodeHealthResponse(result.value)
-      if (rows === undefined) {
+      const resultRows = decodeHealthResponse(result.value)
+      if (resultRows === undefined) {
         this.failHealth('malformed dshAcp/health payload')
         return
       }
+      const rows = resultRows.filter((row) => !this.changedDuringRead.has(row.id))
       const fetchedAt = Date.now()
       const hostVersion = decodeHostVersionMismatch(result.value)
       this.health = {
@@ -142,8 +154,9 @@ export class AcpPanelController {
       this.failHealth(errorMessageOf(error))
     } finally {
       // A panel-wide read replaces all rows. Check Agents saved during it after it settles.
-      for (const id of this.pendingFirstChecks) {
-        this.pendingFirstChecks.delete(id)
+      this.changedDuringRead.clear()
+      for (const id of this.pendingChecks) {
+        this.pendingChecks.delete(id)
         void this.refreshAgentHealth(id)
       }
     }
@@ -224,11 +237,16 @@ export class AcpPanelController {
         : [{ op: 'set', path: ['agents', id], value: { ...validation.config, args: [...validation.config.args] } }]
     const failure = await this.mutate(ops)
     if (failure === undefined && !this.disposed) {
-      if (editingId === undefined) {
-        if (this.health.status === 'loading') this.pendingFirstChecks.add(id)
+      const previous = agents[id]
+      if (
+        editingId === undefined ||
+        (editingId === id && previous && acpProbeConfigKey(previous) !== acpProbeConfigKey(validation.config))
+      ) {
+        if (this.health.status === 'loading') this.pendingChecks.add(id)
         else void this.refreshAgentHealth(id)
-      } else if (editingId !== id || this.activeAgentChecks.has(editingId)) {
+      } else if (editingId !== id) {
         this.forgetAgentHealth(editingId)
+        this.sink?.resync(this.project())
       }
     }
     return failure
@@ -242,7 +260,10 @@ export class AcpPanelController {
    */
   async deleteAgent(id: string): Promise<string | undefined> {
     const failure = await this.mutate([{ op: 'unset', path: ['agents', id] }])
-    if (failure === undefined) this.forgetAgentHealth(id)
+    if (failure === undefined) {
+      this.forgetAgentHealth(id)
+      this.sink?.resync(this.project())
+    }
     return failure
   }
 
@@ -284,7 +305,8 @@ export class AcpPanelController {
 
   /** An obsolete check must not update a newly saved configuration that uses the same id. */
   private forgetAgentHealth(id: string): void {
-    this.pendingFirstChecks.delete(id)
+    if (this.health.status === 'loading') this.changedDuringRead.add(id)
+    this.pendingChecks.delete(id)
     this.activeAgentChecks.delete(id)
     this.health = {
       ...this.health,
@@ -292,7 +314,6 @@ export class AcpPanelController {
       checkingAgentIds: this.health.checkingAgentIds.filter((checking) => checking !== id),
       agentErrors: withoutKey(this.health.agentErrors, id),
     }
-    this.sink?.resync(this.project())
   }
 
   private failAgentHealth(agentId: string, message: string): void {
