@@ -4,6 +4,18 @@
 
 Find installation commands, release dates, and package checksums on [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases).
 
+## 0.2.2-rc.5.1
+
+### 中文
+
+- 本版适配 DSH `0.2.2-rc.5`。
+- 在「网页搜索与获取」中使用「自动选择」时，ACP 会话调用 DSH 的网页搜索工具会优先使用 DeepSeek Search API。原生 DeepSeek 模型优先使用 DeepSeek 服务端搜索。手动指定的搜索提供方优先生效。
+
+### English
+
+- This version targets DSH `0.2.2-rc.5`.
+- With **Automatic** selected in **Web search and fetch**, ACP sessions prefer DeepSeek Search API when calling the DSH web search tool. Native DeepSeek models prefer DeepSeek server-side search. An explicitly configured search provider takes precedence.
+
 ## 0.2.2-rc.4.1
 
 ### 中文

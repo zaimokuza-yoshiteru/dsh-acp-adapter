@@ -69,7 +69,12 @@ async function livePlugin(ctx: Context, plugin: Plugin, id: string, config: Reco
   }
 }
 
-async function harness(baseSelection = false) {
+async function harness(
+  webConfig: { searchProvider?: string; fetchProvider?: string } = {
+    searchProvider: 'deepseek-search-api',
+    fetchProvider: 'deepseek-fetch-api',
+  },
+) {
   const requests = captureApi()
   const ctx = new Context()
   cleanup.push(() => ctx.fiber.dispose())
@@ -80,10 +85,7 @@ async function harness(baseSelection = false) {
   await ctx.plugin(SystemPrompt, {})
   await ctx.plugin(ToolRuntime)
   ctx.tools.setExecutor(new NativeToolExecutor(ctx))
-  const selection = await livePlugin(ctx, WebRuntime, 'web', {
-    searchProvider: baseSelection ? 'deepseek-official' : 'deepseek-search-api',
-    fetchProvider: baseSelection ? 'http' : 'deepseek-fetch-api',
-  })
+  const selection = await livePlugin(ctx, WebRuntime, 'web', webConfig)
   let apiKey: string | undefined = 'test-host-api-key'
   const resolveCredential = vi.fn(async (_reference: string) => {
     await Promise.resolve()
@@ -193,6 +195,27 @@ async function harness(baseSelection = false) {
 }
 
 describe('published web providers through the ACP native-tool bridge', () => {
+  it('routes automatic search by the provider of the initiating session', async () => {
+    const h = await harness({})
+    const serverSideSearch = vi.fn(async ({ query }: { query: string }) => ({
+      content: query,
+      sources: [],
+      truncated: false,
+    }))
+    h.ctx.web.registerSearchProvider({ id: 'deepseek-official', available: () => true, search: serverSideSearch })
+    const acpRoutes = ['acp-codebuddy', 'acp-opencode', 'acp-deepseek-official']
+    const nativeRoutes = ['deepseek-official', 'deepseek-account']
+    for (const route of [...acpRoutes, ...nativeRoutes]) {
+      const caller = await h.connect(`selection-${route}`, 'Test question', route)
+      const result = await caller.search(route)
+      expect(result.isError, route).not.toBe(true)
+    }
+    expect(h.requests.map(({ endpoint, body }) => [endpoint, body.query])).toEqual(
+      acpRoutes.map((route) => [`${apiBase}/search`, route]),
+    )
+    expect(serverSideSearch.mock.calls.map(([{ query }]) => query)).toEqual(nativeRoutes)
+  })
+
   it('uses the current native Session human prompt and preserves native web tools and output', async () => {
     const h = await harness()
     const caller = await h.connect('current-question', 'Earlier question')
@@ -269,7 +292,7 @@ describe('published web providers through the ACP native-tool bridge', () => {
       )
       expect(h.requests.map(({ endpoint }) => endpoint)).toEqual([`${apiBase}/search`, `${apiBase}/fetch`])
       expect(h.requests[1]?.body).toEqual({ url: 'https://requested.invalid/article' })
-      // No native model route is mounted in this bridge fixture. RC.2 uses the
+      // No native model route is mounted in this bridge fixture. The host uses the
       // API key first even when the stored request names deepseek-account.
       expect(h.resolveAccountToken).not.toHaveBeenCalled()
       expect(h.resolveCredential.mock.calls.map(([reference]) => reference)).toEqual([
@@ -330,7 +353,7 @@ describe('published web providers through the ACP native-tool bridge', () => {
   })
 
   it('keeps base-provider selection until a native save, then switches both capabilities without remounting', async () => {
-    const h = await harness(true)
+    const h = await harness({ searchProvider: 'deepseek-official', fetchProvider: 'http' })
     // Only the old backends are scripted; provider selection, the live save,
     // native tools, the ACP bridge, and the new API producer are production code.
     const oldSearch = vi.fn(async () => ({ content: 'Old search backend', sources: [], truncated: false }))

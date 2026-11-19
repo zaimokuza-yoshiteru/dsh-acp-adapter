@@ -67,7 +67,7 @@ it('keeps native Search/Fetch settings and Flash labels independent of the loade
   })
   let browser: TestBrowser | undefined
   let page: Page | undefined
-  const evidence = process.env.DSH_E2E_EVIDENCE_DIR ?? join(root, '.local/rc2-native-web-settings')
+  const evidence = process.env.DSH_E2E_EVIDENCE_DIR ?? join(root, '.local/native-web-settings')
   mkdirSync(evidence, { recursive: true })
   const errors: string[] = []
   const unexpectedWork: string[] = []
@@ -112,19 +112,23 @@ it('keeps native Search/Fetch settings and Flash labels independent of the loade
       await menu.click()
       await required(page).getByRole('menuitem', { name: label, exact: true }).click()
     }
-    // RC.2 owns independent capability menus. Its shipped defaults are Search
-    // API + direct fetch; the API endpoint is YAML-only, not an editable field.
-    expect(await search().textContent()).toBe('DeepSeek Search API')
+    // The Host selects search per model route until the user saves a provider.
+    expect(await search().textContent()).toBe('Automatic')
     expect(await fetch().textContent()).toBe('Direct fetch')
-    expect(providerSelection()).toEqual({ searchProvider: 'deepseek-search-api', fetchProvider: 'http' })
+    expect(providerSelection()).toEqual({ searchProvider: undefined, fetchProvider: 'http' })
     expect(await endpoint().count()).toBe(0)
-    expect(await count().inputValue()).toBe('10')
+    expect(await count().count()).toBe(0)
     expect(await save().isDisabled()).toBe(true)
     expect(settingsDocument()).not.toContain('searchProvider:')
     expect(await detail.getByRole('link', { name: 'Search & Fetch guide', exact: true }).getAttribute('href')).toBe(
       'https://api-docs.deepseek.com/guides/search',
     )
 
+    await choose(search(), 'DeepSeek Search API')
+    expect(await count().inputValue()).toBe('10')
+    await save().click()
+    await expect.poll(providerSelection).toEqual({ searchProvider: 'deepseek-search-api', fetchProvider: 'http' })
+    await expect.poll(() => save().isDisabled()).toBe(true)
     await count().fill('51')
     await detail
       .getByText('Enter an integer from 1 to 50, or leave blank to use the default.', { exact: true })
@@ -133,7 +137,7 @@ it('keeps native Search/Fetch settings and Flash labels independent of the loade
     expect(await search().isDisabled()).toBe(true)
     expect(await fetch().isDisabled()).toBe(true)
     await count().fill('10')
-    await choose(search(), 'DeepSeek (legacy)')
+    await choose(search(), 'DeepSeek server-side search')
     expect(providerSelection()).toEqual({ searchProvider: 'deepseek-search-api', fetchProvider: 'http' })
     expect(await detail.getByLabel('Base URL', { exact: true }).count()).toBe(1)
     expect(await detail.getByLabel('Maximum searches per request', { exact: true }).inputValue()).toBe('5')
@@ -151,7 +155,7 @@ it('keeps native Search/Fetch settings and Flash labels independent of the loade
     // Navigating away discards staged provider/field changes without writing.
     await detail.getByRole('button', { name: 'Back to plugins', exact: true }).click()
     detail = await openWebSearch(page)
-    expect(await search().textContent()).toBe('DeepSeek (legacy)')
+    expect(await search().textContent()).toBe('DeepSeek server-side search')
     expect(await fetch().textContent()).toBe('Direct fetch')
     expect(await endpoint().inputValue()).toBe(MESSAGES_ENDPOINT)
     await choose(search(), 'DeepSeek Search API')
@@ -182,12 +186,17 @@ it('keeps native Search/Fetch settings and Flash labels independent of the loade
     await expect.poll(providerSelection).toEqual({ searchProvider: 'deepseek-search-api', fetchProvider: 'http' })
     await expect.poll(() => save().isDisabled()).toBe(true)
     expect(await count().inputValue()).toBe('20')
-    await choose(search(), 'DeepSeek (legacy)')
+    await choose(search(), 'DeepSeek server-side search')
     expect(await endpoint().inputValue()).toBe(MESSAGES_ENDPOINT)
     expect(await detail.getByLabel('Maximum searches per request', { exact: true }).inputValue()).toBe('5')
     await save().click()
     await expect.poll(providerSelection).toEqual({ searchProvider: 'deepseek-official', fetchProvider: 'http' })
     await expect.poll(() => save().isDisabled()).toBe(true)
+    await choose(search(), 'Automatic')
+    await save().click()
+    await expect.poll(providerSelection).toEqual({ searchProvider: undefined, fetchProvider: 'http' })
+    await expect.poll(() => save().isDisabled()).toBe(true)
+    expect(settingsDocument()).not.toContain('searchProvider:')
     await detail.getByRole('button', { name: 'Back to plugins', exact: true }).click()
     const acp = await openAcpPluginDetail(page)
     await acp.locator('[data-dsh-acp-panel]').waitFor()
