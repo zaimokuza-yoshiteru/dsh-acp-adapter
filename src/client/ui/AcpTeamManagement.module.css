@@ -17,9 +17,15 @@
 }
 .footer {
   display: flex;
+  flex: 1;
+  align-items: flex-start;
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 8px;
+}
+.interrupt {
+  flex: 1 1 min-content;
+  min-width: min(100%, 170px);
 }
 .memberHeader,
 .groupHeader {
@@ -110,8 +116,7 @@
   font-weight: 400;
 }
 /* Reserve a baseline line; longer pending/error messages wrap without clipping. */
-.settingNotice,
-.groupNotice {
+.settingNotice {
   box-sizing: border-box;
   min-height: 18px;
   width: 100%;
@@ -134,9 +139,6 @@
 .noticeError {
   color: var(--dsw-alias-state-error-primary);
 }
-.groupNotice {
-  margin-top: 6px;
-}
 .resultDetails {
   font-size: 12px;
   line-height: 18px;
@@ -157,22 +159,11 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.batchActions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-left: auto;
-}
-.batchActions button {
+.groupHeader button {
   height: 24px;
   min-height: 24px;
   padding: 0 6px;
   font-size: 12px;
   line-height: 18px;
   font-weight: 400;
-}
-.batchButton {
-  color: var(--dsw-alias-label-secondary);
 }

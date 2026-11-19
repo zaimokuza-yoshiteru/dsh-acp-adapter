@@ -2,7 +2,7 @@
 
 [English](permission-policy.en.md)
 
-适配器提供 Host 内的 `dsh-acp/permission-policy` 扩展事件，让明确接入的策略插件处理完整 ACP 授权请求。它不需要修改 DSH，也不增加适配器用户设置或默认授权规则。未安装策略插件时，原有完整选项和人工交互保持不变。
+策略插件可以把同一条规则注册到两个 Host 事件。`dsh-acp/permission-policy` 处理含多种范围的授权请求，`dsh-acp/binary-permission-policy` 处理原生二选一审批卡能够表达的请求。每个请求只进入一条策略链。现有策略显式注册第二个事件后，即可覆盖二选一审批。
 
 这不是旧 `approval/request` 插件的自动迁移接口。旧事件混合自动答复和原生人工二选一，不能作为只查询机器规则的接口；`unavailable` 也不只表示没有规则。策略提供方需要明确接入本事件。
 
@@ -16,17 +16,20 @@
 
 ```ts
 import type { Context } from '@deepseek-ai/cordis'
-import type { AcpExternalPolicyRequest } from '@zaimokuza/dsh-acp-adapter/permission-policy'
+import type { AcpExternalPolicyDecision, AcpExternalPolicyRequest } from '@zaimokuza/dsh-acp-adapter/permission-policy'
 
 export const inject = ['acpPermissionPolicy']
 
 export function apply(ctx: Context): void {
-  ctx.on('dsh-acp/permission-policy', async (request: AcpExternalPolicyRequest, next) => {
+  const rule = async (request: AcpExternalPolicyRequest, next: () => Promise<AcpExternalPolicyDecision>): Promise<AcpExternalPolicyDecision> => {
     if (request.signal?.aborted) return 'cancelled'
     if (request.profile !== 'antigravity') return next()
-    if (request.params.toolCall.kind === 'execute') return 'deny-once'
+    if (request.params.toolCall.kind === 'execute')
+      return { decision: 'deny-once', reason: '本会话仅允许读取操作。' }
     return next()
-  })
+  }
+  ctx.on('dsh-acp/permission-policy', rule)
+  ctx.on('dsh-acp/binary-permission-policy', rule)
 }
 ```
 
@@ -57,7 +60,7 @@ export async function apply(ctx: Context): Promise<void> {
 | `params`    | 深度只读的完整 ACP 请求，包括原始选项 ID、kind 和名称。服务在第一次异步让出前克隆并冻结 JSON 事实，策略不能修改原请求或后续回复选项。                 |
 | `signal`    | 当前请求和服务生命周期的合并取消信号。策略必须配合取消；不能凭时间经过推断授权成功。                                                                  |
 
-只允许以下五种结果：
+策略可以直接返回以下字符串，也可以返回带说明的 `{ decision, reason?: string }`。
 
 | 结果             | 适配器行为                                                                                                        |
 | ---------------- | ----------------------------------------------------------------------------------------------------------------- |
@@ -66,6 +69,8 @@ export async function apply(ctx: Context): Promise<void> {
 | `not-applicable` | 结束本次策略链，进入原有完整人工选择。要让下一策略判断，请调用并返回 `next()`。                                   |
 | `cancelled`      | 取消本次授权，不打开人工允许降级。                                                                                |
 | `failed`         | 取消授权，并使用原生反馈说明规则不可用、本次未授权。抛错和非法返回按此处理，不暴露异常详情。                      |
+
+请提供简短、适合向用户和 Agent 公开的理由。转交人工时，审批卡同时呈现理由、原始操作和选项。策略拒绝或取消时，适配器会在同一执行者和 ACP 会话下一次已准入的 `session/prompt` 中附带一次理由。外部 Agent 当前回合的内部推理步骤仍只收到标准权限答复。适配器不会为此发起模型调用。停止请求、关闭连接或替换执行者后，待发理由会丢弃。每条说明最多 512 个字符，每个连接保留最近 16 条。自动允许和规则故障不会转发理由。
 
 策略决定不直接替代 Sidecar 持久化。现有权限处理器继续记录同一组 `asked` / `decided`，完成审计、取消和实例身份检查后才回复 ACP。服务不另设规则库、授权缓存或持久化 owner。
 
@@ -82,7 +87,7 @@ export async function apply(ctx: Context): Promise<void> {
 
 ## 保留的路由与边界
 
-- 二选一授权仍使用既有原生审批；Antigravity 普通交互问答不进入此机器策略事件。
+- 二选一授权在没有适用策略时交给原生审批。Antigravity 普通交互问答继续由问答服务处理。
 - 已确认身份的 DSH 工具桥 Auto 保留原路径和真实 `tools.execute` 检查。此扩展不改变 Auto、Full access、bypass 或子会话原生 `never` 的含义。
 - Devin 完整授权保持保守人工路径。不能从 Agent 自报 metadata 或模式推断企业强制 Ask 可被自动回答。
 - 父页面只代呈原子会话的审批；回复、执行身份和审计仍归原子会话。取消、实例替换和迟到决定不能授予已失效请求。

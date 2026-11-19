@@ -6,6 +6,7 @@ import type * as acp from '@agentclientprotocol/sdk'
 import { AcpSessionRuntime, type AcpSessionRuntimeOptions } from '../../../src/runtime/session/session-runtime.ts'
 import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
 import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts'
+import { createAcpNativePermissionHandler } from '../../../src/domain/policy/permissions.ts'
 import { createPermissionCheckAudit } from '../../../src/domain/policy/events.ts'
 import type { AcpMcpLease } from '../../../src/runtime/session/mcp-lease.ts'
 import { Context } from '@deepseek-ai/cordis'
@@ -43,7 +44,7 @@ function createRuntime(
   mcpLease?: AcpMcpLease,
   onPermissionCheck?: AcpSessionRuntimeOptions['onPermissionCheck'],
   cancelGraceMs = 5_000,
-  echoPermissionResult = false,
+  echoPermissionResult: boolean | 'capture-prompts' = false,
 ): AcpSessionRuntime {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-runtime-permission-snapshot-'))
   roots.push(root)
@@ -75,10 +76,15 @@ function createRuntime(
     mode === 'raw-input'
       ? ''
       : `,content:[{type:'content',content:{type:'text',text:'Requesting approval to run the visible command'}}]`
-  const permissionEcho = echoPermissionResult
-    ? `send({jsonrpc:'2.0',method:'session/update',params:{sessionId:'${updateSessionId}',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:JSON.stringify(m.result)}}}});`
-    : ''
-  const script = `let b='';let promptSeq=0;const promptIds=new Map();const send=(m)=>process.stdout.write(JSON.stringify(m)+'\\n');const permission=(id)=>send({jsonrpc:'2.0',id,method:'session/request_permission',params:{sessionId:'permission-snapshot-session',toolCall:{toolCallId:'${permissionCallId}'${permissionKind}${requestContent}},options:[{optionId:'allow',name:'Allow',kind:'allow_once'}]}});process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const l=b.slice(0,i);b=b.slice(i+1);if(!l.trim())continue;const m=JSON.parse(l);if(m.method==='initialize')send({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentInfo:{name:'permission-snapshot',version:'1'},agentCapabilities:{}}});else if(m.method==='session/new')send({jsonrpc:'2.0',id:m.id,result:{sessionId:'permission-snapshot-session'}});else if(m.method==='session/prompt'){promptSeq+=1;const permissionId=100+promptSeq;promptIds.set(permissionId,m.id);if(promptSeq===1){${firstPrompt}}else permission(permissionId)}else if(promptIds.has(m.id)){${permissionEcho}send({jsonrpc:'2.0',id:promptIds.get(m.id),result:{stopReason:'end_turn'}})}}});process.stdin.on('end',()=>process.exit(0));setInterval(()=>{},1<<30);`
+  const capturePrompt =
+    echoPermissionResult === 'capture-prompts'
+      ? `require('node:fs').appendFileSync('prompts.jsonl',JSON.stringify(m.params.prompt)+'\\n');`
+      : ''
+  const permissionEcho =
+    echoPermissionResult === true
+      ? `send({jsonrpc:'2.0',method:'session/update',params:{sessionId:'${updateSessionId}',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:JSON.stringify(m.result)}}}});`
+      : ''
+  const script = `let b='';let promptSeq=0;const promptIds=new Map();const send=(m)=>process.stdout.write(JSON.stringify(m)+'\\n');const permission=(id)=>send({jsonrpc:'2.0',id,method:'session/request_permission',params:{sessionId:'permission-snapshot-session',toolCall:{toolCallId:'${permissionCallId}'${permissionKind}${requestContent}},options:[{optionId:'allow',name:'Allow',kind:'allow_once'}]}});process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const l=b.slice(0,i);b=b.slice(i+1);if(!l.trim())continue;const m=JSON.parse(l);if(m.method==='initialize')send({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentInfo:{name:'permission-snapshot',version:'1'},agentCapabilities:{}}});else if(m.method==='session/new')send({jsonrpc:'2.0',id:m.id,result:{sessionId:'permission-snapshot-session'}});else if(m.method==='session/prompt'){${capturePrompt}promptSeq+=1;const permissionId=100+promptSeq;promptIds.set(permissionId,m.id);if(promptSeq===1){${firstPrompt}}else permission(permissionId)}else if(promptIds.has(m.id)){${permissionEcho}send({jsonrpc:'2.0',id:promptIds.get(m.id),result:{stopReason:'end_turn'}})}}});process.stdin.on('end',()=>process.exit(0));setInterval(()=>{},1<<30);`
   const argv = [process.execPath, '-e', script]
   const env: Record<string, string> = {}
   const runtime = new AcpSessionRuntime({
@@ -153,6 +159,51 @@ async function permissionBridge(policy: () => Promise<'ask' | 'auto'>) {
 }
 
 describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
+  it.each(['same', 'replace', 'reconnect', 'stop'] as const)(
+    'delivers a policy reason only on the next admitted prompt for the same owner (%s)',
+    async (lifecycle) => {
+      const controller = new AbortController()
+      let owner = {}
+      const reason = 'Use the shared cache directory.'
+      const policy = vi.fn().mockResolvedValueOnce({ decision: 'deny-once', reason }).mockResolvedValue('cancelled')
+      const runtime = createRuntime(
+        async (params, signal, onPolicyDenial) => {
+          const answer = await createAcpNativePermissionHandler({
+            getAgent: () => owner,
+            approval: { evaluateBinary: policy, request: vi.fn() },
+            ...(onPolicyDenial === undefined ? {} : { onPolicyDenial }),
+          })(params, signal)
+          if (lifecycle === 'stop' && policy.mock.calls.length === 1) controller.abort()
+          return answer
+        },
+        'raw-input',
+        'in_progress',
+        undefined,
+        undefined,
+        5000,
+        'capture-prompts',
+      )
+      const readPrompts = () =>
+        fs
+          .readFileSync(path.join(roots.at(-1)!, 'prompts.jsonl'), 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line) as acp.ContentBlock[])
+      await runtime.prompt(PROMPT, () => {}, controller.signal)
+      expect(readPrompts()).toEqual([PROMPT])
+      if (lifecycle === 'replace') owner = {}
+      if (lifecycle === 'reconnect') await runtime.close()
+      await runtime.prompt(PROMPT, () => {})
+      await runtime.prompt(PROMPT, () => {})
+      const prompts = readPrompts()
+      expect(prompts).toHaveLength(3)
+      expect(prompts[1]).toEqual(
+        lifecycle === 'same' ? [{ type: 'text', text: expect.stringContaining(reason) }, ...PROMPT] : PROMPT,
+      )
+      expect(prompts[2]).toEqual(PROMPT)
+      expect(policy).toHaveBeenCalledTimes(3)
+    },
+  )
   it.each(['before-answer', 'after-answer', 'unrelated-tool', 'before-answer-without-event'] as const)(
     'keeps a displayed Ask bound to its exact tool when withdrawn %s',
     async (timing) => {

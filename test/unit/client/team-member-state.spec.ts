@@ -82,17 +82,20 @@ const member: AcpTeamMemberView = {
   model: null,
   description: null,
 }
-function render(running: boolean | undefined, granted = true) {
-  const state = { projectionsBySession: {}, byId: { member: { running } } }
-  const runtimeFacts = JSON.stringify([['member', running, undefined]])
+function render(running: boolean | undefined, granted = true, members = [member]) {
+  const state = {
+    projectionsBySession: {},
+    byId: Object.fromEntries(members.map(({ sessionId }) => [sessionId, { running }])),
+  }
+  const runtimeFacts = JSON.stringify(members.map(({ sessionId }) => [sessionId, running, undefined]))
   hooks.active = true
   hooks.index = 0
   hooks.values = [
     0,
     {
       revision: projectionRevision('lead' as never, {}, () => [undefined, undefined]),
-      runtimeRevision: JSON.stringify([runtimeFacts, ['member', undefined]]),
-      members: [member],
+      runtimeRevision: JSON.stringify([runtimeFacts, ...members.map(({ sessionId }) => [sessionId, undefined])]),
+      members,
     },
     false,
     false,
@@ -107,7 +110,7 @@ function render(running: boolean | undefined, granted = true) {
     streamFactory: {},
     isCurrent: () => true,
     interruptMember: vi.fn(),
-    loadMembers: async () => [member],
+    loadMembers: async () => members,
     closeManagement: vi.fn(),
     sessionAccessSource: () => ({ subscribe: () => () => {}, getSnapshot: () => granted }),
   } as never)
@@ -129,6 +132,20 @@ it('uses a native Modal and leaves member navigation and descriptions to the nat
   expect(nodes.find((node) => node.type === 'TeamMemberModelControl')?.props.member).toMatchObject({
     name: 'worker/reviewer',
   })
+})
+
+it('offers one team-wide interrupt in the dialog footer and keeps batch mode inside each profile', () => {
+  const nodes = render(true, true, [member, { ...member, sessionId: 'other', profileId: 'devin' }])
+  const isInterrupt = (node: Node) =>
+    node.type === 'Button' && Array.isArray(node.props.children) && node.props.children.includes('teamInterruptAll')
+  expect(nodes.filter(isInterrupt)).toHaveLength(1)
+  expect(flatten(nodes[0]!.props.footer).some(isInterrupt)).toBe(true)
+  const groups = nodes.filter((node) => 'data-acp-mode-group' in node.props)
+  expect(groups).toHaveLength(2)
+  for (const group of groups) {
+    expect(flatten(group.props.children).find((node) => node.props.label === 'teamBatchMode')).toBeDefined()
+    expect(flatten(group.props.children).some(isInterrupt)).toBe(false)
+  }
 })
 
 it('requires known runtime state and current target permission before offering interruption', () => {

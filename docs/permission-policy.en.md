@@ -2,7 +2,7 @@
 
 [简体中文](permission-policy.md)
 
-The adapter provides the Host-local `dsh-acp/permission-policy` extension event for policy plugins that explicitly opt in to handling complete ACP permission requests. It needs no DSH changes, adapter user setting, or built-in authorization rules. Without a provider, existing complete choices and human interaction remain unchanged.
+Policy plugins can handle external Agent permission requests through two Host-local events. Register the same rule on `dsh-acp/permission-policy` for rich choices and `dsh-acp/binary-permission-policy` for requests representable by the native binary card. Each request visits exactly one chain. Existing providers gain binary coverage when they explicitly register for it.
 
 This does not automatically migrate plugins listening to `approval/request`. That event combines machine responses with the native binary human prompt, so it cannot serve as a machine-only policy query. Its `unavailable` result also means more than absence of a rule. Providers must explicitly integrate with the new event.
 
@@ -16,17 +16,20 @@ The following pair provides complete composition and rule entries. First create 
 
 ```ts
 import type { Context } from '@deepseek-ai/cordis'
-import type { AcpExternalPolicyRequest } from '@zaimokuza/dsh-acp-adapter/permission-policy'
+import type { AcpExternalPolicyDecision, AcpExternalPolicyRequest } from '@zaimokuza/dsh-acp-adapter/permission-policy'
 
 export const inject = ['acpPermissionPolicy']
 
 export function apply(ctx: Context): void {
-  ctx.on('dsh-acp/permission-policy', async (request: AcpExternalPolicyRequest, next) => {
+  const rule = async (request: AcpExternalPolicyRequest, next: () => Promise<AcpExternalPolicyDecision>): Promise<AcpExternalPolicyDecision> => {
     if (request.signal?.aborted) return 'cancelled'
     if (request.profile !== 'antigravity') return next()
-    if (request.params.toolCall.kind === 'execute') return 'deny-once'
+    if (request.params.toolCall.kind === 'execute')
+      return { decision: 'deny-once', reason: 'This session only permits read operations.' }
     return next()
-  })
+  }
+  ctx.on('dsh-acp/permission-policy', rule)
+  ctx.on('dsh-acp/binary-permission-policy', rule)
 }
 ```
 
@@ -57,7 +60,7 @@ A real provider should use its existing machine policy service, pass `request.si
 | `params`    | Deeply readonly, complete ACP request, including original option IDs, kinds, and labels. JSON facts are cloned and frozen before the first asynchronous yield. Providers cannot modify the original request or later response options. |
 | `signal`    | Combined cancellation for the request and service lifetime. Providers must cooperate with cancellation; elapsed time never implies successful authorization.                                                                           |
 
-Only these five results are valid:
+Return one of the following strings or an object of the form `{ decision, reason?: string }`.
 
 | Result           | Adapter behavior                                                                                                                                                                                                      |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -66,6 +69,8 @@ Only these five results are valid:
 | `not-applicable` | Ends the policy chain and retains complete human choice. Call and return `next()` to defer to another provider.                                                                                                       |
 | `cancelled`      | Cancels authorization without falling back to a human grant.                                                                                                                                                          |
 | `failed`         | Cancels authorization and uses native feedback to state that the rule was unavailable and the operation was not authorized. Exceptions and invalid results receive this treatment without exposing exception details. |
+
+Supply a short, public reason suitable for both the user and the Agent. On human fallback it appears beside the original operation and choices. For a policy denial or cancellation, the adapter includes the explanation once with the next independently admitted `session/prompt` for the same executing Agent and live ACP session. Existing private Agent steps only see the standard ACP permission reply. Sending the explanation does not start another model request. Stop, transport closure, and owner replacement discard pending context. Each explanation is limited to 512 characters and each connection keeps the 16 most recent. Successful grants and rule failures do not forward explanations.
 
 A policy decision does not replace Sidecar persistence. The existing permission handler owns the same `asked` / `decided` audit pair and checks persistence, cancellation, and Agent identity before replying to ACP. The service adds no rule store, grant cache, or persistence owner.
 
@@ -82,7 +87,7 @@ Registrations belong to the provider's Cordis fiber. Removing a registration pre
 
 ## Preserved routes and boundaries
 
-- Binary permission requests keep native approval. Ordinary Antigravity interactive questions do not enter this machine policy event.
+- Binary permission requests use native approval when no binary rule applies. Ordinary Antigravity interactive questions stay with their question owner.
 - Auto for verified DSH bridge tools keeps its existing path and actual `tools.execute` checks. This extension does not redefine Auto, Full access, bypass, or a child session's native `never` policy.
 - Complete Devin permission requests retain the conservative human route. Agent metadata or mode cannot prove that enterprise-enforced Ask is eligible for an automatic response.
 - The parent page only presents the original child's request. Replies, execution identity, and audit remain with that child. Cancellation, Agent replacement, and late decisions cannot authorize an invalidated request.

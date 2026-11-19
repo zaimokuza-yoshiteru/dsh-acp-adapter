@@ -476,6 +476,19 @@ export interface AcpAgentSessionSnapshotView {
   readonly profileId: string
   readonly modeWritable?: boolean
   readonly pendingModeId?: string | null
+  /** Present for an established main session that delegated its model to the Agent. */
+  readonly managedModel?: {
+    readonly optionId: string
+    readonly confirmed: string | null
+    readonly requested?: string
+    readonly recovery?: 'unconfirmed' | 'possibly-delivered'
+    readonly lastSuccessfulModel?: string
+    readonly capacityRisks?: readonly {
+      readonly model: string
+      readonly lastUsed: number
+      readonly targetSize: number
+    }[]
+  }
   readonly freshness: 'live' | 'stale'
   readonly editable: boolean
   readonly configOptions: readonly AcpConfigOption[] | null

@@ -1,12 +1,18 @@
 /** Immutable Agent differences. Shared connection, lifecycle and permission
  * owners consume these narrow facts; these modules never own a second client. */
-import type { AcpAgentId } from '../contract/agent-config.ts'
+import type { AcpAgentId, AcpStubAgentConfig } from '../contract/agent-config.ts'
 import { antigravityCompatibility } from './antigravity.ts'
 import { claudeCompatibility } from './claude.ts'
-import { codebuddyHasModelSpecificConfiguration, codebuddySessionOptions } from './codebuddy.ts'
+import {
+  codebuddyHasModelSpecificConfiguration,
+  codebuddySessionOptions,
+  isAnonymousCodeBuddyLaunch,
+} from './codebuddy.ts'
 import { codexModelProbeOptions } from './codex.ts'
 import { devinModelProbeOptions, devinToolDiscoveryInstructions } from './devin.ts'
 import { qwenHasModelSpecificConfiguration } from './qwen.ts'
+
+export { isOpenCodeQuestion } from './opencode.ts'
 
 export function executableOverrideEnvFor(runtime: AcpAgentId | undefined): string | undefined {
   if (runtime === 'claude') return claudeCompatibility.executableOverrideEnv
@@ -35,6 +41,16 @@ export function modelProbeOptions(runtime: AcpAgentId | undefined): {
 /** These are observed protocol identities, not catalog names or profile ids. */
 export function hasModelSpecificConfiguration(agentName: string | undefined): boolean {
   return codebuddyHasModelSpecificConfiguration(agentName) || qwenHasModelSpecificConfiguration(agentName)
+}
+
+/** Peers verified to report their selected model on both session creation and restoration. */
+export function supportsAgentManagedModels(
+  agentName: string | undefined,
+  profile?: Pick<AcpStubAgentConfig, 'command' | 'args' | 'runtime'>,
+): boolean {
+  return agentName === undefined
+    ? isAnonymousCodeBuddyLaunch(profile)
+    : codebuddyHasModelSpecificConfiguration(agentName) || agentName === 'OpenCode'
 }
 
 export function sessionCompatibilityOptions(runtime: AcpAgentId | undefined): {

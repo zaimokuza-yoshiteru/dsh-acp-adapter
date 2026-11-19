@@ -10,7 +10,7 @@ import { expect } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { writeComposerDraft } from '#host-support'
 import { closeNativeMembers, openNativeMembers } from './native-team-ui.ts'
-import { createLiveTeamProgress } from './live-team-progress.ts'
+import { createLiveTeamProgress, hasTeamCalculationResult, includesReadTask } from './live-team-progress.ts'
 import { installLiveDevinTeamApprovals } from './live-devin-team-approval.ts'
 import type { DevinLiveFixtureContext } from './live-devin-environment.ts'
 
@@ -42,18 +42,21 @@ export async function verifyLiveTeam({
 }) {
   const token = `TEAM_${randomUUID().slice(0, 8)}`
   const progress = createLiveTeamProgress()
+  const computeTaskReaders = new Set<SessionId>()
   let taskRoot: SessionId | undefined
   const executions: { name: string; sessionId: SessionId; isError: boolean; error: unknown }[] = []
   const messages: (ObservedEvent | { sessionId: SessionId; type: 'assistant/message'; seq: number; text: string })[] =
     []
   const disposeResults = host.ctx.on('tools/result', (execution, result) => {
-    if (execution.agent?.options.provider === provider)
-      executions.push({
-        name: execution.name,
-        sessionId: execution.agent.id,
-        isError: result.isError,
-        error: result.error,
-      })
+    if (execution.agent?.options.provider !== provider) return
+    executions.push({
+      name: execution.name,
+      sessionId: execution.agent.id,
+      isError: result.isError,
+      error: result.error,
+    })
+    if (!result.isError && includesReadTask(execution.name, result.value, `Compute ${token}`))
+      computeTaskReaders.add(execution.agent.id)
   })
   const disposeEvents = host.ctx.on('session/event', (session, event) => {
     if (
@@ -200,8 +203,8 @@ Wait for its message. If using wait_agent, omit timeout_ms or set it to at most 
       },
       { timeout: 120_000, interval: 500 },
     )
-    // The task permits get OR list; a successful exact get must not require a redundant list call.
-    for (const name of ['team_task_create', 'team_task_get', 'team_task_update']) {
+    expect(computeTaskReaders.has(child.id), 'Expected the member to read its Compute task').toBe(true)
+    for (const name of ['team_task_create', 'team_task_update']) {
       expect(executions.some((item) => item.name === name && !item.isError)).toBe(true)
     }
     expect(child.session.requestHeader()?.config).toMatchObject({ provider, model })
@@ -235,8 +238,10 @@ Wait for its message. If using wait_agent, omit timeout_ms or set it to at most 
             .join('')
           evidence.reply = reply
           expect(required(final, 'Expected a Lead model response after the relay').seq).toBeGreaterThan(receipt.seq)
-          expect(reply).toContain(token)
-          expect(reply).toContain('2')
+          expect(
+            hasTeamCalculationResult(reply, token),
+            'Expected the final reply to include the token and result 2',
+          ).toBe(true)
         },
         { timeout: 90_000, interval: 500 },
       )

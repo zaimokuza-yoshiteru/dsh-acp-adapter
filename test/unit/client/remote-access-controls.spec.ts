@@ -25,8 +25,10 @@ vi.mock('react', () => ({
 }))
 
 import { UnroutedHistoryDock } from '../../../src/client/ui/UnroutedHistoryDock.ts'
+import { UnsentModelSwitchInput } from '../../../src/client/ui/UnsentModelSwitchInput.ts'
 import { AcpAgentControl } from '../../../src/client/ui/AcpAgentControl.ts'
 import { AcpRecoveryDock } from '../../../src/client/ui/AcpRecoveryDock.ts'
+import { ManagedModelRecovery } from '../../../src/client/ui/ManagedModelRecovery.ts'
 import type { IndependentSessionOutcome } from '../../../src/client/coordinator/native-session-navigation.ts'
 import { TeamMemberModelControl } from '../../../src/client/ui/TeamMemberModelControl.ts'
 import type { AcpAgentSessionSnapshotView } from '../../../src/contract/remote.ts'
@@ -86,6 +88,36 @@ function setup(owner = false, workspace = true) {
     rebindRecoveryBlank: vi.fn(async () => ({ ok: true, value: undefined })),
   }
   const createNewSession = vi.fn(async () => 'idle' as const)
+  const managedRecovery = (model: NonNullable<AcpAgentSessionSnapshotView['managedModel']>) => {
+    seed([
+      {
+        ...snapshot,
+        managedModel: model,
+        configOptions: [
+          {
+            type: 'select',
+            id: 'engine',
+            category: 'model',
+            currentValue: 'b',
+            options: [
+              { value: 'a', name: 'Model A' },
+              { value: 'b', name: 'Model B' },
+            ],
+          },
+        ],
+      },
+    ])
+    return ManagedModelRecovery({
+      sessionId: 'lead',
+      remote,
+      t: (key: string) => key,
+      writable: true,
+      running: false,
+      mayCreate: true,
+      createNewSession,
+      sessionAccessSource,
+    } as never)
+  }
   const common = {
     sessionId: 'lead',
     remote,
@@ -201,7 +233,7 @@ function setup(owner = false, workspace = true) {
       openIndependent: createNewSession,
     } as never)
   }
-  return { state, remote, control, model, recovery, imported, createNewSession }
+  return { state, remote, control, model, recovery, managedRecovery, imported, createNewSession }
 }
 function groups(tree: Tree): { choices: { disabled: boolean; write: { kind: string } }[] }[] {
   return tree.props.groups as never
@@ -220,6 +252,37 @@ function recoveryButton(value: unknown, label: string): Tree {
     (node) => typeof node.props.onClick === 'function' && (node.props.children as unknown[])?.includes(label),
   )!
 }
+
+it('recovers a possibly delivered message by changing only the model or opening a separate chat', async () => {
+  const h = setup()
+  const model = {
+    optionId: 'engine',
+    confirmed: 'b',
+    lastSuccessfulModel: 'a',
+    recovery: 'possibly-delivered' as const,
+  }
+  grants(h.state, 'lead', ['dshAcp/setAgentSessionOption', 'session/selectModel'])
+  const view = h.managedRecovery(model)
+  const labels = nodes(view).flatMap((node) => node.props.children ?? [])
+  expect(labels).toContain('managedModelIncomplete')
+  expect(labels).not.toContain('resendUnsentMessage')
+  const switchBack = recoveryButton(view, 'managedModelRestore').props.onClick as () => void
+  grants(h.state, 'lead', ['dshAcp/setAgentSessionOption'])
+  switchBack()
+  expect(h.remote.setAgentSessionOption).not.toHaveBeenCalled()
+  grants(h.state, 'lead', ['dshAcp/setAgentSessionOption', 'session/selectModel'])
+  switchBack()
+  expect(h.remote.setAgentSessionOption).toHaveBeenCalledExactlyOnceWith('lead', {
+    kind: 'config',
+    id: 'engine',
+    value: 'a',
+  })
+  const missing = h.managedRecovery({ ...model, lastSuccessfulModel: 'removed' })
+  expect(nodes(missing).flatMap((node) => node.props.children ?? [])).not.toContain('managedModelRestore')
+  ;(recoveryButton(missing, 'managedModelNew').props.onClick as () => void)()
+  expect(h.createNewSession).toHaveBeenCalledExactlyOnceWith('lead', expect.any(Function), 'create')
+  expect(h.managedRecovery({ optionId: 'engine', confirmed: 'b' })).toBeNull()
+})
 
 it('preserves owner mode and policy writes while read-only grants disable and block both handlers', async () => {
   for (const owner of [false, true]) {
@@ -404,4 +467,32 @@ it('offers only available model and creation actions in an imported history', ()
   grants(h.state, 'lead', [])
   expect(keys(h.imported())).toContain('unroutedHistoryCreateOnly')
   expect(keys(h.imported())).toContain('crossBackendContinue')
+})
+
+it('shows a resend action only for a failed switch with permission to send, and submits its ticket once', async () => {
+  const { state } = setup()
+  const remote = { retryModelSwitchInput: vi.fn(async () => ({ ok: true })) }
+  const render = (failureSeq?: number) => {
+    seed([])
+    return UnsentModelSwitchInput({
+      sessionId: 'lead',
+      useAccess: (action: string) => state.resource('session', 'lead', action).getSnapshot(),
+      useProjection: (_key: string, select: (value: object) => unknown) =>
+        select(failureSeq === undefined ? {} : { unsentModelSwitch: { failureSeq } }),
+      useSession: (select: (value: object) => unknown) => select({ running: false }),
+      remote,
+      t: (key: string) => key,
+    } as never)
+  }
+  for (const action of ['session/prompt', 'dshAcp/retryModelSwitchInput']) {
+    grants(state, 'lead', [action])
+    expect(render(42)).toBeNull()
+  }
+  grants(state, 'lead', ['session/prompt', 'dshAcp/retryModelSwitchInput'])
+  expect(render()).toBeNull()
+  const element = render(42) as Tree
+  const button = recoveryButton((element.type as (props: object) => unknown)(element.props), 'resendUnsentMessage')
+  const retry = button.props.onClick as () => Promise<void>
+  await Promise.all([retry(), retry()])
+  expect(remote.retryModelSwitchInput).toHaveBeenCalledExactlyOnceWith('lead', 42)
 })

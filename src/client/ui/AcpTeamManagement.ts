@@ -16,11 +16,12 @@ import { agentSessionStream } from '../data/agent-session-stream.ts'
 import { AgentSessionMenu } from './AgentSessionMenu.ts'
 import { agentControlLabel, type AgentControlGroup } from './agent-session-controls.ts'
 import { normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
-import { applyTeamMode, teamModeChoices, teamSessionMenuGroups, type TeamModeResult } from './team-mode-controls.ts'
+import { applyTeamMode, teamModeChoices, teamSessionMenuGroups } from './team-mode-controls.ts'
 import { teamModeLabel } from '../../contract/session-modes.ts'
 import { TeamMemberModelControl } from './TeamMemberModelControl.ts'
 import { isStableTeamMemberReadError } from './team-approval-actions.ts'
 import { interruptTeam } from './team-interrupt.ts'
+import { teamActionSummary } from './team-action-summary.ts'
 import { projectionRevision } from './team-projection.ts'
 import css from './AcpTeamManagement.module.css'
 import { useSessionActionAccess, type SessionAccessSource } from './session-action-access.ts'
@@ -36,9 +37,7 @@ type AcpTeamManagementActions = {
   sessionAccessSource: SessionAccessSource
 }
 type ManagedMember = AcpTeamMemberView & { readonly runtimeKnown: boolean }
-type InterruptFeedback =
-  | { key: 'teamInterruptResult'; params: { accepted: number; skipped: number; failed: number }; isError: boolean }
-  | { key: 'teamInterruptFailed'; isError: true }
+type InterruptFeedback = Awaited<ReturnType<typeof interruptTeam>> | 'unavailable'
 
 /** ACP settings extend the native catalog; the native owner keeps member navigation. */
 export function AcpTeamManagementAction({
@@ -233,9 +232,9 @@ export function AcpTeamManagement({
         },
         interrupt: (id) => actions.interruptMember(id as SessionId),
       })
-      if (current()) setInterruptFeedback({ key: 'teamInterruptResult', params: result, isError: result.failed > 0 })
+      if (current()) setInterruptFeedback(result)
     } catch {
-      if (current()) setInterruptFeedback({ key: 'teamInterruptFailed', isError: true })
+      if (current()) setInterruptFeedback('unavailable')
     } finally {
       interruptLock.current = false
       if (alive.current) {
@@ -244,6 +243,7 @@ export function AcpTeamManagement({
       }
     }
   }
+  const interruptError = interruptFeedback === 'unavailable' || (interruptFeedback?.failed ?? 0) > 0
   const groups = Map.groupBy(members, (member) => member.profileId)
   return h(
     Modal,
@@ -269,6 +269,41 @@ export function AcpTeamManagement({
       footer: h(
         'div',
         { className: css.footer },
+        members.length > 0 || interruptFeedback !== null
+          ? h(
+              'div',
+              { className: css.interrupt },
+              members.length > 0
+                ? h(
+                    Button,
+                    {
+                      variant: 'ghost',
+                      disabled:
+                        interrupting ||
+                        !metadataReady ||
+                        !members.some(
+                          (member) =>
+                            member.status === 'running' &&
+                            member.runtimeKnown &&
+                            interruptAccess.allows(member.sessionId),
+                        ),
+                      title: t('teamInterruptHint'),
+                      onClick: () => void interruptAll(),
+                    },
+                    t(interrupting ? 'teamInterrupting' : 'teamInterruptAll'),
+                  )
+                : null,
+              interruptFeedback !== null
+                ? h(
+                    'p',
+                    { role: interruptError ? 'alert' : 'status', className: interruptError ? css.error : css.hint },
+                    interruptFeedback === 'unavailable'
+                      ? t('teamInterruptFailed')
+                      : teamActionSummary(t, interruptFeedback),
+                  )
+                : null,
+            )
+          : null,
         h(
           Button,
           { variant: 'outline', disabled: metadataLoading, onClick: () => setRefresh((value) => value + 1) },
@@ -285,7 +320,7 @@ export function AcpTeamManagement({
       !metadataLoading && !error && members.length === 0
         ? h('p', { className: css.hint }, t('teamMembersEmpty'))
         : null,
-      ...[...groups].map(([profileId, grouped], index) =>
+      ...[...groups].map(([profileId, grouped]) =>
         h(ModeGroup, {
           key: profileId ?? 'unknown',
           lead: sessionId,
@@ -294,35 +329,9 @@ export function AcpTeamManagement({
           metadataCurrent: metadataReady,
           t,
           useSessionAccess,
-          interrupt:
-            index === 0
-              ? {
-                  busy: interrupting,
-                  disabled:
-                    interrupting ||
-                    !metadataReady ||
-                    !members.some(
-                      (member) =>
-                        member.status === 'running' && member.runtimeKnown && interruptAccess.allows(member.sessionId),
-                    ),
-                  run: () => {
-                    void interruptAll()
-                  },
-                }
-              : null,
           ...actions,
         }),
       ),
-      interruptFeedback
-        ? h(
-            'p',
-            {
-              role: interruptFeedback.isError ? 'alert' : 'status',
-              className: interruptFeedback.isError ? css.error : css.hint,
-            },
-            t(interruptFeedback.key, 'params' in interruptFeedback ? interruptFeedback.params : undefined),
-          )
-        : null,
     ),
   )
 }
@@ -336,11 +345,9 @@ function ModeGroup({
   remote,
   streamFactory,
   isCurrent,
-  interrupt,
   useSessionAccess,
   sessionAccessSource,
 }: {
-  interrupt: { busy: boolean; disabled: boolean; run(): void } | null
   lead: SessionId
   profileId: string | null
   members: readonly ManagedMember[]
@@ -360,10 +367,7 @@ function ModeGroup({
   const [busy, setBusy] = useState(false)
   const locked = useRef(false)
   const alive = useRef(true)
-  const [feedback, setFeedback] = useState<
-    { key: 'teamModeResult'; applied: number; skipped: number; failed: number } | undefined
-  >(undefined)
-  const [results, setResults] = useState<readonly TeamModeResult[]>([])
+  const [result, setResult] = useState<Awaited<ReturnType<typeof applyTeamMode>>>()
   const ids = members.map((member) => member.sessionId).join('|')
   useEffect(() => {
     alive.current = true
@@ -422,8 +426,7 @@ function ModeGroup({
     locked.current = true
     setBusy(true)
     updateMenu(null)
-    setFeedback(undefined)
-    setResults([])
+    setResult(undefined)
     const unwrap = <T>(result: { ok: true; value: T } | { ok: false; error: { message: string } }): T => {
       if (!result.ok) throw new Error(result.error.message)
       return result.value
@@ -444,10 +447,7 @@ function ModeGroup({
           if (alive.current) setSnapshots((old) => ({ ...old, [id]: snapshot }))
         },
       })
-      if (alive.current) {
-        setFeedback({ key: 'teamModeResult', applied: result.applied, skipped: result.skipped, failed: result.failed })
-        setResults(result.members)
-      }
+      if (alive.current) setResult(result)
     } finally {
       locked.current = false
       if (alive.current) setBusy(false)
@@ -484,40 +484,23 @@ function ModeGroup({
       'div',
       { className: css.groupHeader },
       h('strong', null, profileId ?? t('teamProfileUnknown')),
-      h(
-        'div',
-        { className: css.batchActions },
-        interrupt === null
-          ? null
-          : h(
-              Button,
-              {
-                variant: 'ghost',
-                className: css.batchButton,
-                disabled: interrupt.disabled,
-                title: t('teamInterruptHint'),
-                onClick: interrupt.run,
-              },
-              t(interrupt.busy ? 'teamInterrupting' : 'teamInterruptAll'),
-            ),
-        h(AgentSessionMenu, {
-          groups: [batchGroup],
-          label: t('teamBatchMode'),
-          t,
-          open: menu === 'batch',
-          side: 'bottom',
-          align: 'end',
-          disabled: batchChoices.length === 0 || profileId === null || busy,
-          onOpenChange: (value) => updateMenu(value ? 'batch' : null),
-          onSelect: (choice) => {
-            if (choice.write.kind !== 'tool-approval-policy')
-              void change(
-                members.map((member) => member.sessionId),
-                choice.write.kind === 'mode' ? choice.write.id : String(choice.write.value),
-              )
-          },
-        }),
-      ),
+      h(AgentSessionMenu, {
+        groups: [batchGroup],
+        label: t('teamBatchMode'),
+        t,
+        open: menu === 'batch',
+        side: 'bottom',
+        align: 'end',
+        disabled: batchChoices.length === 0 || profileId === null || busy,
+        onOpenChange: (value) => updateMenu(value ? 'batch' : null),
+        onSelect: (choice) => {
+          if (choice.write.kind !== 'tool-approval-policy')
+            void change(
+              members.map((member) => member.sessionId),
+              choice.write.kind === 'mode' ? choice.write.id : String(choice.write.value),
+            )
+        },
+      }),
     ),
     h(
       'div',
@@ -626,8 +609,14 @@ function ModeGroup({
         )
       }),
     ),
-    h('div', { role: 'status', className: css.groupNotice }, feedback === undefined ? '' : t(feedback.key, feedback)),
-    results.length === 0
+    result
+      ? h(
+          'p',
+          { role: result.failed > 0 ? 'alert' : 'status', className: result.failed > 0 ? css.error : css.hint },
+          teamActionSummary(t, result),
+        )
+      : null,
+    !result || (result.skipped === 0 && result.failed === 0)
       ? null
       : h(
           'details',
@@ -636,7 +625,7 @@ function ModeGroup({
           h(
             'ul',
             null,
-            ...results.map((result) =>
+            ...result.members.map((result) =>
               h(
                 'li',
                 { key: result.sessionId },

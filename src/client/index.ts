@@ -27,9 +27,8 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import { AcpActivityNode } from './ui/AcpActivityNode.ts'
 import {
   acpPromptAnchorDefinition,
-  createAcpActivityDefinition,
   createAcpEffectiveRouteDefinition,
-  createAcpLiveActivityDefinition,
+  followAcpActivityDefinitions,
 } from './ui/activity-definitions.ts'
 import { installNativeToolRenderer } from './ui/native-tool-renderer.ts'
 import { installAcpAssistantStream } from './ui/AcpAssistantStream.ts'
@@ -37,6 +36,7 @@ import { AcpActivityJournalHub } from './data/activity-journal.ts'
 import { AcpUiFeedback, followAcpQuestionLimitations, type AcpUiOutcome } from './data/feedback.ts'
 import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import { UnroutedHistoryDock } from './ui/UnroutedHistoryDock.ts'
+import { UnsentModelSwitchInput } from './ui/UnsentModelSwitchInput.ts'
 import { CrossBackendCoordinator } from './coordinator/cross-backend-coordinator.ts'
 import { AcpNativeForkCoordinator, type NativeForkFailure } from './coordinator/native-fork.ts'
 import { createNativeForkJournal } from './coordinator/native-fork-journal.ts'
@@ -206,9 +206,11 @@ async function registerUi(ctx: ClientContext): Promise<void> {
   }
   const settingsT = ctx.locale.bind('settings.acp') as AcpTranslate
   ctx.uiConversation.events.register(createAcpEffectiveRouteDefinition())
-  ctx.uiConversation.events.register(createAcpLiveActivityDefinition(managedRoutes.owns))
   ctx.uiConversation.events.register(acpPromptAnchorDefinition)
-  ctx.uiConversation.events.register(createAcpActivityDefinition(managedRoutes.owns))
+  ctx.effect(
+    () => followAcpActivityDefinitions(managedRoutes, (definition) => ctx.uiConversation.events.register(definition)),
+    'dsh-acp: route-owned activity history',
+  )
   ctx.effect(() => ctx.locale.register('acpActivity', { zh, en }), 'dsh-acp: activity dictionaries')
   ctx.effect(() => ctx.locale.register('settings.acp', { zh, en }), 'dsh-acp: settings dictionaries')
   ctx.slots.inject('conversation.composer', () =>
@@ -463,6 +465,18 @@ async function registerUi(ctx: ClientContext): Promise<void> {
         },
         UnroutedHistoryDock,
       ),
+    ),
+  )
+  ctx.slots.inject('conversation.input.dock', () =>
+    ctx.slots.register(
+      {
+        name: 'conversation.input.dock',
+        id: 'dsh-acp-unsent-model-switch',
+        order: 87,
+        locale: 'acpActivity',
+        inject: () => ({ remote: acpRemote }),
+      },
+      UnsentModelSwitchInput,
     ),
   )
   ctx.slots.inject('conversation.input.dock', () =>

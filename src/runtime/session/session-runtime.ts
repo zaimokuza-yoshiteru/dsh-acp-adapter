@@ -17,6 +17,7 @@ import type { AcpSessionNotification, AcpTerminalHandlers } from '../../protocol
 import { waitWithin } from '../process/timeout.ts'
 import { AcpHostSettlementError } from './mcp-lease.ts'
 import type { AcpMcpLease } from './mcp-lease.ts'
+import type { AcpPermissionFeedback } from '../../domain/policy/permissions.ts'
 import type { AcpPermissionCheck } from '../../domain/policy/permission-check.ts'
 import type { LiveDiagnosticTrace } from '../../contract/live-diagnostic-trace.ts'
 import { AcpClientError } from '../../protocol/v1/errors.ts'
@@ -91,6 +92,21 @@ function structuredProviderErrorKind(error: unknown): 'resource_exhausted' | 'un
 /** Deliberately protocol-local: runtime restoration does not own persistence. */
 export interface AcpRuntimeBindingRef {
   readonly agentSessionId: string
+  readonly agent?: { readonly name?: string }
+  readonly protocolVersion?: number
+  readonly requireFreshConfig?: boolean
+}
+
+function assertBoundAgent(
+  binding: AcpRuntimeBindingRef,
+  agent: acp.Implementation | null | undefined,
+  version: number | undefined,
+): void {
+  if (
+    (binding.protocolVersion !== undefined && binding.protocolVersion !== version) ||
+    (binding.agent?.name !== undefined && binding.agent.name !== agent?.name)
+  )
+    throw new Error('The ACP connection does not match the Agent recorded for this session')
 }
 export interface AcpRuntimeConfig {
   readonly command: string
@@ -139,6 +155,7 @@ export interface AcpSessionRuntimeOptions {
   readonly onPermissionRequest?: (
     params: acp.RequestPermissionRequest,
     signal?: AbortSignal,
+    onPolicyDenial?: (feedback: AcpPermissionFeedback) => void,
   ) => Promise<acp.RequestPermissionResponse>
   readonly onPermissionCheck?: (check: AcpPermissionCheck, request: acp.RequestPermissionRequest) => Promise<void>
   /** Host-owned form elicitation bridge; URL elicitation is intentionally not advertised. */
@@ -147,6 +164,7 @@ export interface AcpSessionRuntimeOptions {
     signal?: AbortSignal,
     hostToolName?: string,
     hostToolCall?: acp.ToolCallUpdate,
+    agentTool?: { readonly agentName: string; readonly toolCall: acp.ToolCallUpdate },
   ) => Promise<acp.CreateElicitationResponse>
   /** One-shot diagnostic for optional private capability degradation. */
   readonly onCapabilityDegraded?: (message: string) => void
@@ -203,6 +221,8 @@ export class AcpPromptNotDispatchedError extends Error {
 
 /** Options for one `prompt()` call. */
 export interface AcpPromptOptions {
+  /** Recheck the admitted input after local Host work has drained and immediately before SDK dispatch. */
+  readonly beforeDispatch?: () => void
   /** Host execution lifetime, distinct from directory/input handoff cancellation. */
   readonly hostBodySignal?: AbortSignal
   /**
@@ -311,6 +331,7 @@ function scheduledTurnLabel(update: AcpSessionNotification['update']): string | 
   return `${source === 'loop' ? 'loop' : 'cron'}: ${short === '' ? 'scheduled prompt' : short}`
 }
 
+const POLICY_FEEDBACK_MAX = 16
 const AGENT_TURN_BUFFER_MAX = 10_000
 /** Upper bound for an Agent-initiated turn's permission request to wait for host adoption. */
 const AGENT_TURN_ADOPTION_MAX_MS = 60_000
@@ -603,6 +624,8 @@ export class AcpSessionRuntime {
   private awaitingAgentTurn = false
   /** `session/prompt` RPC is on the wire (updates arrive through its listener). */
   private wirePromptActive = false
+  /** Ephemeral and bounded to one transport. Never wakes the DSH loop or starts a prompt. */
+  private policyFeedback: { sessionId: string; feedback: AcpPermissionFeedback }[] = []
   private qwenTasks: QwenBackgroundTasks | undefined
   get canSteer(): boolean {
     return (
@@ -705,6 +728,7 @@ export class AcpSessionRuntime {
     if (this.sessionId !== undefined) {
       if (this.sessionId !== binding.agentSessionId)
         throw new Error('ACP binding session id does not match the active runtime')
+      assertBoundAgent(binding, this.agentInfo, this.protocolVersion)
       return 'reused'
     }
     return await this.restoreCold(binding, signal, onReplay)
@@ -773,11 +797,15 @@ export class AcpSessionRuntime {
     await this.initialize(signal)
     const connection = this.connection
     if (connection === undefined) throw new Error('ACP connection is not started')
+    assertBoundAgent(binding, connection.agentInfo, connection.protocolVersion)
     const caps = connection.agentCapabilities
     const mcpServers = this.mcpLease?.servers ?? []
     const rpcOptions = signal === undefined ? {} : { signal }
     this.replayHandler = onReplay
     this.restoringSessionId = binding.agentSessionId
+    // A cancelled runtime may retain its last controls for passive display.
+    // Only this load's response or same-session updates can confirm a switch.
+    if (binding.requireFreshConfig) this.configSnapshot = undefined
     try {
       if (caps?.sessionCapabilities?.resume != null) {
         const response = await connection.resumeSession(
@@ -974,11 +1002,15 @@ export class AcpSessionRuntime {
       const wirePrompt = async (wireContent: acp.ContentBlock[]): Promise<acp.PromptResponse> => {
         this.wirePromptActive = true
         try {
+          const context: acp.ContentBlock[] = []
+          if (instructions !== undefined) context.push({ type: 'text', text: generatedContextBlock(instructions) })
+          for (const note of this.policyFeedback.splice(0)) {
+            if (note.sessionId === sessionId && note.feedback.isCurrentOwner())
+              context.push({ type: 'text', text: generatedContextBlock(note.feedback.text) })
+          }
           return await connection.prompt(
             sessionId,
-            instructions === undefined
-              ? wireContent
-              : [{ type: 'text', text: generatedContextBlock(instructions) }, ...wireContent],
+            [...context, ...wireContent],
             (notification) => {
               // Qwen's discrete "background task completed" line is task state,
               // not part of the assistant answer.
@@ -989,6 +1021,7 @@ export class AcpSessionRuntime {
               if (notification.sessionId === sessionId && this.liveAgentTurn()?.announced === false) return
               deliver(notification)
             },
+            promptOptions.beforeDispatch === undefined ? {} : { beforeDispatch: promptOptions.beforeDispatch },
           )
         } finally {
           this.wirePromptActive = false
@@ -1064,6 +1097,8 @@ export class AcpSessionRuntime {
         // process connection. Natural completion must cancel an unresolved host
         // question just as Stop does, before another turn can begin.
         const externallyAborted = isAborted(signal)
+        if (externallyAborted || promptResponse === undefined || promptResponse.stopReason === 'cancelled')
+          this.policyFeedback.length = 0
         this.mcpLease?.endPrompt({
           ...(promptResponse === undefined ? {} : { stopReason: promptResponse.stopReason }),
           externallyAborted,
@@ -1243,6 +1278,7 @@ export class AcpSessionRuntime {
     launch: AcpRuntimeLaunch | undefined,
     connectionAbort: AbortController | undefined,
   ): Promise<void> {
+    this.policyFeedback.length = 0
     this.promptAbort?.abort(new Error('ACP session runtime closed'))
     for (const turn of this.agentTurns) turn.end({ error: new AcpAgentTurnOutcomeError('missing-terminal') })
     this.agentTurns = []
@@ -1487,6 +1523,9 @@ export class AcpSessionRuntime {
                     signal,
                     hostToolName,
                     hostToolName === undefined ? undefined : toolCall,
+                    hostToolName === undefined && connection.agentInfo != null && toolCall !== undefined
+                      ? { agentName: connection.agentInfo.name, toolCall }
+                      : undefined,
                   ),
                   signal,
                   () => ({ action: 'cancel' as const }),
@@ -2104,31 +2143,22 @@ export class AcpSessionRuntime {
       ownedByBridge && lease !== undefined
         ? AbortSignal.any(inspectionSignal === undefined ? [lease.signal] : [inspectionSignal, lease.signal])
         : inspectionSignal
+    let denial: AcpPermissionFeedback | undefined
     const pending = handler(
       { ...request, toolCall: lease?.presentTool?.(request.toolCall) ?? request.toolCall },
       approvalSignal,
+      (feedback) => {
+        denial = feedback
+      },
     )
-    if (approvalSignal === undefined) return await pending
-    let onAbort: (() => void) | undefined
-    const aborted = new Promise<acp.RequestPermissionResponse>((resolve) => {
-      onAbort = () => {
-        resolve(cancelled())
-      }
-      if (isAborted(approvalSignal)) onAbort()
-      else approvalSignal.addEventListener('abort', onAbort, { once: true })
-    })
-    try {
-      // The native question service receives the same signal, but the ACP RPC
-      // must still settle if a host implementation fails to honor it. The race
-      // also observes a late handler rejection, avoiding an unhandled promise.
-      const response = await Promise.race([pending, aborted])
-      // A resolved answer can win the race before cancellation's microtask
-      // runs. Recheck the owning lifetime at the actual RPC reply boundary.
-      if (isAborted(approvalSignal) || (ownedByBridge && lease !== this.mcpLease) || decisionRevoked())
-        return cancelled()
-      return response
-    } finally {
-      if (onAbort !== undefined) approvalSignal.removeEventListener('abort', onAbort)
+    // Recheck after the race, even when the answer resolved in the same microtask as cancellation.
+    const response = await raceAbort(pending, approvalSignal, cancelled)
+    if (isAborted(approvalSignal) || (ownedByBridge && lease !== this.mcpLease) || decisionRevoked()) return cancelled()
+    if (denial !== undefined && denial.isCurrentOwner()) {
+      // Keep only recent context if an Agent makes many denied calls in one turn.
+      if (this.policyFeedback.length === POLICY_FEEDBACK_MAX) this.policyFeedback.shift()
+      this.policyFeedback.push({ sessionId: request.sessionId, feedback: denial })
     }
+    return response
   }
 }

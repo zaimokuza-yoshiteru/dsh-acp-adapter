@@ -2,6 +2,8 @@
 /// <reference types="node" />
 
 import { currentHostVersionMismatch } from './host-version.ts'
+import { hostLocale } from './host-locale.ts'
+import { installInheritedModelSelection } from './inherited-model-selection.ts'
 import { resolveTerminalJobs } from './terminal-jobs.ts'
 import { resolveQwenTaskJobs } from './qwen-task-jobs.ts'
 import type { Context } from '@deepseek-ai/cordis'
@@ -38,6 +40,7 @@ import { resolveSubprocessSeam } from './subprocess.ts'
 import { AcpRemoteService } from '../../remote/service.ts'
 import { auditTimelineRowOf } from './audit-row.ts'
 import { installAcpBackendGuard } from './backend-guard.ts'
+import { retryModelSwitchInput } from './retry-model-switch-input.ts'
 import { createNativeForkRegistrar } from './native-fork.ts'
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import { installExternalChildCatalog } from '../subagent/catalog-publication.ts'
@@ -267,7 +270,16 @@ export async function installInstalledProfileRegistry(
   const log = createAcpLogger(ctx.logger)
   const sidecar = installAcpSidecar(ctx)
   const profileAdapters = new Map<string, AcpProfileAdapter>()
-  if (sidecar !== undefined) installAcpBackendGuard(ctx, { sidecar, ownsProvider })
+  if (sidecar !== undefined)
+    installAcpBackendGuard(ctx, {
+      sidecar,
+      ownsProvider,
+      confirmModelSwitch: async (profileId, sessionId, owner, binding, target, signal) => {
+        const adapter = profileAdapters.get(profileId)
+        if (adapter === undefined) throw new Error('The selected ACP Agent is no longer available.')
+        await adapter.confirmModelSwitch(sessionId, owner, binding, target, signal)
+      },
+    })
   // The additive composition has no AgentLoop constructor to hand this seam
   // down. Resolve the host-owned service at the composition boundary instead;
   // keeping the explicit option is useful for isolated tests and embedders.
@@ -384,19 +396,7 @@ export async function installInstalledProfileRegistry(
       agents.get(dshSessionId) === undefined
     )
       return undefined
-    // Read the native locale preference for every request so language changes
-    // take effect without restarting the ACP session. Browser detection alone
-    // is not a host setting; absent preferences use the English fallback.
-    let locale: string | undefined
-    try {
-      const settings = holder.get('settings') as
-        Pick<import('@deepseek-ai/dsh-settings').SettingsForms, 'describe'> | undefined
-      const value = settings?.describe().find((row) => row.ns === 'locale')?.value
-      if (value !== null && typeof value === 'object' && 'preference' in value && typeof value.preference === 'string')
-        locale = value.preference
-    } catch {
-      /* optional locale preference */
-    }
+    const locale = hostLocale(ctx)
     const requestOwner = agents.get(dshSessionId) as Agent
     return {
       ...(userQuestions === undefined
@@ -529,7 +529,29 @@ export async function installInstalledProfileRegistry(
         nativeForkScope = { ok: false, error }
       }
     }
+    const retryLifetime = new AbortController()
+    ctx.effect(() => () => retryLifetime.abort())
     new AcpRemoteService(ctx, {
+      retryModelSwitchInput: (id, seq, principal, authorized, signal, canSelectModel) =>
+        retryModelSwitchInput(
+          ctx,
+          sidecar,
+          id,
+          seq,
+          principal,
+          authorized,
+          AbortSignal.any([signal, retryLifetime.signal]),
+          async (profile, optionId, target) => {
+            const adapter = profileAdapters.get(profile)
+            if (!adapter || !canSelectModel?.()) throw new Error('ACP model selection is unavailable.')
+            await adapter.setAgentSessionOption(
+              id,
+              { kind: 'config', id: optionId, value: target },
+              canSelectModel,
+              signal,
+            )
+          },
+        ),
       nativeForkScope: () => {
         if (nativeForkScope === undefined) throw new Error('ACP fork scope has not been initialized')
         if (!nativeForkScope.ok) throw nativeForkScope.error
@@ -934,6 +956,11 @@ export async function installInstalledProfileRegistry(
   }
   refreshConfig()
   ready.resolve()
+  if (sidecar !== undefined)
+    installInheritedModelSelection(ctx, (provider) => {
+      const id = acpAgentIdFromRoute(provider)
+      return id === undefined ? undefined : profileAdapters.get(id)
+    })
   ctx.on('loader/volatile-update', refreshConfig)
 
   return {

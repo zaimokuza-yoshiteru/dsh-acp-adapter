@@ -300,7 +300,12 @@ describe('AcpRemoteService current public surface', () => {
     await expect(
       instance.setAgentSessionOption('s1', { kind: 'config', id: 'compact', value: false }),
     ).resolves.toEqual(snapshot)
-    expect(setOption).toHaveBeenCalledExactlyOnceWith('s1', { kind: 'config', id: 'compact', value: false })
+    expect(setOption).toHaveBeenCalledExactlyOnceWith(
+      's1',
+      { kind: 'config', id: 'compact', value: false },
+      expect.any(Function),
+      undefined,
+    )
   })
 
   it('guards ACP-only snapshots and recovery mutations before reading or changing an unowned session', async () => {
@@ -410,6 +415,7 @@ describe('AcpRemoteService current public surface', () => {
       'recoveryFollow',
       'recoverySnapshot',
       'registerNativeFork',
+      'retryModelSwitchInput',
       'retryOriginal',
       'setAgentSessionOption',
       'setTeamMemberMode',

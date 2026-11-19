@@ -1,6 +1,10 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import { agentCarrier } from '@deepseek-ai/dsh-agent'
-import type { AcpExternalPolicyDecision, AcpExternalPolicyRequest } from '../../contract/permission-policy.ts'
+import {
+  readExternalPolicyDecision,
+  type AcpExternalPolicyDecision,
+  type AcpExternalPolicyRequest,
+} from '../../contract/permission-policy.ts'
 
 export type {
   AcpExternalPolicyDecision,
@@ -23,17 +27,16 @@ declare module '@deepseek-ai/cordis' {
       request: AcpExternalPolicyRequest,
       next: () => Promise<AcpExternalPolicyDecision>,
     ): Promise<AcpExternalPolicyDecision>
+    /**
+     * Explicit opt-in for requests representable by the native binary card.
+     * @mode waterfall
+     */
+    'dsh-acp/binary-permission-policy'(
+      this: ReturnType<typeof agentCarrier>,
+      request: AcpExternalPolicyRequest,
+      next: () => Promise<AcpExternalPolicyDecision>,
+    ): Promise<AcpExternalPolicyDecision>
   }
-}
-
-function validDecision(value: unknown): value is AcpExternalPolicyDecision {
-  return (
-    value === 'allow-once' ||
-    value === 'deny-once' ||
-    value === 'not-applicable' ||
-    value === 'cancelled' ||
-    value === 'failed'
-  )
 }
 
 function freezeFacts(value: unknown): void {
@@ -73,6 +76,17 @@ export default class AcpPermissionPolicy extends Service {
   }
 
   evaluate(request: AcpExternalPolicyRequest): Promise<AcpExternalPolicyDecision> {
+    return this.dispatch('dsh-acp/permission-policy', request)
+  }
+
+  evaluateBinary(request: AcpExternalPolicyRequest): Promise<AcpExternalPolicyDecision> {
+    return this.dispatch('dsh-acp/binary-permission-policy', request)
+  }
+
+  private dispatch(
+    event: 'dsh-acp/permission-policy' | 'dsh-acp/binary-permission-policy',
+    request: AcpExternalPolicyRequest,
+  ): Promise<AcpExternalPolicyDecision> {
     if (!this.accepting || request.signal?.aborted) return Promise.resolve('cancelled')
     const signal = AbortSignal.any([this.lifetime.signal, ...(request.signal ? [request.signal] : [])])
     let input: AcpExternalPolicyRequest
@@ -102,11 +116,12 @@ export default class AcpPermissionPolicy extends Service {
         if (signal.aborted) return 'cancelled'
         const decision = await this.ctx.waterfall(
           agentCarrier(input.agent),
-          'dsh-acp/permission-policy',
+          event,
           input,
           async (): Promise<AcpExternalPolicyDecision> => 'not-applicable',
         )
-        return validDecision(decision) ? decision : 'failed'
+        const parsed = readExternalPolicyDecision(decision)
+        return parsed.reason === undefined ? parsed.decision : parsed
       })
       .catch((): AcpExternalPolicyDecision => 'failed')
       .then((decision) => {

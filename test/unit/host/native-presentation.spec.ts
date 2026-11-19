@@ -766,56 +766,25 @@ it.each(['successfulToolResult', 'conclude', 'report'] as const)(
   },
 )
 
-it('does not let an earlier or late teammate report bless a newly steered request', async () => {
-  const f = await steeringFixture(false)
-  f.report()
-  f.runtime.steer.mockImplementation(async (_content, onDispatch) => {
-    onDispatch?.()
-    f.report()
-    f.finish.resolve({ stopReason: 'end_turn' })
-    return 'injected'
-  })
-  const chunks = []
-  for await (const chunk of f.next()) chunks.push(chunk)
-  expect(chunks.at(-1)).toMatchObject({
-    type: 'finish',
-    reason: { kind: 'error', failure: { code: 'ACP_NO_VISIBLE_RESPONSE' } },
-  })
-})
-
-it('does not let terminal-tool evidence from before or after a steering dispatch bless the next native step', async () => {
-  const f = await steeringFixture(false)
-  f.conclude()
-  f.runtime.steer.mockImplementation(async (_content, onDispatch) => {
-    onDispatch?.()
-    f.conclude()
-    f.finish.resolve({ stopReason: 'end_turn' })
-    return 'injected'
-  })
-  const chunks = []
-  for await (const chunk of f.next()) chunks.push(chunk)
-  expect(chunks.at(-1)).toMatchObject({
-    type: 'finish',
-    reason: { kind: 'error', failure: { code: 'ACP_NO_VISIBLE_RESPONSE' } },
-  })
-})
-
-it('does not let successful Host-tool evidence from before or after steering bless the next native step', async () => {
-  const f = await steeringFixture(false)
-  f.successfulToolResult()
-  f.runtime.steer.mockImplementation(async (_content, onDispatch) => {
-    onDispatch?.()
-    f.successfulToolResult()
-    f.finish.resolve({ stopReason: 'end_turn' })
-    return 'injected'
-  })
-  const chunks = []
-  for await (const chunk of f.next()) chunks.push(chunk)
-  expect(chunks.at(-1)).toMatchObject({
-    type: 'finish',
-    reason: { kind: 'error', failure: { code: 'ACP_NO_VISIBLE_RESPONSE' } },
-  })
-})
+it.each(['report', 'conclude', 'successfulToolResult'] as const)(
+  'keeps prior or late %s evidence out of a newly steered request',
+  async (evidence) => {
+    const f = await steeringFixture(false)
+    f[evidence]()
+    f.runtime.steer.mockImplementation(async (_content, onDispatch) => {
+      onDispatch?.()
+      f[evidence]()
+      f.finish.resolve({ stopReason: 'end_turn' })
+      return 'injected'
+    })
+    const chunks = []
+    for await (const chunk of f.next()) chunks.push(chunk)
+    expect(chunks.at(-1)).toMatchObject({
+      type: 'finish',
+      reason: { kind: 'error', failure: { code: 'ACP_NO_VISIBLE_RESPONSE' } },
+    })
+  },
+)
 
 it('keeps a later input ordered behind a steering request whose acknowledgement is pending', async () => {
   const f = await steeringFixture()

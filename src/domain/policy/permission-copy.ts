@@ -10,6 +10,9 @@ const en = {
   } as Record<string, string>,
   restrictedOperation: 'Restricted operation',
   permission: 'Permission request',
+  policyReason: (reason: string) => `Approval rule: ${reason}`,
+  policyDenial: (tool: string, callId: string, reason: string) =>
+    `Approval rule declined the earlier request for ${tool} (${callId}). ${reason}`,
   command: 'Command',
   directory: 'Working directory',
   backgroundWait: (milliseconds: number) => `Wait before backgrounding: ${milliseconds} ms`,
@@ -50,6 +53,8 @@ const zh: typeof en = {
   },
   restrictedOperation: '受限操作',
   permission: '授权请求',
+  policyReason: (reason) => `审批规则：${reason}`,
+  policyDenial: (tool, callId, reason) => `审批规则未授权先前的「${tool}」请求（${callId}）。${reason}`,
   command: '命令',
   directory: '工作目录',
   backgroundWait: (milliseconds) => `转入后台前等待: ${milliseconds} 毫秒`,

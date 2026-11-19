@@ -2,7 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-user-approval'
-import type { AcpNativeApprovalService } from '../../domain/policy/permissions.ts'
+import type { AcpExternalPermissionPolicyRequest, AcpNativeApprovalService } from '../../domain/policy/permissions.ts'
 import type {} from './external-permission-policy.ts'
 
 /**
@@ -11,16 +11,19 @@ import type {} from './external-permission-policy.ts'
  * DSH tools execute under. This is never installed as the Host approval service.
  */
 export function externalAgentApproval(ctx: Context, getAgent: () => Agent | undefined): AcpNativeApprovalService {
+  const evaluate = async (request: AcpExternalPermissionPolicyRequest, binary: boolean) => {
+    const agent = getAgent()
+    if (agent === undefined || request.agent !== agent || agent.status !== 'running' || request.signal?.aborted)
+      return 'cancelled'
+    const policy = ctx.get('acpPermissionPolicy')
+    if (policy === undefined || (binary && policy.evaluateBinary === undefined)) return 'not-applicable'
+    const input = { ...request, agent }
+    const outcome = binary ? await policy.evaluateBinary(input) : await policy.evaluate(input)
+    return request.signal?.aborted || getAgent() !== agent || agent.status !== 'running' ? 'cancelled' : outcome
+  }
   return {
-    async evaluateExternal(request) {
-      const agent = getAgent()
-      if (agent === undefined || request.agent !== agent || agent.status !== 'running' || request.signal?.aborted)
-        return 'cancelled'
-      const policy = ctx.get('acpPermissionPolicy')
-      if (policy === undefined) return 'not-applicable'
-      const outcome = await policy.evaluate({ ...request, agent })
-      return request.signal?.aborted || getAgent() !== agent || agent.status !== 'running' ? 'cancelled' : outcome
-    },
+    evaluateExternal: (request) => evaluate(request, false),
+    evaluateBinary: (request) => evaluate(request, true),
     async request(request) {
       const agent = getAgent()
       if (agent === undefined || request.agent !== agent || agent.status !== 'running') return 'unavailable'

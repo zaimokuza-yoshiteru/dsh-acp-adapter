@@ -17,6 +17,8 @@ import type {
 } from '../coordinator/native-session-navigation.ts'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { resolveCrossBackendLocation } from '../data/cross-backend-controller.ts'
+import { isAcpAgentManagedModel } from '../../contract/model-selection.ts'
+import { ManagedModelRecovery } from './ManagedModelRecovery.ts'
 
 type RecoveryDockProps = PropsRuntime<'conversation.input.dock'> &
   PropsLocale<'acpActivity'> & {
@@ -132,6 +134,9 @@ export function AcpRecoveryDock({
 }: RecoveryDockProps): ReactNode {
   const reconnectAllowed = useAccess('dshAcp/retryOriginal')
   const rebindAllowed = useAccess('dshAcp/rebindRecoveryBlank')
+  const modelWritable = useAccess('dshAcp/setAgentSessionOption')
+  const modelSelectable = useAccess('session/selectModel')
+  const running = useSession((state) => state.running)
   const workspaces = useWorkspaces((snapshot) => snapshot.items)
   const cwd = useSessions((snapshot) => snapshot.byId[sessionId]?.cwd)
   const destination = resolveCrossBackendLocation(sessionId, workspaces, cwd)
@@ -249,7 +254,23 @@ export function AcpRecoveryDock({
         h('span', { className: css.summaryText }, t('recoveryReconnecting')),
       ),
     )
-  if (recovery === null) return null
+  if (recovery === null) {
+    const route = projection?.lastUsed
+    return ownership === 'active' && route && isAcpAgentManagedModel(route.model)
+      ? h(ManagedModelRecovery, {
+          key: sessionId,
+          sessionId,
+          remote,
+          streamFactory,
+          t,
+          running,
+          writable: modelWritable && modelSelectable,
+          mayCreate: createAllowed,
+          createNewSession,
+          sessionAccessSource,
+        })
+      : null
+  }
 
   const localStatus = localSettlementText(t, recovery)
   if (localStatus !== null) {

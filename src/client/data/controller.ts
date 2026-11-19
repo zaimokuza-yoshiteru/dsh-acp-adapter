@@ -62,6 +62,9 @@ export class AcpPanelController {
   private readonly remote: AcpRemoteLike
   private readonly write: AcpPanelControllerDeps['mutate']
   private readonly refusedMessage: () => string
+  private readonly pendingFirstChecks = new Set<string>()
+  private readonly activeAgentChecks = new Map<string, symbol>()
+  private disposed = false
 
   constructor(deps: AcpPanelControllerDeps) {
     this.scopeSnapshot = deps.scope.getSnapshot()
@@ -87,6 +90,9 @@ export class AcpPanelController {
 
   /** Drop the scope subscription and the mirror; the controller publishes nothing afterwards. */
   dispose(): void {
+    this.disposed = true
+    this.pendingFirstChecks.clear()
+    this.activeAgentChecks.clear()
     this.unsubscribeScope()
     this.sink = null
   }
@@ -134,6 +140,12 @@ export class AcpPanelController {
       this.sink?.healthReady(rows, fetchedAt, hostVersion)
     } catch (error: unknown) {
       this.failHealth(errorMessageOf(error))
+    } finally {
+      // A panel-wide read replaces all rows. Check Agents saved during it after it settles.
+      for (const id of this.pendingFirstChecks) {
+        this.pendingFirstChecks.delete(id)
+        void this.refreshAgentHealth(id)
+      }
     }
   }
 
@@ -144,7 +156,9 @@ export class AcpPanelController {
    * responses from rolling another agent back to an older snapshot.
    */
   async refreshAgentHealth(agentId: string): Promise<void> {
-    if (this.health.status === 'loading' || this.health.checkingAgentIds.includes(agentId)) return
+    if (this.disposed || this.health.status === 'loading' || this.activeAgentChecks.has(agentId)) return
+    const check = Symbol()
+    this.activeAgentChecks.set(agentId, check)
     this.health = {
       ...this.health,
       checkingAgentIds: [...this.health.checkingAgentIds, agentId].sort(),
@@ -153,6 +167,7 @@ export class AcpPanelController {
     this.sink?.agentHealthLoading(agentId)
     try {
       const result = await this.remote.health({ recheck: true, agentId })
+      if (this.activeAgentChecks.get(agentId) !== check) return
       if (!result.ok) {
         this.failAgentHealth(agentId, result.error.message)
         return
@@ -175,7 +190,9 @@ export class AcpPanelController {
       }
       this.sink?.agentHealthReady(agentId, row, fetchedAt)
     } catch (error: unknown) {
-      this.failAgentHealth(agentId, errorMessageOf(error))
+      if (this.activeAgentChecks.get(agentId) === check) this.failAgentHealth(agentId, errorMessageOf(error))
+    } finally {
+      if (this.activeAgentChecks.get(agentId) === check) this.activeAgentChecks.delete(agentId)
     }
   }
 
@@ -205,7 +222,16 @@ export class AcpPanelController {
             { op: 'set', path: ['agents', id], value: { ...validation.config, args: [...validation.config.args] } },
           ]
         : [{ op: 'set', path: ['agents', id], value: { ...validation.config, args: [...validation.config.args] } }]
-    return this.mutate(ops)
+    const failure = await this.mutate(ops)
+    if (failure === undefined && !this.disposed) {
+      if (editingId === undefined) {
+        if (this.health.status === 'loading') this.pendingFirstChecks.add(id)
+        else void this.refreshAgentHealth(id)
+      } else if (editingId !== id || this.activeAgentChecks.has(editingId)) {
+        this.forgetAgentHealth(editingId)
+      }
+    }
+    return failure
   }
 
   /**
@@ -215,7 +241,9 @@ export class AcpPanelController {
    * @returns the host's refusal message, or undefined once the removal landed.
    */
   async deleteAgent(id: string): Promise<string | undefined> {
-    return this.mutate([{ op: 'unset', path: ['agents', id] }])
+    const failure = await this.mutate([{ op: 'unset', path: ['agents', id] }])
+    if (failure === undefined) this.forgetAgentHealth(id)
+    return failure
   }
 
   /** Persist the default approval behavior for DSH native tools in new sessions. */
@@ -252,6 +280,19 @@ export class AcpPanelController {
   private failHealth(message: string): void {
     this.health = { ...this.health, status: 'unreachable', message, checkingAgentIds: [] }
     this.sink?.healthUnreachable(message)
+  }
+
+  /** An obsolete check must not update a newly saved configuration that uses the same id. */
+  private forgetAgentHealth(id: string): void {
+    this.pendingFirstChecks.delete(id)
+    this.activeAgentChecks.delete(id)
+    this.health = {
+      ...this.health,
+      rows: this.health.rows.filter((row) => row.id !== id),
+      checkingAgentIds: this.health.checkingAgentIds.filter((checking) => checking !== id),
+      agentErrors: withoutKey(this.health.agentErrors, id),
+    }
+    this.sink?.resync(this.project())
   }
 
   private failAgentHealth(agentId: string, message: string): void {

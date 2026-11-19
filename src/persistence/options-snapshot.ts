@@ -33,7 +33,7 @@ export const ACP_SNAPSHOT_TOTAL_BYTES = 16384 as const
  * `value` 为当前值（select=string 值 id / boolean=原生 boolean）；`values`
  * 为 select 的拍平可选值 id 列表（boolean 归 null）。
  */
-export interface AcpOptionsSnapshotOption {
+interface AcpOptionsSnapshotOption {
   readonly id: string
   readonly category: string | null
   readonly name: string

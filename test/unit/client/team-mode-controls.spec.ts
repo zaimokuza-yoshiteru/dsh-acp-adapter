@@ -1,5 +1,7 @@
 import { expect, it, vi } from 'vitest'
 import { applyTeamMode, teamModeChoices, teamSessionMenuGroups } from '../../../src/client/ui/team-mode-controls.ts'
+import { teamActionSummary } from '../../../src/client/ui/team-action-summary.ts'
+import { en, zh } from '../../../src/client/ui/locales.ts'
 import { teamModeLabel } from '../../../src/contract/session-modes.ts'
 import type { AcpAgentSessionSnapshotView, AcpTeamMemberView } from '../../../src/client/data/acp-remote.ts'
 const snapshot = (patch: Partial<AcpAgentSessionSnapshotView> = {}): AcpAgentSessionSnapshotView => ({
@@ -201,4 +203,24 @@ it('shares mode presentation with main sessions, excluding other controls and pr
   const writable = teamSessionMenuGroups(value, (key) => key, true)
   expect(writable[0]?.choices.map((choice) => ({ ...choice, disabled: true }))).toEqual(readOnly[0]?.choices)
   expect(writable[0]?.choices.every((choice) => !choice.disabled)).toBe(true)
+})
+
+it.each([
+  [{ applied: 2, skipped: 0, failed: 0 }, 'Mode saved for 2 members.', '已保存 2 位成员的模式。'],
+  [{ accepted: 1, skipped: 0, failed: 0 }, 'Interrupt requested for 1 member.', '已向 1 位成员发送中断请求。'],
+  [
+    { applied: 1, skipped: 2, failed: 1 },
+    'Mode saved for 1 member. 2 skipped. 1 failed.',
+    '已保存 1 位成员的模式。 已跳过 2 位。 1 位操作失败。',
+  ],
+  [{ accepted: 0, skipped: 1, failed: 0 }, '1 skipped.', '已跳过 1 位。'],
+  [{ accepted: 0, skipped: 0, failed: 0 }, 'No members needed changes.', '没有需要处理的成员。'],
+] as const)('reports affected members without zero counts for %j', (result, english, chinese) => {
+  for (const [dictionary, expected] of [
+    [en, english],
+    [zh, chinese],
+  ] as const)
+    expect(teamActionSummary((key, args) => dictionary[key].replace('{count}', String(args?.count)), result)).toBe(
+      expected,
+    )
 })

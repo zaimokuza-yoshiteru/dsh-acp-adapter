@@ -111,7 +111,7 @@ const validBinding = (profileId: string): AcpBindingLookup => ({
   } as never,
 })
 
-describe('M6b additive ACP backend guard', () => {
+describe('ACP backend guard', () => {
   it('continues a headless ACP session using its native committed request header', async () => {
     const acpSidecar = sidecar(validBinding('codex'))
     const { listener } = install(undefined, acpSidecar)
@@ -211,25 +211,18 @@ describe('M6b additive ACP backend guard', () => {
     ).rejects.toMatchObject({ code: 'ACP_BACKEND_NEW_SESSION_REQUIRED' })
   })
 
-  it('blocks cross-backend transitions without reading or writing ACP state', async () => {
-    const acpSidecar = sidecar(validBinding('codex'))
-    const { listener } = install({ lastUsed: config('acp-codex'), pending: null }, acpSidecar)
-    await expect(
-      listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => config('native')),
-    ).rejects.toMatchObject({ code: 'ACP_BACKEND_NEW_SESSION_REQUIRED' })
-    expect(acpSidecar.readLatestBinding).not.toHaveBeenCalled()
-    expect(acpSidecar.writeRecoveryState).not.toHaveBeenCalled()
-  })
-
-  it('blocks ACP profile changes without reading either profile binding', async () => {
-    const acpSidecar = sidecar(validBinding('codex'))
-    const { listener } = install({ lastUsed: config('acp-codex'), pending: null }, acpSidecar)
-    await expect(
-      listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => config('acp-generic')),
-    ).rejects.toMatchObject({ code: 'ACP_BACKEND_NEW_SESSION_REQUIRED' })
-    expect(acpSidecar.readLatestBinding).not.toHaveBeenCalled()
-    expect(acpSidecar.writeRecoveryState).not.toHaveBeenCalled()
-  })
+  it.each(['native', 'acp-generic'])(
+    'blocks a change from the bound ACP provider to %s before accessing the binding',
+    async (target) => {
+      const acpSidecar = sidecar(validBinding('codex'))
+      const { listener } = install({ lastUsed: config('acp-codex'), pending: null }, acpSidecar)
+      await expect(
+        listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => config(target)),
+      ).rejects.toMatchObject({ code: 'ACP_BACKEND_NEW_SESSION_REQUIRED' })
+      expect(acpSidecar.readLatestBinding).not.toHaveBeenCalled()
+      expect(acpSidecar.writeRecoveryState).not.toHaveBeenCalled()
+    },
+  )
 
   it.each([
     ['another plugin answered the routed stream', ['turn/start', 'assistant/message', 'tool/call', 'turn/end']],

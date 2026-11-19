@@ -294,7 +294,7 @@ it.skipIf(Boolean(process.env.DSH_E2E_ELECTRON))(
           expect(await advanced.getAttribute('aria-expanded')).toBe(expanded === 'true' ? 'false' : 'true')
           if (!hoverCapable) expect(await style(advanced, 'color')).toBe(color)
           if ((await advanced.getAttribute('aria-expanded')) !== 'true') await activate(advanced)
-          await activate(card.getByRole('button', { name: 'Advanced options', exact: true }))
+          await activate(card.getByRole('button', { name: /^Environment variables(?: \(\d+\))?$/ }))
           for (const [label, desktopSize] of [
             ['Display name', '14px'],
             ['Arguments', '12px'],

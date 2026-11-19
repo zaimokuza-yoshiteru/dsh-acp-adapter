@@ -6,6 +6,8 @@ export interface AcpExecutionView {
   readonly externalSubagent: boolean
   /** Completed history with no recorded model request, including DeepSeek chat imports. */
   readonly completedWithoutModel?: true | undefined
+  /** A claimed user input that the Agent has not received. */
+  readonly unsentModelSwitch?: { readonly failureSeq: number } | undefined
 }
 
 declare module '@deepseek-ai/dsh-session-projection/types' {

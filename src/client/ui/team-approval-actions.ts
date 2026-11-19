@@ -10,7 +10,9 @@ export function pendingChildCandidates(
   readOnly: ReadonlySet<SessionId> = new Set(),
 ): SessionId[] {
   return [...snapshot].flatMap(([id, status]) => {
-    if (id === parent || status.pendingInteraction === undefined || readOnly.has(id)) return []
+    const pending = status.pendingInteraction
+    if (id === parent || pending === undefined || readOnly.has(id) || teamApproval(pending)?.answerable === false)
+      return []
     const visited = new Set<SessionId>()
     let current: SessionId | undefined = id
     while (current !== undefined && current !== parent) {

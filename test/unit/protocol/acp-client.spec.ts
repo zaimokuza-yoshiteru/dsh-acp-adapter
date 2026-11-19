@@ -506,6 +506,27 @@ describe('握手（happy / minimal-caps / no-config-options）', () => {
 })
 
 describe('prompt 流与 typed 方法', () => {
+  it('revalidates the selected model after draining Host work and before either input crosses the wire', async () => {
+    const { conn, logPath } = connectMock('happy', { env: { MOCK_STEERING: 'atomic' } })
+    await conn.initialize()
+    const { sessionId } = await conn.newSession()
+    const mismatch = new Error('model changed since input was admitted')
+    let actual = 'a'
+    const check = () => {
+      if (actual !== 'a') throw mismatch
+    }
+    const input = conn.prompt(sessionId, PROMPT_BLOCKS, undefined, { beforeDispatch: check })
+    actual = 'b'
+    await expect(input).rejects.toBe(mismatch)
+    await expect(conn.steer(sessionId, PROMPT_BLOCKS, check)).rejects.toMatchObject({ remoteRequestSent: false })
+    const rejected = fs.readFileSync(logPath, 'utf8')
+    expect(rejected).not.toContain('--> session/prompt ')
+    expect(rejected).not.toContain('--> _session/steering ')
+    actual = 'a'
+    await conn.prompt(sessionId, PROMPT_BLOCKS, undefined, { beforeDispatch: check })
+    expect(fs.readFileSync(logPath, 'utf8').match(/--> session\/prompt /g)).toHaveLength(1)
+  })
+
   it('happy：prompt 经 onUpdate 回调流出完整 turn 序列，stopReason=end_turn', async () => {
     const { conn } = connectMock('happy')
     await conn.initialize()

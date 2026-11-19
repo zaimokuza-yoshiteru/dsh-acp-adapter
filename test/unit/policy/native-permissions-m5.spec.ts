@@ -65,7 +65,7 @@ describe('native ACP permission bridge', () => {
       await handler(params([option('exact-id', 'Allow', 'allow_once')]))
       expect(approval.request).toHaveBeenCalledWith(
         expect.objectContaining({
-          reason: `Run command\necho hello\n${locale?.startsWith('zh') ? '本次允许' : 'Allow once'}: Allow`,
+          reason: `Run command\necho hello\n${locale?.startsWith('zh') ? '本次允许: Allow' : 'Allow once'}`,
         }),
       )
     },
@@ -458,9 +458,7 @@ describe('native ACP permission bridge', () => {
       toolCall: { ...params([]).toolCall, kind: 'execute', title: command, rawInput: { CommandLine: command } },
       options: [option('allow', 'Allow once', 'allow_once')],
     })
-    expect(approval.request).toHaveBeenCalledWith(
-      expect.objectContaining({ reason: `${command}\nAllow once: Allow once` }),
-    )
+    expect(approval.request).toHaveBeenCalledWith(expect.objectContaining({ reason: `${command}\nAllow once` }))
   })
 
   it('keeps a distinct title and complete multiline execute command', async () => {
@@ -478,7 +476,7 @@ describe('native ACP permission bridge', () => {
       options: [option('allow', 'Allow once', 'allow_once')],
     })
     expect(approval.request).toHaveBeenCalledWith(
-      expect.objectContaining({ reason: `Run Antigravity command\n${command}\nAllow once: Allow once` }),
+      expect.objectContaining({ reason: `Run Antigravity command\n${command}\nAllow once` }),
     )
   })
 

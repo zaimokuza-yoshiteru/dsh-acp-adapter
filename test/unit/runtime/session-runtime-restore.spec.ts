@@ -101,11 +101,12 @@ it('reuses a live session without restore capability but rejects restoring it af
 })
 
 it.each([
-  { refresh: true, expectedRestore: 'loaded', expectedProcesses: 2 },
-  { refresh: false, expectedRestore: 'reused', expectedProcesses: 1 },
+  { refresh: true, verifyModel: false, expectedRestore: 'loaded', expectedProcesses: 2 },
+  { refresh: true, verifyModel: true, expectedRestore: 'loaded', expectedProcesses: 2 },
+  { refresh: false, verifyModel: false, expectedRestore: 'reused', expectedProcesses: 1 },
 ] as const)(
-  'refreshes a confirmed-cancelled session only for the opted-in runtime (refresh=$refresh)',
-  async ({ refresh, expectedRestore, expectedProcesses }) => {
+  'restores a confirmed-cancelled session (refresh=$refresh, verifyModel=$verifyModel)',
+  async ({ refresh, verifyModel, expectedRestore, expectedProcesses }) => {
     const cwd = mkdtempSync(join(tmpdir(), 'acp-cancel-refresh-'))
     const callsFile = join(cwd, 'rpc-methods.jsonl')
     const source = `
@@ -126,7 +127,7 @@ it.each([
         else if (request.method === 'session/prompt') send({ jsonrpc: '2.0', id: request.id, result: { stopReason: 'cancelled' }});
         else if (request.method === 'session/load') send({ jsonrpc: '2.0', id: request.id, result: {
           modes: { currentModeId: 'review', availableModes: [{ id: 'review', name: 'Review' }] },
-          configOptions: [{ id: 'model', name: 'Model', type: 'select', category: 'model', currentValue: 'minimax-m2.7', options: [{ value: 'minimax-m2.7', name: 'MiniMax M2.7' }] }]
+          configOptions: ${verifyModel} ? undefined : [{ id: 'model', name: 'Model', type: 'select', category: 'model', currentValue: 'minimax-m2.7', options: [{ value: 'minimax-m2.7', name: 'MiniMax M2.7' }] }]
         }});
         else if (request.id !== undefined) send({ jsonrpc: '2.0', id: request.id, error: { code: -32601, message: 'unexpected RPC' } });
       });
@@ -158,14 +159,17 @@ it.each([
           currentValue: 'minimax-m2.7',
         })
       }
-      await expect(runtime.restore({ agentSessionId: 'saved' })).resolves.toBe(expectedRestore)
+      const restored = await runtime.restore({
+        agentSessionId: 'saved',
+        ...(verifyModel ? { requireFreshConfig: true, protocolVersion: 1 } : {}),
+      })
+      expect(restored).toBe(expectedRestore)
       expect(runtime.lastRestoreRefreshedCancelledSession).toBe(refresh)
       if (refresh) {
         expect(runtime.acpSessionId).toBe('saved')
         expect(runtime.currentModeId).toBe('review')
-        expect(runtime.configOptions?.find((option) => option.id === 'model')).toMatchObject({
-          currentValue: 'minimax-m2.7',
-        })
+        if (verifyModel) expect(runtime.configOptions).toBeUndefined()
+        else expect(runtime.configOptions?.find((option) => option.id === 'model')?.currentValue).toBe('minimax-m2.7')
       }
       const calls = readFileSync(callsFile, 'utf8')
         .trim()

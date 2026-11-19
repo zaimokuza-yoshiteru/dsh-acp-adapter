@@ -284,7 +284,9 @@ it(
       expect(await typography(row.getByRole('button', { name: /^(?:Session|会话) ·/ }))).toEqual(
         await typography(row.getByText('Mode', { exact: true })),
       )
-      expect(await panel.getByRole('button', { name: 'Interrupt all members', exact: true }).isDisabled()).toBe(true)
+      expect(await panel.getByRole('button', { name: 'Interrupt all running members', exact: true }).isDisabled()).toBe(
+        true,
+      )
       mkdirSync(join(root, '.local/team-management'), { recursive: true })
       await page.screenshot({ path: join(root, '.local/team-management/mode-pending.en.png') })
       await group.getByRole('button', { name: 'Change modes together', exact: true }).click()
@@ -497,11 +499,12 @@ it(
       await expect.poll(() => panel.getByRole('button', { name: /^(?:Session|会话) ·/ }).count()).toBe(2)
       expect(errors).toEqual([])
       if (!retain) {
-        const interrupt = panel.getByRole('button', { name: '中断所有成员', exact: true })
-        const interruptBox = required(await interrupt.boundingBox())
-        const batchBox = required(await panel.getByRole('button', { name: '批量调整模式', exact: true }).boundingBox())
-        expect(interruptBox.x + interruptBox.width).toBeLessThanOrEqual(batchBox.x)
-        expect(interruptBox.height).toBe(24)
+        const interrupt = panel.getByRole('button', { name: '中断所有运行中的成员', exact: true })
+        expect(await interrupt.count()).toBe(1)
+        expect(
+          await panel.locator('[data-acp-mode-group]').getByRole('button', { name: '中断所有运行中的成员' }).count(),
+        ).toBe(0)
+        const batchBox = required(await group.getByRole('button', { name: '批量调整模式', exact: true }).boundingBox())
         expect(batchBox.height).toBe(24)
         const firstCardBox = required(await panel.locator('[data-acp-managed-member]').first().boundingBox())
         expect(firstCardBox.y - (batchBox.y + batchBox.height)).toBeGreaterThanOrEqual(12)
@@ -537,10 +540,10 @@ it(
           return readMembers(leadId)
         })
         await interrupt.click()
-        await teamPanel.getByRole('status').filter({ hasText: '已向 2 个成员发送中断' }).waitFor()
+        await teamPanel.getByRole('status').filter({ hasText: '已向 2 位成员发送中断请求。' }).waitFor()
         await teamPanel.getByRole('alert').filter({ hasText: '无法读取成员状态，请刷新重试。' }).waitFor()
         await expect.poll(() => membershipReads > 1).toBe(true)
-        expect(await teamPanel.getByRole('status').filter({ hasText: '已向 2 个成员发送中断' }).count()).toBe(1)
+        expect(await teamPanel.getByRole('status').filter({ hasText: '已向 2 位成员发送中断请求。' }).count()).toBe(1)
         expect(await teamPanel.getByRole('alert').filter({ hasText: '无法读取成员状态，请刷新重试。' }).count()).toBe(1)
         const demoMembers = (await treeMembers(host.ctx, demoLead)).filter((m) => m.role === 'teammate')
         expect(interruptSpy.mock.calls.map((args) => args[0]).sort()).toEqual(demoMembers.map((m) => m.id).sort())
@@ -585,7 +588,10 @@ it(
           '下次请求生效；当前：Code',
           '下次请求生效；当前：Code',
         ])
-        expect(await panel.getByRole('status').filter({ hasText: '已保存' }).innerText()).toContain('已保存 2 个')
+        expect(await group.getByRole('status').filter({ hasText: '已保存' }).innerText()).toBe(
+          '已保存 2 位成员的模式。',
+        )
+        expect(await group.getByText('查看各成员结果', { exact: true }).count()).toBe(0)
         await expect.poll(() => panel.getByRole('button', { name: /^(?:Session|会话) · Plan$/ }).count()).toBe(2)
         await page.screenshot({ path: join(root, '.local/team-management/mode-pending.zh.png') })
         // With native Teams still installed, a fresh native-model session owns neither ACP control.

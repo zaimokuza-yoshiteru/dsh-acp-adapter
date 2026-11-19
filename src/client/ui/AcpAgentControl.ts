@@ -1,4 +1,5 @@
 import { createElement as h, useEffect, useRef, useState } from 'react'
+import { ManagedModelCapacityDialog } from './ManagedModelCapacityDialog.ts'
 import type { ReactNode } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { AcpRemoteLike, AcpAgentSessionSnapshotView } from '../data/acp-remote.ts'
@@ -69,6 +70,7 @@ export function AcpAgentControl({
   const sessionTitle = useProjection('title')
   const running = useSession((state) => state.running)
   const optionWriteAllowed = useAccess('dshAcp/setAgentSessionOption')
+  const modelWriteAllowed = useAccess('session/selectModel')
   const policyWriteAllowed = useAccess('dshAcp/setToolApprovalPolicy')
   const [defaultProvider, setDefaultProvider] = useState<string | undefined>()
   const [defaultGeneration, setDefaultGeneration] = useState(0)
@@ -109,11 +111,16 @@ export function AcpAgentControl({
   const [readFailed, setReadFailed] = useState(false)
   const epoch = useRef(0)
   const [retry, setRetry] = useState(0)
+  const [riskChoice, setRiskChoice] = useState<string | null>(null)
+  useEffect(() => {
+    if (running || readFailed || !optionWriteAllowed || !modelWriteAllowed) setRiskChoice(null)
+  }, [running, readFailed, optionWriteAllowed, modelWriteAllowed])
 
   useEffect(() => {
     const current = ++epoch.current
     setOpen(false)
     setBusy(false)
+    setRiskChoice(null)
     setError(null)
     setReadFailed(false)
     setSnapshot(null)
@@ -207,17 +214,21 @@ export function AcpAgentControl({
   // The native running projection also locks the small interval before ACP prompt begins.
   const visibleSnapshot =
     snapshot === null ? null : { ...snapshot, editable: snapshot.editable && !running && optionWriteAllowed }
-  const label = snapshot === null ? t('toolApprovalSession') : agentControlLabel(snapshot, t)
+  const settings =
+    visibleSnapshot === null
+      ? []
+      : agentControlMenuGroups(visibleSnapshot, t, modelWriteAllowed && optionWriteAllowed && !running && !readFailed)
+  const label = snapshot === null ? t('toolApprovalSession') : agentControlLabel(snapshot, t, settings)
   const groups = [
+    ...settings.filter((group) => group.kind === 'model'),
     ...(policySnapshot === null || policyStale
       ? []
       : [toolApprovalPolicyGroup({ ...policySnapshot, editable: policySnapshot.editable && policyWriteAllowed }, t)]),
-    ...(visibleSnapshot === null ? [] : agentControlMenuGroups(visibleSnapshot, t)),
+    ...settings.filter((group) => group.kind !== 'model'),
   ]
   const footer = [...(snapshot === null ? [] : agentControlFooter(snapshot, t))]
   // A read-only explanation must not create an empty menu before controls arrive.
-  if (groups.length === 0 && footer.length === 0 && snapshot?.note == null && error === null && policyError === null)
-    return null
+  if (groups.length === 0 && footer.length === 0 && error === null && policyError === null) return null
   if (snapshot !== null && (running || (!visibleSnapshot?.editable && snapshot.freshness === 'live')))
     footer.push({ type: 'label', id: 'read-only', text: t(running ? 'agentControlRunning' : 'agentControlReadOnly') })
   if (error !== null) footer.push({ type: 'label', id: 'error', text: localizedDiagnostic(t, error.key, error.detail) })
@@ -257,35 +268,65 @@ export function AcpAgentControl({
         })
       return
     }
+    const managedModel = item.write.kind === 'config' && snapshot?.managedModel?.optionId === item.write.id
+    const dormantModel = snapshot?.freshness === 'stale' && managedModel && !readFailed && !running
     if (
       snapshot === null ||
       visibleSnapshot === null ||
-      !visibleSnapshot.editable ||
-      snapshot.freshness !== 'live' ||
+      ((!visibleSnapshot.editable || snapshot.freshness !== 'live') && !dormantModel) ||
       !optionWriteAllowed ||
+      (item.requiresModelAccess && sessionAccessSource(sessionId, 'session/selectModel')?.getSnapshot() !== true) ||
       sessionAccessSource(sessionId, 'dshAcp/setAgentSessionOption')?.getSnapshot() !== true
     ) {
       setBusy(false)
       return
     }
     setError(null)
+    const reportFailure = (detail: string): void => {
+      feedback.report('session-option-failed', current === epoch.current ? undefined : sourceSession)
+      if (current === epoch.current) setError({ key: 'actionSaveFailed', detail })
+    }
     void remote
       .setAgentSessionOption(sessionId, item.write)
-      .then((result) => {
+      .then(async (result) => {
         if (result.ok) return
-        feedback.report('session-option-failed', current === epoch.current ? undefined : sourceSession)
-        if (current === epoch.current) setError({ key: 'actionSaveFailed', detail: result.error.message })
+        if (managedModel && current === epoch.current) {
+          // The recovery dock already explains this switch and offers the next action.
+          const state = await remote.agentSessionSnapshot(sessionId).catch(() => null)
+          if (
+            current === epoch.current &&
+            state?.ok &&
+            state.value.sessionId === sessionId &&
+            state.value.managedModel?.recovery
+          )
+            return
+        }
+        reportFailure(result.error.message)
       })
-      .catch((reason: unknown) => {
-        feedback.report('session-option-failed', current === epoch.current ? undefined : sourceSession)
-        if (current === epoch.current)
-          setError({ key: 'actionSaveFailed', detail: reason instanceof Error ? reason.message : String(reason) })
-      })
+      .catch((reason: unknown) => reportFailure(reason instanceof Error ? reason.message : String(reason)))
       .finally(() => {
         if (current === epoch.current) setBusy(false)
       })
   }
+  const risk =
+    riskChoice === null
+      ? undefined
+      : groups.flatMap((group) => group.choices).find((choice) => choice.id === riskChoice)
+  const confirmation =
+    risk?.capacityRisk && !risk.disabled && !busy
+      ? h(ManagedModelCapacityDialog, {
+          model: risk.label,
+          risk: risk.capacityRisk,
+          t,
+          cancel: () => setRiskChoice(null),
+          confirm: () => {
+            setRiskChoice(null)
+            select(risk)
+          },
+        })
+      : null
   return h(AgentSessionMenu, {
+    confirmation,
     groups,
     footer,
     label,
@@ -297,6 +338,9 @@ export function AcpAgentControl({
       if (value && (readFailed || policyReadFailed)) setRetry((current) => current + 1)
       setOpen(value)
     },
-    onSelect: select,
+    onSelect: (choice) => {
+      if (choice.capacityRisk && !choice.current) setRiskChoice(choice.id)
+      else select(choice)
+    },
   })
 }

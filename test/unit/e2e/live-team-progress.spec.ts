@@ -1,7 +1,31 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { createLiveTeamProgress } from '../../e2e/live-team-progress.ts'
+import { createLiveTeamProgress, hasTeamCalculationResult, includesReadTask } from '../../e2e/live-team-progress.ts'
 
 afterEach(() => vi.useRealTimers())
+
+it('checks the calculation separately from the token and task IDs', () => {
+  const token = 'TEAM_22abc022'
+  expect(hasTeamCalculationResult(token, token)).toBe(false)
+  expect(hasTeamCalculationResult(`${token}: See task-2`, token)).toBe(false)
+  expect(hasTeamCalculationResult(`${token}: 20`, token)).toBe(false)
+  expect(hasTeamCalculationResult(`${token}: -2`, token)).toBe(false)
+  expect(hasTeamCalculationResult(`${token}: 2.5`, token)).toBe(false)
+  expect(hasTeamCalculationResult('1+1 = 2', token)).toBe(false)
+  expect(hasTeamCalculationResult(`${token}: 1+1 = **2**.`, token)).toBe(true)
+  expect(hasTeamCalculationResult(`Result: 2.0. Token: ${token}`, token)).toBe(true)
+})
+
+it('counts a successful get or listing only when it returns the current task', () => {
+  const subject = 'Compute TEAM_22abc022'
+  const compute = { subject }
+  const review = { subject: 'Review TEAM_22abc022' }
+  expect(includesReadTask('team_task_get', compute, subject)).toBe(true)
+  expect(includesReadTask('team_task_list', { tasks: [review, compute] }, subject)).toBe(true)
+  expect(includesReadTask('team_task_get', review, subject)).toBe(false)
+  expect(includesReadTask('team_task_list', { tasks: [review] }, subject)).toBe(false)
+  expect(includesReadTask('team_task_list', { tasks: [] }, subject)).toBe(false)
+  expect(includesReadTask('team_task_create', compute, subject)).toBe(false)
+})
 
 it('fails at the next observation of an error instead of waiting for the scenario timeout', async () => {
   vi.useFakeTimers()

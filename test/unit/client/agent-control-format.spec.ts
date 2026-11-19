@@ -25,6 +25,116 @@ const snapshot = (overrides: Partial<AcpAgentSessionSnapshotView> = {}): AcpAgen
 })
 
 describe('ACP Agent control presentation', () => {
+  it('uses the bound Agent model receipt and warns only for a target with a verified capacity risk', () => {
+    const value = snapshot({
+      configOptions: [
+        {
+          type: 'select',
+          id: 'engine',
+          category: 'model',
+          name: 'Engine',
+          currentValue: 'b',
+          options: [
+            { value: 'a', name: 'Large' },
+            { value: 'b', name: 'Small' },
+          ],
+        },
+      ],
+      managedModel: {
+        optionId: 'engine',
+        confirmed: 'a',
+        capacityRisks: [{ model: 'b', lastUsed: 16280, targetSize: 12288 }],
+      },
+    })
+    for (const dictionary of [en, zh]) {
+      const t = (key: keyof typeof zh) => dictionary[key]
+      expect(agentControlLabel(value, t)).toBe('Large')
+      const group = agentControlMenuGroups(value, t).find((g) => g.kind === 'model')!
+      expect(group.name).toBe(dictionary.teamModelLabel)
+      expect(group.choices).toMatchObject([
+        { current: true, write: { kind: 'config', id: 'engine', value: 'a' } },
+        { current: false, capacityRisk: { lastUsed: 16280, targetSize: 12288 } },
+      ])
+      expect(group.choices[0]?.capacityRisk).toBeUndefined()
+      expect(
+        agentControlMenuGroups(value, t, false)
+          .find((g) => g.kind === 'model')
+          ?.choices.every((c) => c.disabled),
+      ).toBe(true)
+      expect(
+        agentControlLabel(
+          { ...value, managedModel: { optionId: 'engine', confirmed: null, requested: 'b', recovery: 'unconfirmed' } },
+          t,
+        ),
+      ).toBe(dictionary.managedModelUnconfirmed)
+    }
+    const { managedModel: _, ...named } = value
+    expect(agentControlMenuGroups(named, t).every((g) => g.kind !== 'model')).toBe(true)
+  })
+
+  it('uses live reasoning options for the confirmed Agent and lets a dormant session reverify only its model', () => {
+    const value = snapshot({
+      managedModel: { optionId: 'engine', confirmed: 'a' },
+      configOptions: [
+        {
+          type: 'select',
+          id: 'engine',
+          category: 'model',
+          name: 'Model',
+          currentValue: 'a',
+          options: [{ value: 'a', name: 'A' }],
+        },
+        {
+          type: 'select',
+          id: 'effort',
+          category: 'thought_level',
+          name: 'Reasoning',
+          currentValue: 'high',
+          options: [{ value: 'high', name: 'High' }],
+        },
+      ],
+    })
+    const live = agentControlMenuGroups(value, t)
+    expect(live.find((g) => g.id === 'config:effort')?.choices[0]).toMatchObject({
+      current: true,
+      disabled: false,
+      requiresModelAccess: true,
+    })
+    const cold = agentControlMenuGroups({ ...value, freshness: 'stale', editable: false }, t)
+    expect(cold.find((g) => g.id === 'config:effort')).toBeUndefined()
+    expect(cold.find((g) => g.kind === 'model')?.choices[0]?.disabled).toBe(false)
+    expect(cold.find((g) => g.kind === 'mode')?.choices[0]?.disabled).toBe(true)
+    const unknown = agentControlMenuGroups(
+      { ...value, managedModel: { optionId: 'engine', confirmed: null, requested: 'b' } },
+      t,
+    )
+    expect(unknown.find((g) => g.id === 'config:effort')).toBeUndefined()
+  })
+
+  it('distinguishes the free and paid variants in the trigger and menu when the Agent gives them the same name', () => {
+    const value = snapshot({
+      managedModel: { optionId: 'model', confirmed: 'hy4flash-free' },
+      configOptions: [
+        {
+          id: 'model',
+          type: 'select',
+          category: 'model',
+          name: 'Model',
+          currentValue: 'hy4flash-free',
+          options: [
+            { value: 'hy4flash-free', name: 'Hy4 flash', description: 'x0.00 credits' },
+            { value: 'hy4flash', name: 'Hy4 flash', description: 'x0.03 credits' },
+          ],
+        },
+      ],
+    })
+    const settings = agentControlMenuGroups(value, t)
+    expect(settings.find((g) => g.kind === 'model')?.choices.map((item) => item.label)).toEqual([
+      'Hy4 flash · hy4flash-free',
+      'Hy4 flash · hy4flash',
+    ])
+    expect(agentControlLabel(value, t, settings)).toBe('Hy4 flash · hy4flash-free')
+  })
   it('presents session approval policy in both locales and keeps inherited Lead policy read-only', () => {
     const policy: ToolApprovalPolicySnapshot = { sessionId: 's', policy: 'auto', source: 'lead', editable: false }
     for (const dictionary of [zh, en]) {

@@ -326,8 +326,6 @@ describe('probe 模型目录与缓存', () => {
     expect(snapshot.result.cleanup).toEqual({ close: 'not-advertised', delete: 'done' })
     expect(snapshot.result.capabilityHash).toMatch(/^[0-9a-f]{16}$/)
     expect(snapshot.result.agentInfo?.version).toBe('1.0.0')
-    // configOptions-only 目录事实随 ok 条目保留（mock happy 有 model 类 configOption）。
-    expect(snapshot.result.hasModelConfigOption).toBe(true)
   })
 
   it('name/loginHint 变化不失效缓存（probe 结果与它们无关）', async () => {

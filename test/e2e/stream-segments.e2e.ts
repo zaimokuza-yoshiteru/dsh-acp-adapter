@@ -2,6 +2,7 @@ import { required } from './required.ts'
 import type { TestBrowser } from './browser.ts'
 import { launchBrowser, newEnglishPage } from './browser.ts'
 import type { ObservedEvent } from './types.ts'
+import type { AcpRemoteService } from '../../src/remote/service.js'
 import { it, expect, vi } from 'vitest'
 import { join } from 'node:path'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -308,12 +309,31 @@ it.each(['claude', 'codex', 'devin'])(
         await page.locator('[data-chat-flow-kind=assistant-step]').getByText('Stopped', { exact: true }).count(),
       ).toBe(1)
       expect(await page.getByRole('button', { name: 'Stopped', exact: true }).count()).toBe(1)
+      if (profile === 'claude') {
+        // Reconnect can restore the transcript before the Host confirms the Agent route.
+        const remote = host.ctx.get('dshAcp') as AcpRemoteService
+        const routes = vi.spyOn(remote, 'ownedProviderRoutes').mockResolvedValue({
+          providers: [],
+          historicalProviders: [provider],
+        })
+        try {
+          await page.reload()
+          await page.getByText('演示结束。', { exact: true }).waitFor()
+          await expect.poll(() => routes.mock.calls.length).toBeGreaterThan(0)
+          await page.locator('[data-turn-process-tool-calls="0"]').waitFor()
+        } finally {
+          routes.mockRestore()
+        }
+        host.ctx.emit('llm/adapters-updated')
+        await verifyOrder()
+      }
       expect(errors).toEqual([])
     } catch (error) {
       const page = browser?.contexts()[0]?.pages()[0]
       if (page) {
-        mkdirSync(join(root, '.local/message-order-review'), { recursive: true })
-        await page.screenshot({ path: join(root, '.local/message-order-review/failure.png'), fullPage: true })
+        const dir = join(root, '.local/e2e-failures/stream-segments', profile)
+        mkdirSync(dir, { recursive: true })
+        await page.screenshot({ path: join(dir, 'failure.png'), fullPage: true })
         console.error(await page.locator('body').innerText(), errors)
       }
       throw error

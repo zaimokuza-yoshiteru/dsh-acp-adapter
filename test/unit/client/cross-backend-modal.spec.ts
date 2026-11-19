@@ -1,6 +1,10 @@
 import { expect, it, vi } from 'vitest'
 import { CrossBackendModal, crossBackendSelectionLabel } from '../../../src/client/ui/CrossBackendModal.ts'
-import { ACP_CURRENT_CONFIG_MODEL_ID, acpDeclaredModelRoute } from '../../../src/contract/model-selection.ts'
+import {
+  ACP_AGENT_MANAGED_MODEL_ID,
+  ACP_CURRENT_CONFIG_MODEL_ID,
+  acpDeclaredModelRoute,
+} from '../../../src/contract/model-selection.ts'
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
 
 const t = (key: string, params?: Record<string, string | number>): string =>
@@ -19,6 +23,9 @@ it('shows configured Agent and catalog model names without exposing provider rou
   expect(crossBackendSelectionLabel(selection, null, undefined, t)).not.toContain(selection.provider)
   expect(crossBackendSelectionLabel({ ...selection, model: ACP_CURRENT_CONFIG_MODEL_ID }, catalog, 'My Agent', t)).toBe(
     'My Agent · agentCurrentConfiguration',
+  )
+  expect(crossBackendSelectionLabel({ ...selection, model: ACP_AGENT_MANAGED_MODEL_ID }, catalog, 'My Agent', t)).toBe(
+    'My Agent · agentManagedModel',
   )
 })
 

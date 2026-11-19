@@ -138,22 +138,34 @@ it('does not hide a managed child request because its parent uses a native model
   expect(textContent(tree)).toContain('teamPendingLoading')
 })
 
-it.each([1, 2])('shows batch actions only for multiple approvals (%i pending)', async (count) => {
+it.each([
+  [0, 1],
+  [1, 0],
+  [1, 1],
+  [2, 1],
+])('shows only answerable approvals (%i current, %i settled but still in Host status)', async (current, settled) => {
   hooks.active = true
   const statuses = statusSnapshot(
-    Array.from({ length: count }, (_, index) => {
+    Array.from({ length: current + settled }, (_, index) => {
       const id = `member-${index}`
-      return [id, pending(id)] as const
+      return [id, { ...pending(id), answerable: index < current }] as const
     }),
   )
-  renderApprovals(undefined, statuses, true)
+  const render = () => renderApprovals(undefined, statuses, true)
+  render()
   for (const effect of hooks.effects.splice(0)) effect()
   await vi.waitFor(() => {
-    const content = textContent(renderApprovals(undefined, statuses, true))
-    expect(content.filter((text) => text === 'teamAllowOnce')).toHaveLength(count)
-    expect(content.filter((text) => text === 'teamReject')).toHaveLength(count)
+    const tree = render()
+    if (current === 0) {
+      expect(tree).toBeNull()
+      return
+    }
+    const content = textContent(tree)
+    expect(content.filter((text) => text === 'teamAllowOnce')).toHaveLength(current)
+    expect(content.filter((text) => text === 'teamReject')).toHaveLength(current)
+    expect(content.filter((text) => text === 'teamPendingOpen')).toHaveLength(current)
     for (const batchContent of ['teamAllowAll', 'teamRejectAll', 'teamBatchHint'])
-      expect(content.includes(batchContent)).toBe(count > 1)
+      expect(content.includes(batchContent)).toBe(current > 1)
   })
 })
 

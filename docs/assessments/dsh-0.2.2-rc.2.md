@@ -269,13 +269,7 @@ Devin 使用临时认证副本、HOME/XDG/profile/workspace，MCP 注册也发�
 
 ### 本轮验证记录
 
-本轮日志和隔离证据位于 `.local/devin-modern-mcp/`。历史 Teams 通过记录仍保留，但不能代替本次传输变更后的实测。
-
-- `pnpm exec vitest run --no-file-parallelism`：229 文件通过、1 文件跳过，2900 项通过、3 项跳过（`unit-full.log`）。之后仅修改真实测试的等待/发现提示及守卫，相关 3 文件 42 项回归通过；生产代码未再改变。
-- 恢复生命周期专项 4 文件 91 项通过；activity 71 项通过。构建 `build-2.log` 通过，打包检查含 322 个文件、128 个运行时 JS 和严格类型消费者；专用 launcher 不再打包，通用 stdio 明确列入必需产物。源码、测试、工具、E2E 类型检查通过。
-- 零推理 CLI：new/load/stale_new/stale_load 四场景通过，8 次固定 `/mcp`、0 模型请求、0 工具执行（`modern-script-2.log`）。`catalog-2.log` 使用最终产物分别通过 HTTP/stdio 读取并对齐 28 项实际 DSH 工具 schema。初次 catalog 脚本使用了 SDK 未导出的路径，已修正为公共导出；失败保留在 `catalog-1.log`。
-- `hover-responsive.e2e.ts`、`team-management.e2e.ts` 两项通过（`ui-1.log`），已检查明暗 390px 触屏配置与成员菜单截图，renderer errors 为空。此处 build-1 与 build-2 的差异仅为无来源 timeout 分支删除，UI 输入相同。既有中英文、首次绑定、共存和创造模式桌面证据仅按未变输入复用，本轮不声称重跑了完整 Electron/Windows 矩阵。
-- `permissions-1.log`：真实 `3000.12.43` / `swe-2-high` 在最终标准 MCP 产物上通过，65.77 秒。Allow 仅一次成功写入，Reject/Stop 零 Host 派发且无对应文件，Stop 原始决定为 cancelled，随后同一 DSH/ACP 子会话续聊成功；0 范围违规。当前价格目录复核标为 Free（`model-preflight-2.log`）；首次只因临时 cwd 尚未创建而在 spawn 前失败，已保留日志。
+新版会话级 MCP 在 HTTP 和 stdio 上返回了同一组宿主工具。真实 Devin 的允许、拒绝、待审批时停止和在原 ACP 子会话继续对话均通过，目录发现的限制见下一节。各轮构建、模型配置、测试数量和机器日志见[RC.2 发布标签中的验收原文](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.2.1/docs/assessments/dsh-0.2.2-rc.2.md#本轮验证记录)。
 
 ### 真实 Teams 目录发现限制
 

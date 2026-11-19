@@ -40,7 +40,7 @@
 import os from 'node:os'
 import type { Context } from '@deepseek-ai/cordis'
 import { LlmError } from '@deepseek-ai/dsh-llm'
-import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import { Remote, RemoteError, TypertRemoteService, principalOf, type Principal } from '@deepseek-ai/dsh-typert-protocol'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-api-remote-access'
 import type * as acp from '@agentclientprotocol/sdk'
@@ -51,13 +51,12 @@ import {
   retiredAgentReason,
 } from '../domain/session/agent-config.ts'
 import { ACP_CONFIG_IDENTIFIER_MAX } from '../contract/config-options.ts'
-import { isAcpCurrentConfigModel, isAcpModelRouteWithinBounds } from '../contract/model-selection.ts'
+import { acpModelSelection, isAcpModelRouteWithinBounds } from '../contract/model-selection.ts'
 import { acpProbeConfigKey, acpVersionCompatibility, catalogIdOf } from '../domain/session/agent-config.ts'
 import { registryVersionOf } from '../domain/session/registry-versions.ts'
 import type { AcpAgentConfig } from '../domain/session/agent-config.ts'
 import type { AcpErrorCategory } from '../protocol/v1/types.ts'
 import { deriveAcpAgentState } from '../domain/session/agent-state.ts'
-import type { AcpAgentStateProbeView } from '../domain/session/agent-state.ts'
 import { acpCapabilityMatrix } from '../domain/policy/capability-matrix.ts'
 import type { AcpSessionContinuityState } from '../runtime/session/continuity.ts'
 import { ACP_SUBPROCESS_UNAVAILABLE_MESSAGE } from '../runtime/process/subprocess.ts'
@@ -100,8 +99,6 @@ import type {
   AcpOwnedRoutesView,
   AcpProjectedSubagentsView,
 } from '../contract/remote.ts'
-
-export type { AcpAuditSummaryCode } from '../contract/remote.ts'
 
 /** `<command> --version` 尽力而为的短超时（毫秒）。 */
 const DEFAULT_VERSION_PROBE_TIMEOUT_MS = 3_000
@@ -245,11 +242,6 @@ export interface AcpProbeSnapshotLike {
         readonly capabilityHash?: string | undefined
         /** initialize 协商的协议版本（边界；缺席时 health 行归 null）。 */
         readonly protocolVersion?: number | undefined
-        /**
-         * configOptions 是否含 `category=model` 项（ 五态目录口径；
-         * 旧条目/测试夹具缺席时按「无 model 类 configOption」计，与引入前逐字节一致）。
-         */
-        readonly hasModelConfigOption?: boolean | undefined
       }
     | {
         readonly kind: 'error'
@@ -282,7 +274,12 @@ export interface AcpRecoveryAdapterLike {
 export interface AcpAgentSessionControlLike {
   setTeamMemberMode?(sessionId: string, modeId: string): Promise<AcpAgentSessionSnapshotView>
   agentSessionSnapshot(sessionId: string): Promise<AcpAgentSessionSnapshotView>
-  setAgentSessionOption(sessionId: string, request: AcpAgentSessionOptionWrite): Promise<AcpAgentSessionSnapshotView>
+  setAgentSessionOption(
+    sessionId: string,
+    request: AcpAgentSessionOptionWrite,
+    canSelectModel?: () => boolean,
+    signal?: AbortSignal,
+  ): Promise<AcpAgentSessionSnapshotView>
 }
 
 export interface AcpRemoteServiceDeps {
@@ -290,6 +287,14 @@ export interface AcpRemoteServiceDeps {
   nativeForkScope?: () => string
   /** Accept an explicit source only after the native child prefix is verified. */
   nativeFork?: (sessionId: string, sourceSessionId: string, atSeq: number) => Promise<void>
+  retryModelSwitchInput?: (
+    sessionId: string,
+    failureSeq: number,
+    principal: Principal | undefined,
+    authorized: () => boolean,
+    signal: AbortSignal,
+    canSelectModel?: () => boolean,
+  ) => Promise<void>
   /** Live runtime ownership; deliberately accepts native as well as ACP parents. */
   approvalChildren?: (parent: string) => readonly AcpApprovalChildView[] | Promise<readonly AcpApprovalChildView[]>
   teamManagement?: {
@@ -505,6 +510,7 @@ function firstLine(text: string): string | null {
 interface ResolvedDeps {
   readonly nativeForkScope: AcpRemoteServiceDeps['nativeForkScope']
   readonly nativeFork: AcpRemoteServiceDeps['nativeFork']
+  readonly retryModelSwitchInput: AcpRemoteServiceDeps['retryModelSwitchInput']
   readonly approvalChildren: AcpRemoteServiceDeps['approvalChildren']
   readonly teamManagement: AcpRemoteServiceDeps['teamManagement']
 
@@ -560,6 +566,7 @@ export class AcpRemoteService extends TypertRemoteService {
     this.resolved = {
       nativeForkScope: deps.nativeForkScope,
       nativeFork: deps.nativeFork,
+      retryModelSwitchInput: deps.retryModelSwitchInput,
       registry: deps.registry,
       approvalChildren: deps.approvalChildren,
       teamManagement: deps.teamManagement,
@@ -595,6 +602,28 @@ export class AcpRemoteService extends TypertRemoteService {
       projectedSubagentIds: deps.projectedSubagentIds ?? null,
       imageInputAvailable: deps.imageInputAvailable ?? false,
     }
+  }
+
+  /** Resend one previously admitted message to its original ACP session. */
+  @Remote({ resources: { session: (sessionId) => SessionId(sessionId) } })
+  async retryModelSwitchInput(sessionId: string, failureSeq: number, signal: AbortSignal): Promise<void> {
+    if (!Number.isSafeInteger(failureSeq) || failureSeq < 0) throw badRequest('Invalid unsent input')
+    const principal = principalOf(this.ctx.invocation)
+    const authorized = () => this.sessionActionAllowed(sessionId, principal, 'session/prompt')
+    if (!authorized()) throw acpRemoteFailure('user-rejected', 'Sending input is not authorized for this session')
+    await this.requireOwnedSessionAccess(sessionId)
+    if (this.resolved.retryModelSwitchInput === undefined)
+      throw acpRemoteFailure('config', 'ACP input retry is unavailable')
+    await this.resolved.retryModelSwitchInput(
+      sessionId,
+      failureSeq,
+      principal,
+      authorized,
+      signal,
+      () =>
+        this.sessionActionAllowed(sessionId, principal, 'session/selectModel') &&
+        this.sessionActionAllowed(sessionId, principal, 'dshAcp/setAgentSessionOption'),
+    )
   }
 
   /** Identify this Host's fork journal owner without exposing paths or granting access. */
@@ -1045,6 +1074,22 @@ export class AcpRemoteService extends TypertRemoteService {
   }
 
   /** Global discovery carries only the sessions allowed for this actual Remote caller. */
+  private sessionActionAllowed(
+    sessionId: string,
+    principal: Principal | undefined,
+    action: 'session/prompt' | 'session/selectModel' | 'dshAcp/setAgentSessionOption',
+  ): boolean {
+    if (!this.callerCanReadSession(sessionId)) return false
+    if (principal === undefined) return true
+    const access = this.ctx.get('remoteAccess')
+    return (
+      access !== undefined &&
+      'decide' in access &&
+      typeof access.decide === 'function' &&
+      access.decide({ principal, action, resources: [{ kind: 'session', id: SessionId(sessionId) }] }).kind === 'allow'
+    )
+  }
+
   private callerCanReadSession(sessionId: string): boolean {
     // Direct in-process consumers have no Remote caller. Gateway compositions
     // always mount remoteAccess; an invoked method without it fails closed.
@@ -1114,7 +1159,7 @@ export class AcpRemoteService extends TypertRemoteService {
             executable: false,
             version: null,
             probe: { status: 'never', at: null },
-            state: deriveAcpAgentState({ hostCompatible, configValid: true, probe: undefined }),
+            state: deriveAcpAgentState(hostCompatible, undefined),
           }
         }
         if (recheck && (targetAgentId === undefined || targetAgentId === id)) {
@@ -1153,12 +1198,7 @@ export class AcpRemoteService extends TypertRemoteService {
           executable,
           version,
           probe: probeRow(matchingSnapshot, referenceVersion, this.resolved.imageInputAvailable),
-          // registry 的 agents map 经 settings schema 校验（非法值根本写不进来），configValid 恒 true
-          state: deriveAcpAgentState({
-            hostCompatible,
-            configValid: true,
-            probe: matchingSnapshot === undefined ? undefined : probeStateView(matchingSnapshot),
-          }),
+          state: deriveAcpAgentState(hostCompatible, matchingSnapshot?.result),
         }
       }),
     )
@@ -1240,14 +1280,19 @@ export class AcpRemoteService extends TypertRemoteService {
     }
   }
 
-  @Remote
+  @Remote({ resources: { session: (sessionId) => SessionId(sessionId) } })
   async setAgentSessionOption(
     sessionId: string,
     request: AcpAgentSessionOptionWrite,
+    signal?: AbortSignal,
   ): Promise<AcpAgentSessionSnapshotView> {
+    const principal = principalOf(this.ctx.invocation)
+    const canSelectModel = () =>
+      this.sessionActionAllowed(sessionId, principal, 'session/selectModel') &&
+      this.sessionActionAllowed(sessionId, principal, 'dshAcp/setAgentSessionOption')
     await this.requireOwnedSessionAccess(sessionId)
     const adapter = await this.agentSessionControlFor(sessionId)
-    return await preserveAcpFailure(() => adapter.setAgentSessionOption(sessionId, request))
+    return await preserveAcpFailure(() => adapter.setAgentSessionOption(sessionId, request, canSelectModel, signal))
   }
 
   @Remote
@@ -1515,20 +1560,6 @@ function validateActivityReadRequest(limit: number, filter: AcpActivityFilterVie
   }
 }
 
-/** 当前配置最后一次 probe → 五态派生的最小视图（ok 留目录事实，error 留分流 kind）。 */
-function probeStateView(snapshot: AcpProbeSnapshotLike): AcpAgentStateProbeView {
-  const { result } = snapshot
-  return result.kind === 'ok'
-    ? {
-        result: {
-          kind: 'ok',
-          modelCount: result.models.filter((model) => !isAcpCurrentConfigModel(model.id)).length,
-          hasModelConfigOption: result.hasModelConfigOption === true,
-        },
-      }
-    : { result: { kind: 'error', failureKind: result.failureKind } }
-}
-
 /** cleanup 三态词表收窄（结构面按 string 进；词表外值诚实归 null，不猜测）。 */
 function contractCleanupOf(
   cleanup: { readonly close: string; readonly delete: string; readonly message?: string | undefined } | undefined,
@@ -1553,7 +1584,7 @@ function probeRow(
     return {
       status: 'ok',
       at,
-      modelCount: result.models.filter((model) => !isAcpCurrentConfigModel(model.id)).length,
+      modelCount: result.models.filter((model) => acpModelSelection(model.id).kind === 'declared-model').length,
       authMethods: result.authMethods === undefined ? null : result.authMethods.map(contractAuthMethodOf),
       agentInfo: result.agentInfo == null ? null : { name: result.agentInfo.name, version: result.agentInfo.version },
       capabilities,

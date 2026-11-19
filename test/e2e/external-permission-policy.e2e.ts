@@ -185,6 +185,7 @@ function assertAudit(world: World, child: Agent, key: string, decision: Record<s
 it('isolates concurrent machine decisions while preserving the original full parent choice across refresh', async (context) => {
   const world = await fixture()
   const calls: { agentId: string; requestId: string; callId: string | undefined }[] = []
+  const manualReason = 'This rule covers reads only. Review the requested write.'
   let legacyCalls = 0
   const releaseConcurrent = Promise.withResolvers<void>()
   const policyEntered = new Map<string, PromiseWithResolvers<void>>(
@@ -212,6 +213,7 @@ it('isolates concurrent machine decisions while preserving the original full par
     if (callId === 'parent-scope-machine-allow') return 'allow-once'
     if (callId === 'parent-scope-machine-deny') return 'deny-once'
     if (callId === 'parent-scope-machine-failed') throw new Error('Controlled policy backend failure')
+    if (callId === 'parent-scope-manual') return { decision: 'not-applicable', reason: manualReason }
     return next()
   })
   try {
@@ -253,6 +255,7 @@ it('isolates concurrent machine decisions while preserving the original full par
     ).toEqual([expect.stringContaining('(ACP_PERMISSION_POLICY_UNAVAILABLE)')])
     const card = world.card('manual')
     await card.getByRole('radio', { name: 'Allow', exact: true }).waitFor()
+    expect(await card.innerText()).toContain(manualReason)
     expect(await card.getByRole('radio').count()).toBe(PARENT_PERMISSION_OPTIONS.length)
     expect(await card.locator('[data-question-source]').innerText()).toContain(
       `${world.ctx.subagents.namesOf(manual.child).self} · ${manual.child.id.slice(0, 8)}`,
@@ -261,6 +264,7 @@ it('isolates concurrent machine decisions while preserving the original full par
     await world.save('manual-pending-wide', { calls, legacyCalls })
     await world.page.reload()
     await card.getByRole('radio', { name: 'Reject', exact: true }).waitFor()
+    expect(await card.innerText()).toContain(manualReason)
     for (const option of PARENT_PERMISSION_OPTIONS)
       expect(await card.getByRole('radio', { name: option.name, exact: true }).count()).toBe(1)
     expect(acpPermissionAudit(world, 'asked')).toHaveLength(4)
@@ -289,6 +293,38 @@ it('isolates concurrent machine decisions while preserving the original full par
     await world.save('concurrent-completed-wide', { calls, legacyCalls })
   } finally {
     releaseConcurrent.resolve()
+    await world.close()
+  }
+})
+
+it('honors an opted-in binary denial even when the native approval service would allow', async () => {
+  const world = await fixture()
+  try {
+    const owners: string[] = []
+    let nativeCalls = 0
+    world.ctx.on('dsh-acp/binary-permission-policy', async (request) => {
+      owners.push(request.agent.id)
+      return { decision: 'deny-once', reason: 'This command writes outside the approved scope.' }
+    })
+    world.ctx.on(
+      'approval/request',
+      async () => {
+        nativeCalls++
+        return 'allowed-once'
+      },
+      { prepend: true },
+    )
+    const { activation, child } = await world.spawn('binary-policy-deny')
+    await activation.result
+    expect(owners).toEqual([child.id])
+    expect(nativeCalls).toBe(0)
+    expect(world.effects('binary-policy-deny')).toEqual([])
+    assertAudit(world, child, 'binary-policy-deny', {
+      outcome: 'selected',
+      optionId: 'reject_once',
+      decisionVia: 'external-policy',
+    })
+  } finally {
     await world.close()
   }
 })

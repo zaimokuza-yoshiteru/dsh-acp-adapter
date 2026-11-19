@@ -77,6 +77,7 @@ export function shouldConfirmBackendTransition(
     readonly lastUsed: CrossBackendModelSelection | null
     readonly next: CrossBackendModelSelection | null
     readonly blank: boolean
+    readonly preset?: unknown
   },
   ownsRoute: OwnsAcpRoute,
 ): boolean {
@@ -86,7 +87,7 @@ export function shouldConfirmBackendTransition(
   if (!fromAcp && !toAcp) return false
   if (input.blank && input.lastUsed === null && toAcp) return false
   if (fromAcp && toAcp && input.lastUsed?.provider === input.next.provider)
-    return requiresAcpModelSwitchExit(input.lastUsed, input.next, ownsRoute)
+    return requiresAcpModelSwitchExit(input.lastUsed, input.next, ownsRoute, input.preset)
   return true
 }
 
@@ -342,19 +343,23 @@ export class CrossBackendCoordinator {
     const value = session?.session.projections.faceOf('modelSelection').getSnapshot()
     const projection = value as ModelProjection | undefined
     if (projection === undefined || sameSelection(observed.lastProjection?.next, projection.next)) return
+    const row = sessions.list.getSnapshot().byId[sessionId]
+    const sessionPreset = observed.binding.session.projections.faceOf('agentPreset').getSnapshot()
+    const preset = typeof sessionPreset === 'string' ? sessionPreset : row?.projectionValues?.agentPreset
     // `lastUsed` is the last committed turn model.  A stock picker change can
     // leave an uncommitted `next` selection in the projection (for example a
     // same-profile reasoning change); if the user immediately chooses another
     // backend, cancellation must restore that visible pre-transition choice,
     // not the older committed model.
     const modelSwitch =
-      projection.next !== null && requiresAcpModelSwitchExit(projection.lastUsed, projection.next, this.ownsRoute)
+      projection.next !== null &&
+      requiresAcpModelSwitchExit(projection.lastUsed, projection.next, this.ownsRoute, preset)
     const firstObservation = observed.lastProjection === undefined
     const previousChoice = observed.lastProjection?.next
     const sourceSelection =
       modelSwitch &&
       previousChoice != null &&
-      requiresAcpModelSwitchExit(projection.lastUsed, previousChoice, this.ownsRoute)
+      requiresAcpModelSwitchExit(projection.lastUsed, previousChoice, this.ownsRoute, preset)
         ? projection.lastUsed
         : (previousChoice ?? projection.lastUsed)
     observed.lastProjection = projection
@@ -368,7 +373,6 @@ export class CrossBackendCoordinator {
       this.queued.some((item) => item.ticket.sourceSessionId === sessionId)
     )
       return
-    const row = sessions.list.getSnapshot().byId[sessionId]
     const next = projection.next
     if (next === null || sameSelection(projection.lastUsed, next)) return
     const sourceProvider = projection.lastUsed?.provider
@@ -380,7 +384,7 @@ export class CrossBackendCoordinator {
     const source = sourceStatus(initialRoutes)
     const targetOwned = this.ownsRoute(next.provider)
     const transition = shouldConfirmBackendTransition(
-      { lastUsed: projection.lastUsed, next, blank: row?.blank === true },
+      { lastUsed: projection.lastUsed, next, blank: row?.blank === true, preset },
       this.ownsRoute,
     )
     if (!transition && source !== 'historical') return
@@ -389,12 +393,7 @@ export class CrossBackendCoordinator {
     if (firstObservation && source === 'historical') return
 
     const workspaces = (this.ctx.get('workspaces') as IWorkspaces).list.getSnapshot()
-    const location = resolveCrossBackendLocation(
-      sessionId,
-      workspaces.items,
-      row?.cwd,
-      row?.projectionValues?.agentPreset,
-    )
+    const location = resolveCrossBackendLocation(sessionId, workspaces.items, row?.cwd, preset)
     const ticket: CrossBackendTicket = {
       key: globalThis.crypto.randomUUID(),
       sourceSessionId: sessionId,
@@ -458,7 +457,8 @@ export class CrossBackendCoordinator {
     }
     const pending: CrossBackendPending = {
       reason:
-        source !== undefined && requiresAcpModelSwitchExit(source, ticket.targetSelection, this.ownsRoute)
+        source !== undefined &&
+        requiresAcpModelSwitchExit(source, ticket.targetSelection, this.ownsRoute, ticket.location.agentPreset)
           ? 'model-switch'
           : 'backend-change',
       ticket: restored.ok && source !== undefined ? { ...ticket, sourceAlreadyRestored: true } : ticket,

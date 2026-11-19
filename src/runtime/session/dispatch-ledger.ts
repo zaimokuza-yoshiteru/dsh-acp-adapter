@@ -15,6 +15,8 @@ export interface DispatchProvenance {
   readonly acceptedMessageIds: readonly string[]
   /** Absent on dispatch rows written before bounded filtering provenance. */
   readonly projectionFiltered?: boolean
+  /** Model confirmed on this ACP prompt's final lease before the dispatch attempt. */
+  readonly confirmedAgentModel?: string
 }
 
 export interface DispatchRecord {

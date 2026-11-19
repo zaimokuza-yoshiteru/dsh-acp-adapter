@@ -198,13 +198,16 @@ describe('a prompt the Agent answered with an error', () => {
     const h = await harness({
       failFirstPrompt: () =>
         new AcpClientError('protocol-error', 'ACP agent rejected session/prompt: rate limited (JSON-RPC code 429)', {
-          cause: new RequestError(429, 'rate limited'),
+          cause: new RequestError(429, 'rate limited: token=private-test-value'),
         }),
     })
     h.agent.followup(user('limited'))
     await h.agent.whenIdle()
-    expect(h.lastTurnEnd()).toMatchObject({ data: { reason: { kind: 'error' } } })
-    expect(JSON.stringify(h.lastTurnEnd())).toContain('ACP_PROTOCOL_ERROR')
+    expect(h.lastTurnEnd()).toMatchObject({
+      data: {
+        reason: { kind: 'error', error: { code: 'ACP_PROTOCOL_ERROR', message: 'rate limited: token=<redacted>' } },
+      },
+    })
     const recovery = await h.sidecar.readRecoveryState(h.agent.session.id)
     expect(recovery === undefined || recovery.kind === 'healthy').toBe(true)
 

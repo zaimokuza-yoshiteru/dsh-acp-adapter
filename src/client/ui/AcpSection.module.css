@@ -106,10 +106,6 @@
   line-height: 22px;
   cursor: pointer;
 }
-.addMenu .addButton {
-  width: 100%;
-  min-width: 0;
-}
 @media (hover: hover) {
   .addButton:hover:not(:disabled) {
     background: var(--dsw-alias-interactive-bg-hover);
@@ -210,10 +206,6 @@
   gap: 4px;
   margin-left: auto;
 }
-.healthMuted {
-  color: var(--dsw-alias-label-tertiary);
-}
-/* 编辑器里疑似 secret 的存量 env 键行（键名 + 已配置 + 移除，值不回显）。 */
 .maskedEnvRows {
   list-style: none;
   margin: 0;
