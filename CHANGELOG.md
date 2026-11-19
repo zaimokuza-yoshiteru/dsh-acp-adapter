@@ -4,6 +4,18 @@
 
 Find installation commands, release dates, and package checksums on [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases).
 
+## 0.2.2-rc.5.3
+
+### 中文
+
+- CodeBuddy 和 OpenCode 主会话可以在同一个模型菜单里选择具体模型，并在原对话中换模续聊。Agent 确认模型后才发送消息。改用另一个 Agent 或 DSH 模型时，会按来源模式另开会话。
+- 人工审批卡优先显示策略给出的理由。使用 Apple 芯片 Mac 上的官方 `agy acp` 1.5.12 时，接入执行前检查的策略可以在命令运行前拒绝它，让 Antigravity 在同一轮重试时读到理由。
+
+### English
+
+- Choose a CodeBuddy or OpenCode model from the model picker and switch models in the same main conversation. Messages are sent after the Agent confirms the model. Switching to another Agent or a DSH model opens a separate chat in the original mode.
+- Approval cards show the policy reason first. With the official `agy acp` 1.5.12 on Apple silicon Macs, a policy that checks commands before execution can reject a command and give Antigravity the reason for its next attempt in the same turn.
+
 ## 0.2.2-rc.5.2
 
 ### 中文
