@@ -7,7 +7,9 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { TypertClientRemote } from '@deepseek-ai/dsh-typert-protocol'
 import type { AcpOwnedRoutesView } from '../../contract/remote.ts'
 import { includesRoute } from '../data/managed-routes.ts'
-import { requiresAcpModelSwitchExit } from '../../contract/model-transition.ts'
+import { acpAgentIdFromRoute } from '../../contract/agent-config.ts'
+import { acpDeclaredModelRoute, isAcpAgentManagedModel } from '../../contract/model-selection.ts'
+import { isAcpSessionModelSwitch, requiresAcpModelSwitchExit } from '../../contract/model-transition.ts'
 import { CrossBackendTransactionController, resolveCrossBackendLocation } from '../data/cross-backend-controller.ts'
 import type {
   CrossBackendFailure,
@@ -78,6 +80,7 @@ export function shouldConfirmBackendTransition(
     readonly next: CrossBackendModelSelection | null
     readonly blank: boolean
     readonly preset?: unknown
+    readonly canSwitchSessionModel?: boolean
   },
   ownsRoute: OwnsAcpRoute,
 ): boolean {
@@ -87,7 +90,7 @@ export function shouldConfirmBackendTransition(
   if (!fromAcp && !toAcp) return false
   if (input.blank && input.lastUsed === null && toAcp) return false
   if (fromAcp && toAcp && input.lastUsed?.provider === input.next.provider)
-    return requiresAcpModelSwitchExit(input.lastUsed, input.next, ownsRoute, input.preset)
+    return requiresAcpModelSwitchExit(input.lastUsed, input.next, ownsRoute, input.preset, input.canSwitchSessionModel)
   return true
 }
 
@@ -346,6 +349,10 @@ export class CrossBackendCoordinator {
     const row = sessions.list.getSnapshot().byId[sessionId]
     const sessionPreset = observed.binding.session.projections.faceOf('agentPreset').getSnapshot()
     const preset = typeof sessionPreset === 'string' ? sessionPreset : row?.projectionValues?.agentPreset
+    const canSwitchSessionModel =
+      row !== undefined &&
+      row.origin !== 'subagent' &&
+      includesRoute(this.routes.getSnapshot().switchableProviders ?? [], projection.lastUsed?.provider)
     // `lastUsed` is the last committed turn model.  A stock picker change can
     // leave an uncommitted `next` selection in the projection (for example a
     // same-profile reasoning change); if the user immediately chooses another
@@ -353,13 +360,15 @@ export class CrossBackendCoordinator {
     // not the older committed model.
     const modelSwitch =
       projection.next !== null &&
-      requiresAcpModelSwitchExit(projection.lastUsed, projection.next, this.ownsRoute, preset)
+      requiresAcpModelSwitchExit(projection.lastUsed, projection.next, this.ownsRoute, preset, canSwitchSessionModel)
     const firstObservation = observed.lastProjection === undefined
-    const previousChoice = observed.lastProjection?.next
+    const lastChoice = observed.lastProjection?.next
+    const previousChoice =
+      projection.lastUsed == null || lastChoice?.provider === projection.lastUsed.provider ? lastChoice : undefined
     const sourceSelection =
       modelSwitch &&
       previousChoice != null &&
-      requiresAcpModelSwitchExit(projection.lastUsed, previousChoice, this.ownsRoute, preset)
+      requiresAcpModelSwitchExit(projection.lastUsed, previousChoice, this.ownsRoute, preset, canSwitchSessionModel)
         ? projection.lastUsed
         : (previousChoice ?? projection.lastUsed)
     observed.lastProjection = projection
@@ -384,7 +393,7 @@ export class CrossBackendCoordinator {
     const source = sourceStatus(initialRoutes)
     const targetOwned = this.ownsRoute(next.provider)
     const transition = shouldConfirmBackendTransition(
-      { lastUsed: projection.lastUsed, next, blank: row?.blank === true, preset },
+      { lastUsed: projection.lastUsed, next, blank: row?.blank === true, preset, canSwitchSessionModel },
       this.ownsRoute,
     )
     if (!transition && source !== 'historical') return
@@ -430,6 +439,28 @@ export class CrossBackendCoordinator {
   ): Promise<void> {
     const current = () =>
       this.ticketChecks.has(ticket.key) && this.observed.get(ticket.sourceSessionId as SessionId) === observed
+    const sessions = this.ctx.get('sessions') as unknown as ISessions
+    const row = sessions.list.getSnapshot().byId[ticket.sourceSessionId as SessionId]
+    if (
+      !historicalSource &&
+      row &&
+      row.origin !== 'subagent' &&
+      isAcpSessionModelSwitch(projection.lastUsed, ticket.targetSelection, ticket.location.agentPreset, true)
+    ) {
+      // The first native catalog probe can finish after the provider registration
+      // notification. Recheck the verified handshake before offering a handoff.
+      const latest = await this.ctx.remote.dshAcp.ownedProviderRoutes().catch(() => undefined)
+      if (
+        !current() ||
+        observed.lastProjection !== projection ||
+        (latest?.ok &&
+          (!this.ticketChecks.get(ticket.key)?.(latest.value) ||
+            includesRoute(latest.value.switchableProviders ?? [], ticket.targetSelection.provider)))
+      ) {
+        this.forget(ticket.key)
+        return
+      }
+    }
     if (historicalSource) {
       const backend = await this.ctx.remote.dshAcp.backendOf(ticket.sourceSessionId).catch(() => undefined)
       const bound =
@@ -444,6 +475,27 @@ export class CrossBackendCoordinator {
       // The removed source cannot be selected again through the Host catalog.
       // Its durable history stays guarded even if another plugin reuses the name.
       if (bound) ticket = { ...ticket, sourceSelection: undefined, sourceUnavailable: true }
+    }
+    const original = ticket.sourceSelection
+    if (original && this.ownsRoute(original.provider) && isAcpAgentManagedModel(original.model)) {
+      // Old histories can contain a route the picker no longer offers. Restore
+      // only the concrete choice confirmed by the original Agent binding.
+      const result = await this.ctx.remote.dshAcp.agentSessionSnapshot(ticket.sourceSessionId).catch(() => undefined)
+      if (!current() || observed.lastProjection !== projection) {
+        this.forget(ticket.key)
+        return
+      }
+      const snapshot = result?.ok ? result.value : undefined
+      const confirmed =
+        snapshot?.sessionId === ticket.sourceSessionId && snapshot.profileId === acpAgentIdFromRoute(original.provider)
+          ? snapshot.managedModel?.confirmed
+          : undefined
+      ticket = {
+        ...ticket,
+        sourceSelection: confirmed
+          ? { provider: original.provider, model: acpDeclaredModelRoute(confirmed) }
+          : undefined,
+      }
     }
     const source = ticket.sourceSelection
     observed.staging = true

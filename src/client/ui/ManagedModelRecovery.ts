@@ -9,13 +9,14 @@ import {
   type independentSessionNavigation,
   type IndependentSessionOutcome,
 } from '../coordinator/native-session-navigation.ts'
-import { agentControlMenuGroups, type AgentControlTranslate } from './agent-session-controls.ts'
+import { lastSuccessfulModelChoice, type AgentControlTranslate } from './agent-session-controls.ts'
 import type { SessionAccessSource } from './session-action-access.ts'
-import { ManagedModelCapacityDialog } from './ManagedModelCapacityDialog.ts'
+import { managedModelCapacityText, ManagedModelCapacityDialog } from './ManagedModelCapacityDialog.ts'
 import css from './AcpRecoveryDock.module.css'
 
 type Props = {
   sessionId: SessionId
+  target?: string | undefined
   remote: AcpRemoteLike
   streamFactory: RemoteStreamFactory
   t: AgentControlTranslate
@@ -29,6 +30,7 @@ type Props = {
 /** A possibly delivered message stays in its original chat. Neither action replays it. */
 export function ManagedModelRecovery({
   sessionId,
+  target,
   remote,
   streamFactory,
   t,
@@ -67,10 +69,20 @@ export function ManagedModelRecovery({
     }
   }, [remote, streamFactory, sessionId])
   const model = snapshot?.managedModel
-  if (!snapshot || snapshot.sessionId !== sessionId || !model?.recovery) return null
-  const previous = agentControlMenuGroups(snapshot, t)
-    .find((group) => group.kind === 'model')
-    ?.choices.find(({ write }) => write.kind === 'config' && write.value === model.lastSuccessfulModel)
+  if (!snapshot || snapshot.sessionId !== sessionId || !model) return null
+  // A named target comes from the native picker. Only the legacy route offers an ACP option write here.
+  if (target !== undefined) {
+    const risk = model.capacityRisks?.find(({ model }) => model === target)
+    return risk && !running
+      ? h(
+          'div',
+          { className: css.dock },
+          h('div', { className: css.surface, role: 'status' }, managedModelCapacityText(risk, t)),
+        )
+      : null
+  }
+  if (!model.recovery) return null
+  const previous = lastSuccessfulModelChoice(snapshot)
   const restore = previous && !previous.disabled && (!previous.current || model.recovery === 'unconfirmed') && writable
   const run = async (operation: (current: () => boolean) => Promise<void>): Promise<void> => {
     if (pending.current || running) return
@@ -95,7 +107,6 @@ export function ManagedModelRecovery({
     if (
       !previous ||
       !restore ||
-      previous.write.kind !== 'config' ||
       sessionAccessSource(sessionId, 'dshAcp/setAgentSessionOption')?.getSnapshot() !== true ||
       sessionAccessSource(sessionId, 'session/selectModel')?.getSnapshot() !== true
     )

@@ -18,7 +18,8 @@ import { currentModelContextSnapshots } from '../../domain/session/model-context
 import { appendPluginRecord } from '@deepseek-ai/dsh-session'
 import { unsentModelSwitchRecord } from '../../domain/session/unsent-model-switch.ts'
 import { readCommittedModelRetry } from './managed-model-resend.ts'
-import { permitsManagedModelScope } from './managed-model.ts'
+import { permitsManagedModelScope, permitsOrdinaryModelScope } from './managed-model.ts'
+import { acpModelSelection } from '../../contract/model-selection.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -111,11 +112,23 @@ export function acpSessionView(
       )
         appendPluginRecord(session, unsentModelSwitchRecord, ticket)
     },
-    managedModelRoute: (provider) => {
+    managedModelRoute: (provider, source) => {
       const agent = ctx.get('agents', false)?.get(session.id)
-      const route = agent?.model.current()
+      const route = source === 'committed' ? session.requestHeader()?.config : agent?.model.current()
       return (
         agent?.session === session && route?.provider === provider && permitsManagedModelScope(ctx, agent, route.model)
+      )
+    },
+    committedNamedModel: (provider) => {
+      const agent = ctx.get('agents', false)?.get(session.id)
+      const route = session.requestHeader()?.config
+      return (
+        agent?.session === session &&
+        session.header.origin !== 'subagent' &&
+        route?.provider === provider &&
+        acpModelSelection(route.model).kind === 'declared-model' &&
+        (permitsOrdinaryModelScope(ctx, agent) ||
+          ctx.get('agentPresets', false)?.composedPreset(agent.ctx) === 'acp-adapter')
       )
     },
     header: session.header,

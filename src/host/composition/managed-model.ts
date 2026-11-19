@@ -6,9 +6,10 @@ import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 
 import type { AcpAgentSessionSnapshotView } from '../../contract/remote.ts'
 import { acpModelConfigOption } from '../../contract/model-selection.ts'
+import { normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
 import type { AcpStubAgentConfig } from '../../domain/session/agent-config.ts'
 import { acpLaunchFingerprintsCompatible } from '../../domain/session/launch-fingerprint.ts'
-import { supportsAgentManagedModels } from '../../agents/compatibility.ts'
+import { sameSwitchableAgent, supportsAgentManagedModels } from '../../agents/compatibility.ts'
 import {
   modeIntentBindingKey,
   type AcpBindingData,
@@ -21,7 +22,11 @@ import type { AcpProfileRuntime } from './profile-adapter.ts'
 
 /** Current selection, session composition and main-conversation identity must all agree. */
 export function permitsManagedModelScope(ctx: Context, agent: Agent, model: string): boolean {
-  if (!isAcpAgentManagedModel(model) || agent.session.header.origin === 'subagent') return false
+  return isAcpAgentManagedModel(model) && permitsOrdinaryModelScope(ctx, agent)
+}
+
+export function permitsOrdinaryModelScope(ctx: Context, agent: Agent): boolean {
+  if (agent.session.header.origin === 'subagent') return false
   const presets = ctx.get('agentPresets', false)
   const preset = presets?.presetForSession(agent.session)
   return (
@@ -45,6 +50,7 @@ export async function managedModelSnapshot(
   profile: AcpStubAgentConfig | undefined,
   launchFingerprint: (profile: AcpStubAgentConfig) => Promise<AcpBindingData['launchFingerprint']>,
   localRecovery: AcpRecoveryState | undefined,
+  named = false,
 ): Promise<AcpAgentSessionSnapshotView> {
   const sessionId = snapshot.sessionId
   const lookup = await sidecar.readLatestBinding(sessionId as never)
@@ -52,9 +58,15 @@ export async function managedModelSnapshot(
   const binding = lookup.binding
   if (!profile || !acpLaunchFingerprintsCompatible(binding.launchFingerprint, await launchFingerprint(profile)))
     return snapshot
-  const intent = await sidecar.readManagedModelIntent(sessionId as never)
-  if (!intent || intent.bindingKey !== modeIntentBindingKey(binding)) return snapshot
-  const option = snapshot.configOptions?.find((item) => item.id === intent.optionId && item.type === 'select')
+  const intent = named ? undefined : await sidecar.readManagedModelIntent(sessionId as never)
+  if (!named && (!intent || intent.bindingKey !== modeIntentBindingKey(binding))) return snapshot
+  const option = snapshot.configOptions?.find(
+    (item) =>
+      item.type === 'select' &&
+      (named ? normalizeAcpConfigOptionKey(item.category ?? '') === 'model' : item.id === intent?.optionId),
+  )
+  const optionId = intent?.optionId ?? option?.id
+  if (!optionId) return snapshot
   const choices = new Set(
     option?.type === 'select'
       ? option.options.flatMap((item) => ('options' in item ? item.options.map((entry) => entry.value) : [item.value]))
@@ -63,15 +75,18 @@ export async function managedModelSnapshot(
   const feedback = await readManagedModelFeedback(sidecar, sessionId, binding, profile, choices)
   const { lastUsage: _lastUsage, possiblyDelivered, ...display } = feedback
   const recovery = localRecovery ?? (await sidecar.readRecoveryState(sessionId as never))
-  const confirmed = intent.confirmed && option?.currentValue === intent.target ? intent.target : null
+  const confirmed =
+    option?.type === 'select' && (named || (intent?.confirmed && option.currentValue === intent.target))
+      ? option.currentValue
+      : null
   return {
     ...snapshot,
     contextUsage: matchedManagedContextUsage(snapshot.contextUsage, confirmed, feedback),
     managedModel: {
-      optionId: intent.optionId,
+      optionId,
       confirmed,
       ...display,
-      ...(confirmed === null ? { requested: intent.target, recovery: 'unconfirmed' as const } : {}),
+      ...(confirmed === null && intent ? { requested: intent.target, recovery: 'unconfirmed' as const } : {}),
       ...(possiblyDelivered || recovery?.kind === 'outcome-unknown' ? { recovery: 'possibly-delivered' as const } : {}),
     },
   }
@@ -113,9 +128,7 @@ export async function verifyManagedDispatch({
     !bound ||
     current?.status !== 'ok' ||
     !selected?.currentValue ||
-    !supportsAgentManagedModels(runtime.agentInfo?.name, profile) ||
-    !supportsAgentManagedModels(bound.agent.name, profile) ||
-    (bound.agent.name === undefined && runtime.agentInfo?.name === 'OpenCode') ||
+    !sameSwitchableAgent(bound.agent.name, runtime.agentInfo?.name, profile) ||
     bound.agentSessionId !== runtime.acpSessionId ||
     modeIntentBindingKey(bound) !== modeIntentBindingKey(current.binding) ||
     !eligible()

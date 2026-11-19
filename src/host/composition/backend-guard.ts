@@ -11,15 +11,18 @@ import type { AcpSidecar, AcpBindingData, AcpBindingLookup } from '../../persist
 import { acpCanonicalHash16, modeIntentBindingKey } from '../../persistence/sidecar.ts'
 import { unsentModelSwitchRecord } from '../../domain/session/unsent-model-switch.ts'
 import { acpAgentIdFromRoute } from '../../domain/session/agent-config.ts'
-import { isAcpPresetModelSwitch, requiresAcpModelSwitchExit } from '../../contract/model-transition.ts'
+import { isAcpSessionModelSwitch, requiresAcpModelSwitchExit } from '../../contract/model-transition.ts'
 
 import { isAcpAgentManagedModel } from '../../contract/model-selection.ts'
 import { managedModelResendSource, readCommittedModelRetry } from './managed-model-resend.ts'
 import { permitsManagedModelScope, managedModelUnavailable } from './managed-model.ts'
+import { installNamedModelCompaction, type NamedModelSteps } from './named-model-compaction.ts'
 
 export interface AcpBackendGuardOptions {
   readonly sidecar: AcpSidecar
   readonly ownsProvider: (provider: string) => boolean
+  readonly canSwitchNamedModel?: (provider: string) => boolean
+  readonly namedSteps?: NamedModelSteps
   readonly confirmModelSwitch?: (
     profileId: string,
     sessionId: string,
@@ -27,6 +30,7 @@ export interface AcpBackendGuardOptions {
     binding: AcpBindingData,
     target: LlmCallConfig,
     signal: AbortSignal,
+    requireKnownAgent: boolean,
   ) => Promise<void>
 }
 
@@ -72,6 +76,10 @@ async function blockWithRecovery(
 /** Install the additive, scoped request guard without replacing DSH's loop. */
 export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOptions): void {
   ctx.inject(['sessionProjections'], (projectionCtx) => {
+    const namedSwitches =
+      options.canSwitchNamedModel &&
+      options.namedSteps &&
+      installNamedModelCompaction(projectionCtx, options.canSwitchNamedModel, options.namedSteps, options.ownsProvider)
     const claims = new WeakMap<
       AbortSignal,
       {
@@ -129,15 +137,20 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
       const stableManaged = managed && previous?.provider === resolved.provider && previous.model === resolved.model
       if (stableManaged || requiresAcpModelSwitchExit(previous, resolved, options.ownsProvider)) {
         const presets = projectionCtx.get('agentPresets', false)
+        const preset = presets?.presetForSession(session)
+        const ordinary = preset !== 'acp-adapter'
+        const canSwitchNamed =
+          options.canSwitchNamedModel?.(resolved.provider) === true && session.header.origin !== 'subagent'
         if (
           targetProfile === undefined ||
           options.confirmModelSwitch === undefined ||
           presets === undefined ||
           (!stableManaged &&
-            (!isAcpPresetModelSwitch(previous, resolved, presets.presetForSession(session)) ||
-              presets.composedPreset(payload.agent.ctx) !== 'acp-adapter' ||
-              presets.serviceFor(payload.agent, 'compaction') !== undefined ||
-              payload.agent.ctx.get('compaction', false) !== undefined))
+            (!isAcpSessionModelSwitch(previous, resolved, preset, canSwitchNamed) ||
+              presets.composedPreset(payload.agent.ctx) !== preset ||
+              (!ordinary &&
+                (presets.serviceFor(payload.agent, 'compaction') !== undefined ||
+                  payload.agent.ctx.get('compaction', false) !== undefined))))
         )
           throw transitionError(
             'ACP_MODEL_SWITCH_UNAVAILABLE',
@@ -160,17 +173,7 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
             'ACP_BACKEND_RECOVERY_REQUIRED',
             'Restore the original ACP session before switching models.',
           )
-        try {
-          await options.confirmModelSwitch(
-            targetProfile,
-            String(session.id),
-            session,
-            lookup.binding,
-            resolved,
-            payload.signal,
-          )
-          payload.signal.throwIfAborted()
-        } catch (error) {
+        const refused = () => {
           const claim = claims.get(payload.signal)
           if (
             claim?.turn === payload.turn &&
@@ -189,8 +192,35 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
               ...(claim.committed ? { committed: claim.committed } : {}),
               bindingKey: acpCanonicalHash16(modeIntentBindingKey(lookup.binding)),
             })
-          throw error
         }
+        const confirmModelSwitch = options.confirmModelSwitch
+        const confirm = async () => {
+          try {
+            await confirmModelSwitch(
+              targetProfile,
+              String(session.id),
+              session,
+              lookup.binding,
+              resolved,
+              payload.signal,
+              !stableManaged && ordinary,
+            )
+            payload.signal.throwIfAborted()
+          } catch (error) {
+            refused()
+            throw error
+          }
+        }
+        const admission = namedSwitches?.get(payload.signal)
+        if (admission?.agent === payload.agent && admission.turn === payload.turn && admission.step === payload.step)
+          admission.selection = { config: resolved, bindingKey: modeIntentBindingKey(lookup.binding), confirm, refused }
+        else if (!stableManaged && options.namedSteps && session.header.origin !== 'subagent') {
+          refused()
+          throw transitionError(
+            'ACP_MODEL_SWITCH_UNAVAILABLE',
+            'The original session did not admit the selected model.',
+          )
+        } else await confirm()
         return resolved
       }
       const previousProfile = acpAgentIdFromRoute(previous?.provider ?? '')

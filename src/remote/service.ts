@@ -256,6 +256,7 @@ export interface AcpProbeSnapshotLike {
 export interface AcpHealthRegistryLike {
   agents(): ReadonlyMap<string, AcpAgentConfig>
   readonly registeredProviders?: () => readonly string[]
+  readonly switchableProviders?: () => readonly string[]
   readonly registeredProviderGenerations?: () => Readonly<Record<string, string>>
   /** Resolve the registered profile adapter that owns this route's probe cache. */
   readonly probeCacheFor: (profileId: string) => AcpProbeCacheLike | undefined
@@ -1063,6 +1064,9 @@ export class AcpRemoteService extends TypertRemoteService {
     return {
       providers: [...(this.resolved.registry.registeredProviders?.() ?? [])].sort(),
       ...(generations === undefined ? {} : { generations }),
+      ...(this.resolved.registry.switchableProviders
+        ? { switchableProviders: this.resolved.registry.switchableProviders() }
+        : {}),
       historicalProviders: [...new Set(history?.filter((id) => acpAgentIdFromRoute(id) !== undefined))].sort(),
     }
   }

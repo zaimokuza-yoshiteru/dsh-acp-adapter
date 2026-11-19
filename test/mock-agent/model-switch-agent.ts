@@ -58,7 +58,7 @@ input.on('line', async (line) => {
   const state: State = JSON.parse(readFileSync(statePath(session), 'utf8'))
   switch (method) {
     case 'session/load':
-      if (fault === 'refuse-second-lease') {
+      if (fault === 'refuse-second-lease' || fault === 'reset-on-load') {
         state.model = 'a'
         save(session, state)
       }

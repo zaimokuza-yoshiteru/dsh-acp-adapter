@@ -9,7 +9,7 @@ export const ACP_MODEL_ROUTE_MAX = ACP_CONFIG_IDENTIFIER_MAX + DECLARED_PREFIX.l
 
 /** Host routing identity for using the Agent's current configuration, never an ACP model value. */
 export const ACP_CURRENT_CONFIG_MODEL_ID = `${ROUTE_PREFIX}current-config`
-/** Explicit opt-in for a main conversation whose model is selected on its ACP session. */
+/** Legacy routing identity retained for existing conversations and saved defaults. */
 export const ACP_AGENT_MANAGED_MODEL_ID = `${ROUTE_PREFIX}agent-managed`
 
 export type AcpModelSelection =

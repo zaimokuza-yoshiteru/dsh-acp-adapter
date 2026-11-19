@@ -68,7 +68,7 @@ Standard mode works with ACP Agents. Choose **Creator mode** to create plugins t
 
 Choose the optional **ACP** mode to let the Agent manage conversation context. This mode provides DSH tools and omits DSH plugin management, subagent, and compaction tools.
 
-**Switch models within a conversation.** When starting a CodeBuddy or OpenCode main chat in Standard, Creator, PTC, or Minimal mode, choose **Agent-managed model** in the model menu. Once connected, select the model name beside the composer to switch and continue the conversation. In dedicated **ACP** mode, use the native model picker. Other chats started with a named model can open a new chat in the same mode. The original chat keeps its history and draft.
+**Switch models within a conversation.** Choose a CodeBuddy or OpenCode model directly in the model menu. The adapter confirms the model with the Agent before sending. You can switch models in the same main conversation. Switching to another Agent or a native DSH model opens a separate chat in the same mode. Your history and draft stay in the original chat.
 
 ## Working in a session
 

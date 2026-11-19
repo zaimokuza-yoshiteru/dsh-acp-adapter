@@ -68,7 +68,7 @@ npx @deepseek-ai/dsh@0.2.2-rc.5 plugin --profile web add @zaimokuza/dsh-acp-adap
 
 如需让 Agent 管理对话上下文，可选择 **ACP** 模式。此模式提供 DSH 工具，不加载 DSH 的插件管理、子代理和压缩工具。
 
-**在会话中切换模型**。在标准、创造、PTC 或极简模式新建 CodeBuddy 或 OpenCode 主会话时，可在模型菜单选择 **由 Agent 管理模型**。连接后，点击输入区旁的模型名即可切换并继续原对话。专用 **ACP** 模式通过原生模型选择器切换。其他按具体模型创建的会话可以按原模式另开，历史和草稿留在原会话。
+**在会话中切换模型**。在模型菜单里直接选择 CodeBuddy 或 OpenCode 的具体模型。插件会在发送前向 Agent 核对所选模型。同一个 Agent 的主会话可以换模型接着聊；改用另一个 Agent 或 DSH 原生模型时，会按原模式另开会话，历史和草稿留在原处。
 
 ## 使用会话
 

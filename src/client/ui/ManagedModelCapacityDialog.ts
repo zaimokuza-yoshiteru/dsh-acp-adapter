@@ -1,10 +1,19 @@
 import { createElement as h, type ReactNode } from 'react'
 import { Button, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { AgentControlChoice, AgentControlTranslate } from './agent-session-controls.ts'
+import type { AgentControlTranslate } from './agent-session-controls.ts'
 import css from './AcpAgentControl.module.css'
 
 /** Both supported locales use comma-grouped integers for token counts. */
 const tokenCount = new Intl.NumberFormat('en')
+
+type CapacityRisk = { readonly lastUsed: number; readonly targetSize: number }
+
+export function managedModelCapacityText(risk: CapacityRisk, t: AgentControlTranslate): string {
+  return t('managedModelWindowDetail', {
+    used: tokenCount.format(risk.lastUsed),
+    size: tokenCount.format(risk.targetSize),
+  })
+}
 
 export function ManagedModelCapacityDialog({
   model,
@@ -14,7 +23,7 @@ export function ManagedModelCapacityDialog({
   confirm,
 }: {
   model: string
-  risk: NonNullable<AgentControlChoice['capacityRisk']>
+  risk: CapacityRisk
   t: AgentControlTranslate
   cancel: () => void
   confirm: () => void
@@ -22,10 +31,7 @@ export function ManagedModelCapacityDialog({
   return h(Modal, {
     open: true,
     title: t('managedModelSmallWindow', { model }),
-    description: t('managedModelWindowDetail', {
-      used: tokenCount.format(risk.lastUsed),
-      size: tokenCount.format(risk.targetSize),
-    }),
+    description: managedModelCapacityText(risk, t),
     closeLabel: t('cancel'),
     onClose: cancel,
     backdropBlur: false,

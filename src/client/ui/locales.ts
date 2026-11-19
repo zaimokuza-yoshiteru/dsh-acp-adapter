@@ -22,7 +22,6 @@ const zh = {
   nativeForkRetryCleanup: '重试清理恢复记录',
   nativeForkRecoveryStorageFailed: '无法更新此页签的恢复记录，尚未执行下一步。请检查浏览器存储后重试。',
   ...acpRouteNames.zh,
-  managedModelUnconfirmed: '模型待确认',
   managedModelSmallWindow: '切换到 {model}？',
   managedModelWindowDetail: '上次请求用了 {used} token，目标模型的窗口为 {size} token。这段对话可能放不下。',
   managedModelSwitchAnyway: '仍然切换',
@@ -270,7 +269,6 @@ const zh = {
   agentControlUnavailable: 'Agent 控制当前不可用',
   agentControlRetry: '点击重新连接 Agent 选项',
   agentControlTooltip: 'Agent 会话设置',
-  agentModelSettings: '模型与会话设置',
   agentContextUsage: '上下文：{used} / {size}（{percent}%）',
   agentSessionCost: '会话累计费用（Agent 上报）：{amount} {currency}',
   agentStateStale: '上次 Agent 上报',
@@ -468,7 +466,7 @@ const zh = {
     '原 Agent 已移除。你可以用所选模型开始独立会话，也可以取消并保留原对话。恢复原 Agent 后即可尝试续聊。',
   crossBackendFromTo: '将从 {source} 切换到 {target}。',
   crossBackendExistingHistory:
-    '当前对话已有历史，但没有记录可恢复的原模型。继续会在新 DSH 会话中运行智能体并保留原对话；取消后当前会话仍选中该智能体，若要继续原对话，请重新选择模型。',
+    '无法确认原模型。新会话将使用所选模型，历史和草稿留在这里。取消后，若要继续原对话，请先重新选择模型。',
 } as const
 
 /** Locale key union the section's `t` seat is typed against. */
@@ -490,7 +488,6 @@ const en: Record<AcpLocaleKey, string> = {
   nativeForkRecoveryStorageFailed:
     'This tab’s recovery record could not be updated. No next operation was started. Check browser storage and retry.',
   ...acpRouteNames.en,
-  managedModelUnconfirmed: 'Model unconfirmed',
   managedModelSmallWindow: 'Switch to {model}?',
   managedModelWindowDetail:
     'The last request used {used} tokens. This model has a {size}-token window and may not fit the conversation.',
@@ -761,7 +758,6 @@ const en: Record<AcpLocaleKey, string> = {
   agentControlUnavailable: 'Agent controls are unavailable',
   agentControlRetry: 'Click to reconnect Agent controls',
   agentControlTooltip: 'Agent session settings',
-  agentModelSettings: 'Model and session settings',
   agentContextUsage: 'Context: {used} / {size} ({percent}%)',
   agentSessionCost: 'Agent-reported cumulative session cost: {amount} {currency}',
   agentStateStale: 'Last Agent report',
@@ -968,7 +964,7 @@ const en: Record<AcpLocaleKey, string> = {
     'The original Agent was removed. Start an independent session with the selected model, or cancel to keep this conversation. Restore the original Agent to try continuing here.',
   crossBackendFromTo: 'Switch from {source} to {target}.',
   crossBackendExistingHistory:
-    'This session has conversation history but no recorded model to restore. Continuing runs the Agent in a new DSH session and keeps the original conversation. Cancel leaves this Agent selected in the current session; choose another model to continue that conversation.',
+    'The previous model could not be confirmed. A new session will use the selected model. Your history and draft stay here. If you cancel, select a model before continuing this conversation.',
 }
 
 export { en, zh }

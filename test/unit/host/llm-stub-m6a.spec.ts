@@ -4,16 +4,13 @@ import type * as acp from '@agentclientprotocol/sdk'
 import {
   boundedProbeDiagnostic,
   probeModels,
+  supportsNamedModelSwitch,
   reasoningInfoFromConfigOptions,
 } from '../../../src/host/composition/llm-stub.ts'
 import type { LlmModelInfo } from '@deepseek-ai/dsh-llm'
 import { supportsAgentManagedModels } from '../../../src/agents/compatibility.ts'
 import { acpConfigOptionsSnapshot } from '../../../src/domain/session/acp-config-options.ts'
-import {
-  ACP_AGENT_MANAGED_MODEL_ID,
-  ACP_CURRENT_CONFIG_MODEL_ID,
-  acpDeclaredModelRoute,
-} from '../../../src/contract/model-selection.ts'
+import { ACP_CURRENT_CONFIG_MODEL_ID, acpDeclaredModelRoute } from '../../../src/contract/model-selection.ts'
 
 const effortOption = (
   category: string | undefined = 'thought_level',
@@ -190,23 +187,26 @@ describe('ACP model display labels', () => {
     ['OpenCode', false, 'one', false],
     ['OpenCode', true, 'missing', false],
   ] as const)(
-    'offers an explicit managed route only for a restorable, verified peer (%s, %s, %s)',
-    (name, loadSession, currentValue, offered) => {
-      const models = probeModels(
-        'acp-test',
-        [
-          {
-            id: 'engine',
-            name: 'Model',
-            type: 'select',
-            category: 'model',
-            currentValue,
-            options: [{ name: 'One', value: 'one' }],
-          },
-        ],
-        { agentInfo: { name, version: '1' }, agentCapabilities: { loadSession } },
-      )
-      expect(models.map((entry) => entry.id)).toEqual(offered ? ['one', ACP_AGENT_MANAGED_MODEL_ID] : ['one'])
+    'exposes only concrete model choices and checks same-session capability separately (%s, %s, %s)',
+    (name, loadSession, currentValue, switchable) => {
+      const configOptions: acp.SessionConfigOption[] = [
+        {
+          id: 'engine',
+          name: 'Model',
+          type: 'select',
+          category: 'model',
+          currentValue,
+          options: [{ name: 'One', value: 'one' }],
+        },
+      ]
+      expect(probeModels('acp-test', configOptions).map((model) => model.id)).toEqual(['one'])
+      expect(
+        supportsNamedModelSwitch({
+          configOptions,
+          agentInfo: { name, version: '1' },
+          agentCapabilities: { loadSession },
+        }),
+      ).toBe(switchable)
     },
   )
 
