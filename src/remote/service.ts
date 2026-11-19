@@ -57,7 +57,6 @@ import { registryVersionOf } from '../domain/session/registry-versions.ts'
 import type { AcpAgentConfig } from '../domain/session/agent-config.ts'
 import type { AcpErrorCategory } from '../protocol/v1/types.ts'
 import { deriveAcpAgentState } from '../domain/session/agent-state.ts'
-import type { AcpAgentStateProbeView } from '../domain/session/agent-state.ts'
 import { acpCapabilityMatrix } from '../domain/policy/capability-matrix.ts'
 import type { AcpSessionContinuityState } from '../runtime/session/continuity.ts'
 import { ACP_SUBPROCESS_UNAVAILABLE_MESSAGE } from '../runtime/process/subprocess.ts'
@@ -100,8 +99,6 @@ import type {
   AcpOwnedRoutesView,
   AcpProjectedSubagentsView,
 } from '../contract/remote.ts'
-
-export type { AcpAuditSummaryCode } from '../contract/remote.ts'
 
 /** `<command> --version` 尽力而为的短超时（毫秒）。 */
 const DEFAULT_VERSION_PROBE_TIMEOUT_MS = 3_000
@@ -245,11 +242,6 @@ export interface AcpProbeSnapshotLike {
         readonly capabilityHash?: string | undefined
         /** initialize 协商的协议版本（边界；缺席时 health 行归 null）。 */
         readonly protocolVersion?: number | undefined
-        /**
-         * configOptions 是否含 `category=model` 项（ 五态目录口径；
-         * 旧条目/测试夹具缺席时按「无 model 类 configOption」计，与引入前逐字节一致）。
-         */
-        readonly hasModelConfigOption?: boolean | undefined
       }
     | {
         readonly kind: 'error'
@@ -1167,7 +1159,7 @@ export class AcpRemoteService extends TypertRemoteService {
             executable: false,
             version: null,
             probe: { status: 'never', at: null },
-            state: deriveAcpAgentState({ hostCompatible, configValid: true, probe: undefined }),
+            state: deriveAcpAgentState(hostCompatible, undefined),
           }
         }
         if (recheck && (targetAgentId === undefined || targetAgentId === id)) {
@@ -1206,12 +1198,7 @@ export class AcpRemoteService extends TypertRemoteService {
           executable,
           version,
           probe: probeRow(matchingSnapshot, referenceVersion, this.resolved.imageInputAvailable),
-          // registry 的 agents map 经 settings schema 校验（非法值根本写不进来），configValid 恒 true
-          state: deriveAcpAgentState({
-            hostCompatible,
-            configValid: true,
-            probe: matchingSnapshot === undefined ? undefined : probeStateView(matchingSnapshot),
-          }),
+          state: deriveAcpAgentState(hostCompatible, matchingSnapshot?.result),
         }
       }),
     )
@@ -1571,20 +1558,6 @@ function validateActivityReadRequest(limit: number, filter: AcpActivityFilterVie
     if (value !== undefined && (typeof value !== 'string' || value.length === 0 || value.length > 256))
       throw badRequest('ACP activity filter value is invalid')
   }
-}
-
-/** 当前配置最后一次 probe → 五态派生的最小视图（ok 留目录事实，error 留分流 kind）。 */
-function probeStateView(snapshot: AcpProbeSnapshotLike): AcpAgentStateProbeView {
-  const { result } = snapshot
-  return result.kind === 'ok'
-    ? {
-        result: {
-          kind: 'ok',
-          modelCount: result.models.filter((model) => acpModelSelection(model.id).kind === 'declared-model').length,
-          hasModelConfigOption: result.hasModelConfigOption === true,
-        },
-      }
-    : { result: { kind: 'error', failureKind: result.failureKind } }
 }
 
 /** cleanup 三态词表收窄（结构面按 string 进；词表外值诚实归 null，不猜测）。 */

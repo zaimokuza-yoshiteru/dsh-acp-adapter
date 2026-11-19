@@ -9,7 +9,6 @@ const SLACK = /\bxox[bparsce]-[A-Za-z0-9-]{16,}\b/g
 const GOOGLE_API_KEY = /\bAIza[0-9A-Za-z_-]{35}\b/g
 const GOOGLE_CLIENT_SECRET = /\bGOCSPX-[A-Za-z0-9_-]{20,}\b/g
 const PEM_PRIVATE_KEY = /-----BEGIN ((?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY)-----[\s\S]*?-----END \1-----/g
-const ASSIGNMENT = /\b([A-Za-z][A-Za-z0-9_-]*)\b(["']?\s*[=:]\s*["']?)([^\s"',}\{\[]+)/gi
 const NUMERIC_USAGE_FIELDS = new Set([
   'inputtokens',
   'outputtokens',
@@ -18,6 +17,11 @@ const NUMERIC_USAGE_FIELDS = new Set([
   'cachewritetokens',
 ])
 const SENSITIVE_FIELD = /(?:token|secret|password|passwd|authorization|api[_-]?key|cookie|credential|private[_-]?key)/i
+// A preceding label such as "Agent error:" must not consume the following key/value pair.
+const SENSITIVE_ASSIGNMENT = new RegExp(
+  String.raw`\b((?=[a-z])[a-z0-9_-]*${SENSITIVE_FIELD.source}[a-z0-9_-]*)\b(["']?\s*[=:]\s*["']?)([^\s"',}{\[]+)`,
+  'gi',
+)
 
 /** These exact structured counters are public usage metadata, not credentials. */
 function isSafeNumericUsageField(key: string, value: unknown): boolean {
@@ -47,8 +51,8 @@ export function redactSecretText(value: string): string {
     .replace(PEM_PRIVATE_KEY, '<redacted-private-key>')
     .replace(BEARER, 'Bearer <redacted>')
     .replace(BASIC, 'Basic <redacted>')
-    .replace(ASSIGNMENT, (match, key: string, separator: string, secret: string) => {
+    .replace(SENSITIVE_ASSIGNMENT, (match, key: string, separator: string, secret: string) => {
       if (NUMERIC_USAGE_FIELDS.has(key.toLowerCase()) && /^\d+$/.test(secret)) return match
-      return SENSITIVE_FIELD.test(key) ? `${key}${separator}<redacted>` : match
+      return `${key}${separator}<redacted>`
     })
 }

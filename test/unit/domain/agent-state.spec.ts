@@ -1,90 +1,28 @@
-// agent-state.spec.ts — 随附测试：deriveAcpAgentState 五态状态机全分支矩阵。
-//
-// 被测模块（src/domain/session/agent-state.ts）是零 import 叶子，直接 vitest 可测。
-// 配置归属判定在调用方完成；本测试钉纯函数本身（判定顺序即词表优先级，
-// 逐分支钉死）与模型目录运行时缓存 acpProbeFresh 的 TTL/键边界。
-
 import { describe, expect, it } from 'vitest'
-import { deriveAcpAgentState, type AcpAgentStateInput } from '../../../src/domain/session/agent-state.ts'
+import { deriveAcpAgentState } from '../../../src/domain/session/agent-state.ts'
 import {
   ACP_PROBE_CACHE_ERROR_TTL_MS,
   ACP_PROBE_CACHE_OK_TTL_MS,
   acpProbeFresh,
 } from '../../../src/domain/session/agent-config.ts'
 
-/** 全绿基准输入（逐项覆盖出分支）。 */
-const BASE: AcpAgentStateInput = {
-  hostCompatible: true,
-  configValid: true,
-  probe: { result: { kind: 'ok', modelCount: 3, hasModelConfigOption: true } },
-}
-
-describe('deriveAcpAgentState（五态）', () => {
-  it('宿主不兼容 → incompatible（其余事实一律不消费）', () => {
-    expect(deriveAcpAgentState({ ...BASE, hostCompatible: false })).toBe('incompatible')
-    // 优先级钉：即使 probe 报错/配置无效，结构门先裁决
-    expect(
-      deriveAcpAgentState({
-        hostCompatible: false,
-        configValid: false,
-        probe: { result: { kind: 'error', failureKind: 'crash' } },
-      }),
-    ).toBe('incompatible')
+describe('deriveAcpAgentState', () => {
+  it('reports an incompatible Host before considering the probe', () => {
+    expect(deriveAcpAgentState(false, { kind: 'ok' })).toBe('incompatible')
+    expect(deriveAcpAgentState(false, { kind: 'error', failureKind: 'crash' })).toBe('incompatible')
   })
 
-  it('配置无效 → unavailable（无独立 invalid 桶；配置问题与 probe 故障同桶）', () => {
-    expect(deriveAcpAgentState({ ...BASE, configValid: false })).toBe('unavailable')
-    // 即使 probe 新鲜 ok，配置无效仍不可用
-    expect(
-      deriveAcpAgentState({
-        ...BASE,
-        configValid: false,
-        probe: { result: { kind: 'ok', modelCount: 5, hasModelConfigOption: true } },
-      }),
-    ).toBe('unavailable')
+  it('distinguishes an unverified configuration from a successful probe', () => {
+    expect(deriveAcpAgentState(true, undefined)).toBe('saved-unverified')
+    expect(deriveAcpAgentState(true, { kind: 'ok' })).toBe('ready')
   })
 
-  it('当前配置无 probe（undefined）→ saved-unverified（与声明与否无关）', () => {
-    expect(deriveAcpAgentState({ ...BASE, probe: undefined })).toBe('saved-unverified')
-  })
-
-  it('probe error + auth_required → auth-required（与声明、模型数无关）', () => {
-    const probe = { result: { kind: 'error', failureKind: 'auth_required' } } as const
-    expect(deriveAcpAgentState({ ...BASE, probe })).toBe('auth-required')
-  })
-
-  it('probe error + 其余 kind → unavailable（spawn-failure/resource-exhausted/timeout/crash/protocol-error 同桶）', () => {
-    for (const failureKind of ['spawn-failure', 'resource-exhausted', 'timeout', 'crash', 'protocol-error']) {
-      expect(deriveAcpAgentState({ ...BASE, probe: { result: { kind: 'error', failureKind } } }), failureKind).toBe(
-        'unavailable',
-      )
-    }
-  })
-
-  it('probe ok 只证明协议运行时可用，模型目录不能证明登录状态', () => {
-    expect(deriveAcpAgentState(BASE)).toBe('ready')
-    expect(
-      deriveAcpAgentState({ ...BASE, probe: { result: { kind: 'ok', modelCount: 1, hasModelConfigOption: false } } }),
-    ).toBe('ready')
-    expect(
-      deriveAcpAgentState({ ...BASE, probe: { result: { kind: 'ok', modelCount: 0, hasModelConfigOption: false } } }),
-    ).toBe('ready')
-  })
-
-  it(' 目录口径：probe ok 零 models 但 configOptions 含 category=model 项 → ready（generic 形态：目录只经 configOptions 提供）', () => {
-    // generic 形态（、实际 ACP 行为）：legacy models 恒空，目录在 configOptions——
-    // 旧口径会把 declaresAuthRefs 的 generic 误判成 auth-required
-    expect(
-      deriveAcpAgentState({ ...BASE, probe: { result: { kind: 'ok', modelCount: 0, hasModelConfigOption: true } } }),
-    ).toBe('ready')
-    // 无目录同样不能反向证明未登录；只有显式 auth_required 才进入登录阻断态。
-    expect(
-      deriveAcpAgentState({ ...BASE, probe: { result: { kind: 'ok', modelCount: 0, hasModelConfigOption: false } } }),
-    ).toBe('ready')
+  it('requires an explicit authentication failure to prompt for login', () => {
+    expect(deriveAcpAgentState(true, { kind: 'error', failureKind: 'auth_required' })).toBe('auth-required')
+    for (const failureKind of ['spawn-failure', 'resource-exhausted', 'timeout', 'crash', 'protocol-error'])
+      expect(deriveAcpAgentState(true, { kind: 'error', failureKind }), failureKind).toBe('unavailable')
   })
 })
-
-// ----------：probe 缓存新鲜度（key 相等 + TTL；全仓唯一判定落点） ----------
 
 describe('acpProbeFresh（新鲜度集中判定）', () => {
   const OK_ENTRY = { key: 'k1', at: 1_000_000, result: { kind: 'ok' as const } }

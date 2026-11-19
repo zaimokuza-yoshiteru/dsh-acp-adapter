@@ -120,7 +120,10 @@ import {
   acpModelConfigOption,
   acpModelSelection,
   isAcpAgentManagedModel,
+  isAcpCurrentConfigModel,
 } from '../../contract/model-selection.ts'
+import { acpRouteNames } from '../../contract/model-labels.ts'
+import { redactSecretText } from '../../contract/redaction.ts'
 import { hostLocale } from './host-locale.ts'
 import { AcpClientError } from '../../protocol/v1/errors.ts'
 import { AcpHostContinuity, ensureHostContinuity } from './host-continuity.ts'
@@ -777,10 +780,14 @@ export class AcpProfileAdapter extends LlmAdapter {
     // An empty success hides the route and can remain cached after recovery.
     const models = await generation.probe.listModels(provider)
     if (
-      models.some((model) => isAcpAgentManagedModel(model.id)) &&
+      models.some((model) => isAcpAgentManagedModel(model.id) || isAcpCurrentConfigModel(model.id)) &&
       hostLocale(this.hostRoot)?.toLowerCase().startsWith('zh')
     )
-      return models.map((model) => (isAcpAgentManagedModel(model.id) ? { ...model, name: '由 Agent 管理模型' } : model))
+      return models.map((model) => {
+        if (isAcpAgentManagedModel(model.id)) return { ...model, name: acpRouteNames.zh.agentManagedModel }
+        if (isAcpCurrentConfigModel(model.id)) return { ...model, name: acpRouteNames.zh.agentCurrentConfiguration }
+        return model
+      })
     return models
   }
 
@@ -899,8 +906,6 @@ export class AcpProfileAdapter extends LlmAdapter {
     const reasoning = isAcpAgentManagedModel(model)
       ? undefined
       : reasoningInfoFromConfigOptions(
-          this.profileId,
-          generation.config,
           generation.probe.configOptionsForModel === undefined
             ? generation.probe.configOptions?.(provider)
             : generation.probe.configOptionsForModel(provider, model),
@@ -3851,7 +3856,18 @@ export class AcpProfileAdapter extends LlmAdapter {
                 }
               }
               retainHealthyRuntimeAfterNotDispatched = true
-              failure = LlmError.fromFailure({ message: error.message, code: error.code }, { cause: error })
+              // DSH shows the message verbatim. The typed cause and the ACP trace retain the RPC details.
+              let message = redactSecretText(error.cause.message.trim())
+              if (!message || error.kind === 'resource-exhausted') {
+                const zh = hostLocale(self.hostRoot)?.toLowerCase().startsWith('zh')
+                if (error.kind === 'resource-exhausted') {
+                  const limit = zh ? 'Agent 的资源或配额已耗尽。' : 'The Agent reached a resource or usage limit.'
+                  message = message ? `${limit} ${message}` : limit
+                } else {
+                  message = zh ? 'Agent 无法完成本次请求。' : 'The Agent could not complete this request.'
+                }
+              }
+              failure = LlmError.fromFailure({ message, code: error.code }, { cause: error })
             } catch (settlementError) {
               retainHealthyRuntimeAfterNotDispatched = true
               failure = LlmError.fromFailure(

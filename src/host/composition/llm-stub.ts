@@ -5,7 +5,7 @@
 /// <reference types="node" />
 
 import os from 'node:os'
-import { disambiguateModelLabels as disambiguateProbeModels } from '../../contract/model-labels.ts'
+import { acpRouteNames, disambiguateModelLabels } from '../../contract/model-labels.ts'
 import { LlmAdapter, LlmError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions,
@@ -135,12 +135,6 @@ export interface AcpProbeCacheEntry {
         readonly capabilityHash: string
         /** initialize 协商的 ACP 协议版本（readiness；health 端点透传）。 */
         readonly protocolVersion: number | undefined
-        /**
-         * configOptions 是否含 `category=model` 项（ 五态目录口径的输入事实）：
-         * generic 的模型目录只经 configOptions 提供（实际 ACP 行为 legacy `models` 为空），
-         * 此项在场即视为有目录。与 models 同为 probe 结果——进条目不进缓存键。
-         */
-        readonly hasModelConfigOption: boolean
         /** Bounded session-scoped configuration snapshot used for exact model resolution. */
         readonly configOptions: readonly acp.SessionConfigOption[] | undefined
         /** Model-scoped snapshots for Agents whose reasoning
@@ -164,8 +158,6 @@ type AcpVerifiedModelCatalog = Pick<
 
 /** Resolve ACP thought-level metadata into DSH's adapter-owned reasoning shape. */
 export function reasoningInfoFromConfigOptions(
-  _profileId: string,
-  _config: AcpStubAgentConfig,
   configOptions: readonly acp.SessionConfigOption[] | undefined,
 ): LlmModelReasoningInfo | undefined {
   const option = configOptions?.find((candidate) => {
@@ -200,8 +192,6 @@ export function reasoningInfoFromConfigOptions(
   }
 }
 
-export { disambiguateProbeModels }
-
 export function probeModels(
   provider: string,
   configOptions: AcpProbeResult['configOptions'],
@@ -228,15 +218,16 @@ export function probeModels(
       })
     }
   }
-  if (models.length === 0) return [{ provider, id: ACP_CURRENT_CONFIG_MODEL_ID, name: 'Agent current configuration' }]
-  const declared = disambiguateProbeModels(models)
+  if (models.length === 0)
+    return [{ provider, id: ACP_CURRENT_CONFIG_MODEL_ID, name: acpRouteNames.en.agentCurrentConfiguration }]
+  const declared = disambiguateModelLabels(models)
   if (
     peer?.agentCapabilities?.loadSession === true &&
     supportsAgentManagedModels(peer.agentInfo?.name, profile) &&
     option !== undefined &&
     seen.has(option.currentValue)
   )
-    declared.push({ provider, id: ACP_AGENT_MANAGED_MODEL_ID, name: 'Agent-managed model' })
+    declared.push({ provider, id: ACP_AGENT_MANAGED_MODEL_ID, name: acpRouteNames.en.agentManagedModel })
   return declared
 }
 
@@ -505,8 +496,6 @@ export class AcpStubAdapter extends LlmAdapter {
           capabilityHash: acpCanonicalHash16(probe.agentCapabilities ?? null),
           // readiness：协商的协议版本随缓存保留（health 行展示）
           protocolVersion: probe.protocolVersion,
-          // configOptions-only 目录事实（Agents 形态），供五态派生放行。
-          hasModelConfigOption: acpModelConfigOption(probe.configOptions) !== undefined,
           configOptions: acpConfigOptionsSnapshot(probe.configOptions),
           ...(probe.modelConfigOptions === undefined
             ? {}

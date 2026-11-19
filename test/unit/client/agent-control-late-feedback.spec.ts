@@ -176,6 +176,7 @@ function setup() {
   const remote = {
     setAgentSessionOption: vi.fn((_sessionId: string, _request: unknown) => pending),
     setToolApprovalPolicy: vi.fn((_sessionId: string, _request: unknown) => pending),
+    agentSessionSnapshot: vi.fn(async (sessionId: string) => ({ ok: true, value: agentSnapshot(sessionId) })),
   }
   const feedback = new AcpUiFeedback()
   const report = vi.spyOn(feedback, 'report')
@@ -254,6 +255,19 @@ it('waits for an explicit choice before switching to a smaller model and checks 
   h.revoke()
   approved()
   expect(h.remote.setAgentSessionOption).not.toHaveBeenCalled()
+})
+
+it('reports a refused managed switch when there is no inline recovery', async () => {
+  runtime.managed = true
+  const fixture = setup()
+  const menu = render(fixture.props)
+  const small = menu.props.groups.flatMap((group) => group.choices).find((entry) => entry.label === 'Small')!
+  menu.props.onSelect(small)
+  const confirmation = render(fixture.props).props as Menu['props'] & { confirmation: { props: { confirm(): void } } }
+  confirmation.confirmation.props.confirm()
+  fixture.resolve({ ok: false, error: { message: 'Access denied' } })
+  await vi.waitFor(() => expect(fixture.report).toHaveBeenCalledWith('session-option-failed', undefined))
+  expect(fixture.remote.agentSessionSnapshot).toHaveBeenCalledWith('session-source')
 })
 
 it('keeps the full source identity and limits wrapping to source-session failure toasts', () => {

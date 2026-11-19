@@ -16,7 +16,7 @@ async function fitsViewport(locator: Locator) {
 }
 
 it.each(['en', 'zh'] as const)(
-  'keeps model choices and a rejected switch actionable at 390px in %s',
+  'keeps model choices usable at 390px and explains a failed desktop reply in %s',
   async (locale) => {
     const host = await launchAdapterWorld()
     let browser: TestBrowser | undefined
@@ -82,6 +82,21 @@ it.each(['en', 'zh'] as const)(
         .split('\n')
         .map((line) => JSON.parse(line) as { method: string })
       expect(trace.filter((e) => e.method === 'session/prompt')).toHaveLength(1)
+
+      await page.setViewportSize({ width: 1280, height: 900 })
+      writeFileSync(join(directory, 'fault'), 'prompt-error')
+      await writeComposerDraft(page, composer, 'SWITCH_TEST_SECOND')
+      const failedTurn = host.whenTurnSettled()
+      await page.getByRole('button', { name: locale === 'zh' ? '发送消息' : 'Send message', exact: true }).click()
+      await failedTurn
+      await page.getByText('The selected model rejected the submitted prompt', { exact: true }).waitFor()
+      await recovery.getByText(copy.managedModelIncomplete, { exact: true }).waitFor()
+      expect(await page.getByText(copy.actionSaveFailed.replace('{reference}', ''), { exact: true }).count()).toBe(0)
+      const screenshots = process.env.DSH_E2E_EVIDENCE_DIR
+      if (screenshots) {
+        mkdirSync(screenshots, { recursive: true })
+        await page.screenshot({ path: join(screenshots, `recovery-desktop-${locale}.png`) })
+      }
     } finally {
       await browser?.close()
       await host.close()

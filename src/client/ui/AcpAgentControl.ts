@@ -228,8 +228,7 @@ export function AcpAgentControl({
   ]
   const footer = [...(snapshot === null ? [] : agentControlFooter(snapshot, t))]
   // A read-only explanation must not create an empty menu before controls arrive.
-  if (groups.length === 0 && footer.length === 0 && snapshot?.note == null && error === null && policyError === null)
-    return null
+  if (groups.length === 0 && footer.length === 0 && error === null && policyError === null) return null
   if (snapshot !== null && (running || (!visibleSnapshot?.editable && snapshot.freshness === 'live')))
     footer.push({ type: 'label', id: 'read-only', text: t(running ? 'agentControlRunning' : 'agentControlReadOnly') })
   if (error !== null) footer.push({ type: 'label', id: 'error', text: localizedDiagnostic(t, error.key, error.detail) })
@@ -269,12 +268,8 @@ export function AcpAgentControl({
         })
       return
     }
-    const dormantModel =
-      snapshot?.freshness === 'stale' &&
-      item.write.kind === 'config' &&
-      snapshot.managedModel?.optionId === item.write.id &&
-      !readFailed &&
-      !running
+    const managedModel = item.write.kind === 'config' && snapshot?.managedModel?.optionId === item.write.id
+    const dormantModel = snapshot?.freshness === 'stale' && managedModel && !readFailed && !running
     if (
       snapshot === null ||
       visibleSnapshot === null ||
@@ -287,18 +282,28 @@ export function AcpAgentControl({
       return
     }
     setError(null)
+    const reportFailure = (detail: string): void => {
+      feedback.report('session-option-failed', current === epoch.current ? undefined : sourceSession)
+      if (current === epoch.current) setError({ key: 'actionSaveFailed', detail })
+    }
     void remote
       .setAgentSessionOption(sessionId, item.write)
-      .then((result) => {
+      .then(async (result) => {
         if (result.ok) return
-        feedback.report('session-option-failed', current === epoch.current ? undefined : sourceSession)
-        if (current === epoch.current) setError({ key: 'actionSaveFailed', detail: result.error.message })
+        if (managedModel && current === epoch.current) {
+          // The recovery dock already explains this switch and offers the next action.
+          const state = await remote.agentSessionSnapshot(sessionId).catch(() => null)
+          if (
+            current === epoch.current &&
+            state?.ok &&
+            state.value.sessionId === sessionId &&
+            state.value.managedModel?.recovery
+          )
+            return
+        }
+        reportFailure(result.error.message)
       })
-      .catch((reason: unknown) => {
-        feedback.report('session-option-failed', current === epoch.current ? undefined : sourceSession)
-        if (current === epoch.current)
-          setError({ key: 'actionSaveFailed', detail: reason instanceof Error ? reason.message : String(reason) })
-      })
+      .catch((reason: unknown) => reportFailure(reason instanceof Error ? reason.message : String(reason)))
       .finally(() => {
         if (current === epoch.current) setBusy(false)
       })

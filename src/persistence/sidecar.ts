@@ -1,111 +1,9 @@
 /**
- * Sidecar 旁路存储（sidecar 持久化规则，持久化原则）：审批审计与 ACP binding
- * **不落 session log**，落 harness-home 下的插件私有存储（root =
- * `<dshHome>/dsh-acp`）。
- *
- * 为什么不在 session log：live-event ordering evidence 表明（
- * orchestrator 复跑复证）——插件直写 `ctx.sessionPersistence.append` 会在 live
- * session 上每条 marker 静默吞掉其后一条 live 事件（重启才显形）；`Session.append`
- * 又无 ignorable 写入面。在宿主提供可忽略审计事件入口前，sidecar 是审计真源。
- *
- * ## node:sqlite（DatabaseSync）+ WAL 生产化重写
- *
- * 存储引擎从「每 sessionId 一个 JSONL 文件 + tmp/fsync/rename 原子发布」重写为
- * 单库文件 `<root>/sidecar.sqlite`（`journal_mode=WAL`、`synchronous=NORMAL`、
- * `busy_timeout=5000`）。选型定稿理由：Node ≥22.13 `node:sqlite` 免 flag
- * （engines `^22.19||>=24` 全覆盖），零新依赖；WAL 自带崩溃恢复（进程级 kill -9
- * 不丢已 commit 事务）；追加是 O(1) 页写入而非 JSONL 的全文重写。`synchronous=
- * NORMAL` 下 commit 不逐条 fsync（无 fsync 风暴），进程崩溃不丢已提交记录；整库
- * checkpoint 在 {@link AcpSidecar.flush}/{@link AcpSidecar.dispose} 周期性执行。
- *
- * **不自动迁移旧 JSONL**：SQLite 重写发生在 1.0 前的 RC 阶段，旧
- * `<sessionId>.jsonl` 从未成为稳定存储契约。启动时若发现旧文件，仅 warn 并忽略，
- * 不读、不迁、不删；对应旧会话因缺少 binding 进入 reconciliation-required
- * fail-safe（`binding-missing`）。需要保留旧 Agent 上下文时，应先用生成该 JSONL
- * 的旧插件版本处理；否则由用户显式放弃旧 ACP 上下文。当前 SQLite 数据库保持兼容。
- * `.corrupt-*` 坏行隔离概念随之删除——SQLite 要么库损坏要么不损坏，不存在行级
- * 隔离；库无法打开或校验失败时 open 即 fail loud，读路径不吞错继续。
- *
- * `platform` option 与 ./platform.ts（rename/重试画像）随本重写一并移除——SQLite
- * 的 commit/WAL 恢复取代了 tmp+rename 发布面；这是上述 1.0 前 RC 的存储破坏性变更。
- *
- * ## 表结构
- *
- * - `audit` 追加表（全部 kind 的完整历史）：record_id（per-session 唯一）、
- *   dsh_session_id、seq（per-session 单调，1 起）、time、kind、acp_provider_id?、
- *   acp_session_id?、dedupe_key（仅 permission decided 有值，`(dsh_session_id,
- *   dedupe_key)` 部分唯一索引）、payload（canonical JSON 文本，键序稳定）。
- * - `bindings` 最新索引表：dsh_session_id 主键 upsert（payload + envelope 分量），
- *   {@link AcpSidecar.readLatestBinding}/{@link AcpSidecar.listBindings} 只查此表。
- * - `option_snapshots` 冷启动 last-known 配置快照表：每会话
- *   至多一行（dsh_session_id 主键 upsert），payload 为
- *   {@link AcpOptionsSnapshotRecord}——标准化且有界（`_meta`/未知键剥离，
- *   字段/值数/总字节硬上限见 `ACP_SNAPSHOT_*` 常量）；取代 binding 曾携带的
- *   一次性无界 `configSnapshot`（该字段已删除，单一事实副本只在此表）。
- *   活体权威快照到达即刷新（建立/set_config_option/set_mode/turn 收束变更）；
- *   写失败仅 warn（last-known 是展示/参考面，不是提交面）。
- * - `member_model_selections` teammate 模型选择表：每个 DSH session 至多一行，
- *   记录最近选择及其 binding key；binding 变化由调用方决定是否重新解释，sidecar
- *   不主动清除该配置。
- * - `activity_journal` 外部 Agent 活动表：按 DSH session 隔离、以 activity_id
- *   append-only revision，activity_seq 只在首次出现时分配，revision_seq 为每次
- *   mutation 的连续游标；它是机器可读的执行活动面，和面向人的 audit envelope
- *   分开。活动行可独立分页，并作为会话轨迹与外部子代理投影的持久事实源。
- *
- * **recordId 派生**（钉版规则不变）：permission **decided** →
- * `decided:<agentSessionId>:<toolCallId>:<requestId>`（requestId 为
- * `dsh-acp-permission-<randomUUID >`，跨进程/跨重启唯一）；其余 →
- * `h:<sha256-16>`（canonical `[kind,time,payload]` 的键序无关稳定哈希），同会话内
- * 撞名追加 `-2/-3…` 序号。
- *
- * **decided 去重**（幂等语义不变）：待写 decided 的去重键已存在 → 跳过写入并
- * 正常 resolve（`BEGIN IMMEDIATE` + 精确 dedupe 冲突处理；先 SELECT 预检避免
- * 无谓消耗 seq）。只对 decided 去重：同 requestId 的 asked 重放是真实事件，审计如实各落
- * 一条；键缺任一分量的 decided 不参与去重（宁多落一条也不丢审计）。
- *
- * **binding 语义门槛（不变）** envelope 落库 ≠ binding 可用。
- * {@link AcpSidecar.readLatestBinding} 对 bindings 表最新 payload 做全字段语义校验
- * （{@link AcpBindingData} 全部必填字段）；不通过判 `{status:'outdated'}`（调用方
- * 映射 'binding-outdated'，绝不回退更早的 binding——索引表只有最新一条）。
- * binding 指纹的扩展分量一律 optional：
- * 缺席（旧版本写出的 binding）不判 outdated，由 profile-adapter.ts 的指纹 canonical 哈希
- * 预检以既有 'profile-changed' 阻断；字段在场时这里只做形态校验。
- *
- * ## 有界审计队列（有界审计队列）
- *
- * 同步 durable 路径（append 落库 commit 后才 resolve）：`binding`（recordBinding
- * fail-closed：binding 先于 prompt）与 `permission`（审批桥 fail-closed：append
- * reject → cancelled，见 src/domain/policy/permissions.ts）。其余 kind
- * （reconciliation/degradation/replay-assessment）进**有界
- * 内存队列**（上限 {@link ACP_SIDECAR_AUDIT_QUEUE_LIMIT}，默认 1024；满 → 丢弃
- * 新记录并 warn 计数，绝不阻塞 turn），microtask 批量事务落库；
- * {@link AcpSidecar.flush} 落齐全部排队记录（生产接线：AcpAgent turn 收束与
- * dispose 前调用）。读路径（list/readLatestBinding/listBindings）先
- * 落齐队列再查库——append → list 的可见性顺序与 JSONL 时代一致。队列是内存面：
- * 进程崩溃丢失未 flush 的非审批审计（可接受，设计既定）；binding/permission 不走
- * 队列，无此窗口。
- *
- * ## 权限位与生命周期
- *
- * 目录 `0700`；`sidecar.sqlite` 及 `-wal`/`-shm` `0600`（打开后显式 chmod 兜底——
- * SQLite 自建的 wal/shm 不吃 umask 之外的约束，flush/checkpoint 后复 chmod）。
- *
- * 宿主仍无插件可消费的会话删除钩子；sidecar 行的生命周期
- * 因此与 harness-home 一致。ACP 审计不随 DSH 官方 `/export`（Alpha 仍无
- * ignorable 事件 seam，DSH 自定义审计 seam 缺失）。
- *
- * stateRoot 来源：dsh 没有 per-profile 插件目录，惯例是 harness-home 全局
- * （settings-file、sessions 同在 `resolveDshHome()` 下，dev/prod 隔离靠
- * `DSH_HOME`）。app-boot `boot()` 在挂载插件树之前 `ctx.provide('dshHomePath',
- * dshHomePath)`（app-boot/src/index.ts:770），故 {@link installAcpSidecar} 用
- * host composition 的 widen-accessor 模式读该 slot；slot 缺席
- * （裸 Context 单测）返回 `undefined` 并 warn—— sidecar 是 ACP 会话的
- * 强制前提：缺席时 ACP 会话一律拒绝启动（fail loud，见
- * provider runtime），不再「退化为纯窥测」。
- *
- * @module @zaimokuza/dsh-acp-adapter/persistence/sidecar
+ * ACP audit records, session bindings and recovery state live in `<DSH_HOME>/dsh-acp/sidecar.sqlite`.
+ * Binding and permission writes commit before their callers continue. Lower-priority audit records
+ * use a bounded queue that is drained on reads and shutdown. Legacy JSONL files are left in place
+ * and do not establish a binding for a new Agent session.
  */
-
 /// <reference types="node" />
 
 import {
@@ -125,25 +23,11 @@ import type {
   AcpTerminalAuditData,
   AcpSessionForkAuditData,
 } from '../domain/policy/events.ts'
-import { ACP_SNAPSHOT_TOTAL_BYTES, acpOptionsSnapshotOf, toOptionsSnapshotRecord } from './options-snapshot.ts'
+import { ACP_SNAPSHOT_TOTAL_BYTES, toOptionsSnapshotRecord, type AcpOptionsSnapshotRecord } from './options-snapshot.ts'
 import { ACP_CONFIG_IDENTIFIER_MAX } from '../contract/config-options.ts'
 import { isAcpModelRouteWithinBounds } from '../contract/model-selection.ts'
-import type { AcpOptionsSnapshotRecord } from './options-snapshot.ts'
 import { isSensitiveActivityField, redactSecretText } from '../domain/observability/redaction.ts'
 import { nativeForkSourceSchema, type AcpNativeForkSource } from './native-fork-source.ts'
-
-// Compatibility facade: snapshot callers keep importing from sidecar while the
-// bounded codec stays an independent persistence concern.
-export {
-  ACP_SNAPSHOT_FIELD_MAX,
-  ACP_SNAPSHOT_MODE_DESCRIPTION_MAX,
-  ACP_SNAPSHOT_OPTION_LIMIT,
-  ACP_SNAPSHOT_TOTAL_BYTES,
-  ACP_SNAPSHOT_VALUES_LIMIT,
-  acpOptionsSnapshotOf,
-  toOptionsSnapshotRecord,
-} from './options-snapshot.ts'
-export type { AcpOptionsSnapshotRecord, AcpOptionsSnapshotOption } from './options-snapshot.ts'
 
 /** sidecar 记录格式版本（envelope 的 `schemaVersion`）。 */
 export const ACP_SIDECAR_SCHEMA_VERSION = 2 as const
@@ -711,7 +595,7 @@ export interface AcpSidecar {
   auditHead(sessionId: SessionId): Promise<number>
   /**
    * 写入（upsert）该会话的 last-known option 快照（输入须先经
-   * {@link acpOptionsSnapshotOf} 标准化）。同步 durable；写失败 reject
+   * `acpOptionsSnapshotOf` 标准化）。同步 durable；写失败 reject
    * （调用方按「last-known 展示面」纪律降级为 warn，不翻转主链路）。
    */
   writeOptionSnapshot(sessionId: SessionId, snapshot: AcpOptionsSnapshotRecord): Promise<void>

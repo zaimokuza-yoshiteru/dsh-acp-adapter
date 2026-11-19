@@ -41,13 +41,17 @@ it.each([
     page.on('pageerror', (error) => errors.push(error.message))
     await page.goto(host.authenticatedUrl)
     await connectFreshWorkspace(page, host.workspaceCwd)
-    await page.getByRole('button', { name: /^Select model/ }).click()
-    await page.getByRole('menuitem', { name: /^Model/ }).click()
-    await page.getByRole('menuitemradio', { name: 'Agent current configuration', exact: true }).click()
+    const chinese = name === 'no-options'
+    if (chinese) await host.ctx.settings.replace('locale', { preference: 'zh' })
+    await page.getByRole('button', { name: chinese ? /^选择模型/ : /^Select model/ }).click()
+    await page.getByRole('menuitem', { name: chinese ? /^模型/ : /^Model/ }).click()
+    await page
+      .getByRole('menuitemradio', { name: chinese ? 'Agent 当前配置' : 'Agent current configuration', exact: true })
+      .click()
     const send = async (message: string) => {
       const settled = host.whenTurnSettled(30_000)
       await writeComposerDraft(page, page.locator('[data-composer-input]').first(), message)
-      await page.getByRole('button', { name: 'Send message', exact: true }).click()
+      await page.getByRole('button', { name: chinese ? '发送消息' : 'Send message', exact: true }).click()
       return settled
     }
     const sessionId = await send(`E2E_GENERIC_${name}`)

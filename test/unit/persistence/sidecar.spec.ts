@@ -1,54 +1,32 @@
-// sidecar.spec.ts — SQLite WAL 重写后的随附测试（src/persistence/sidecar.ts）。
-//
-// 旧 JSONL 用例 → 新实现语义映射（门槛不降）：
-// - v2 envelope 磁盘格式逐字段钉版 → list 逐行重建 v2 envelope
-//   （schemaVersion/recordId/seq/time/kind/dshSessionId/acp*/payload），list 统一
-//   读取模型不变；
-// - binding 语义门槛（ok/outdated/undefined 三态、outdated 绝不回退）→ bindings
-//   索引表 payload 全字段校验，畸形 binding 经 append（写路径不做语义校验，与 JSONL
-//   时代一致）落索引后判 outdated；
-// - 坏行容错（跳过 + warn）→ 行级校验容错：经第二个连接直插 SQL 的非法 audit 行
-//   （unknown kind / 坏 JSON / seq 0 / 非对象 payload / 空 recordId）跳过 + warn；
-//   JSONL 的「撕裂尾」「.corrupt-* 隔离」概念整体删除（SQLite 要么库损坏要么不损坏）；
-// - 库级损坏（sidecar.sqlite 被覆写为垃圾）→ open 即 fail loud（warn + reject）；
-// - Windows rename 占用重试（platform hooks）→ 随 src/persistence/platform.ts 整体
-//   删除（tmp+rename 发布面被 SQLite commit/WAL 恢复取代）；
-// - 原子写无 .tmp 残留 → 目录只出现 sidecar.sqlite 及其 -wal/-shm；
-// - 并发 append 串行化 seq 独占、文件名安全边界（TypeError）、installAcpSidecar slot
-//   选址——语义原样保留。
-//
-// 新增覆盖：权限位（目录 0700 / 库与 wal/shm 0600）、decided dedupe_key 幂等、
-// 有界审计队列（满丢弃 + warn + flush 落齐；binding/permission/filesystem 同步 durable 不走
-// 队列）、万条 append 快速回归、
-// 旧 JSONL 残留一律忽略（不读不迁不删，warn 一次）。
-
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { Worker } from 'node:worker_threads'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { modeIntentBindingKey } from '../../../src/persistence/sidecar.ts'
 import { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { ACP_CONFIG_IDENTIFIER_MAX } from '../../../src/contract/config-options.ts'
 import {
-  ACP_SIDECAR_AUDIT_QUEUE_LIMIT,
-  ACP_SIDECAR_DB_FILENAME,
-  ACP_SIDECAR_SCHEMA_VERSION,
   ACP_SNAPSHOT_FIELD_MAX,
   ACP_SNAPSHOT_MODE_DESCRIPTION_MAX,
   ACP_SNAPSHOT_OPTION_LIMIT,
   ACP_SNAPSHOT_TOTAL_BYTES,
   ACP_SNAPSHOT_VALUES_LIMIT,
   acpOptionsSnapshotOf,
+  toOptionsSnapshotRecord,
+  type AcpOptionsSnapshotRecord,
+} from '../../../src/persistence/options-snapshot.ts'
+import {
+  ACP_SIDECAR_AUDIT_QUEUE_LIMIT,
+  ACP_SIDECAR_DB_FILENAME,
+  ACP_SIDECAR_SCHEMA_VERSION,
   createAcpSidecar,
   installAcpSidecar,
-  toOptionsSnapshotRecord,
+  modeIntentBindingKey,
   type AcpBindingData,
   type AcpBindingRecord,
   type AcpActivityRecord,
-  type AcpOptionsSnapshotRecord,
   type AcpRecoveryState,
   type AcpSidecar,
 } from '../../../src/persistence/sidecar.ts'

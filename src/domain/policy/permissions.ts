@@ -343,6 +343,12 @@ function optionLabels(options: readonly acp.PermissionOption[], copy: Permission
   return new Set(labels).size === labels.length ? labels : labels.map((label, index) => `${index + 1}. ${label}`)
 }
 
+/** Preserve custom Agent wording. Standard button labels only need their one-time scope. */
+function binaryChoiceLine(scope: string, option: acp.PermissionOption): string {
+  const name = visibleCommand(option.name)
+  return name === scope || scope.startsWith(name + ' ') ? scope : `${scope}: ${name}`
+}
+
 /** The native binary card must not discard an offered decision or authorization scope. */
 function binaryApprovalOptions(options: readonly acp.PermissionOption[]):
   | {
@@ -515,8 +521,8 @@ export function createAcpNativePermissionHandler(
           reason: [
             nativePermissionReason(params.toolCall, copy),
             ...(humanPolicyReason === undefined ? [] : [humanPolicyReason]),
-            `${copy.allowOnce}: ${visibleCommand(binary.allow.name)}`,
-            ...(binary.reject === undefined ? [] : [`${copy.rejectOnce}: ${visibleCommand(binary.reject.name)}`]),
+            binaryChoiceLine(copy.allowOnce, binary.allow),
+            ...(binary.reject === undefined ? [] : [binaryChoiceLine(copy.rejectOnce, binary.reject)]),
           ].join('\n'),
           ...(signal === undefined ? {} : { signal }),
         })

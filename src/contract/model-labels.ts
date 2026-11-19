@@ -1,3 +1,8 @@
+export const acpRouteNames = {
+  en: { agentCurrentConfiguration: 'Agent current configuration', agentManagedModel: 'Agent-managed model' },
+  zh: { agentCurrentConfiguration: 'Agent 当前配置', agentManagedModel: '由 Agent 管理模型' },
+} as const
+
 /** Apply display-only disambiguation after flattening ACP model options.
  * Identity (`id`) and the option value are never changed and names from
  * different profiles are intentionally not compared. */

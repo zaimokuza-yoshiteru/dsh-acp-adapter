@@ -1,11 +1,12 @@
 import type { AcpAgentConfig } from '../../src/contract/agent-config.ts'
+import type { AcpRemoteService } from '../../src/remote/service.ts'
 import registrySnapshot from '../../assets/registry/registry.json' with { type: 'json' }
 import { required } from './required.ts'
 import type { TestBrowser } from './browser.ts'
 import { launchBrowser, newEnglishPage } from './browser.ts'
 import { join } from 'node:path'
-import { mkdirSync } from 'node:fs'
-import { it, expect } from 'vitest'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { it, expect, vi } from 'vitest'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
 import { expectCatalogMenuFits } from './catalog-menu.helpers.ts'
@@ -30,6 +31,9 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     await page.goto(host.authenticatedUrl)
     await connectFreshWorkspace(page, host.workspaceCwd)
     let detail = await openAcpPluginDetail(page)
+    const health = vi.spyOn(host.ctx.get('dshAcp') as AcpRemoteService, 'health')
+    // The Host also discovers models in the background. Count only checks requested by the panel.
+    const checkedAgents = () => health.mock.calls.flatMap(([request]) => (request?.recheck ? [request.agentId] : []))
     await detail.getByRole('heading', { name: 'Get started', exact: true }).waitFor()
     expect(await detail.getByRole('heading', { name: '开始使用', exact: true }).count()).toBe(0)
     const addButton = detail.getByRole('button', { name: 'Add Agent', exact: true })
@@ -168,8 +172,13 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     await detail.getByRole('button', { name: 'Save', exact: true }).click()
     await detail.getByText('Executable must not be empty.', { exact: true }).waitFor()
     expect(await detail.getByLabel('Environment', { exact: true }).count()).toBe(0)
-    await detail.getByText('2 environment variables configured.', { exact: true }).waitFor()
-    await detail.getByRole('button', { name: 'Advanced options', exact: true }).click()
+    const command = detail.getByLabel('Executable', { exact: true })
+    expect(await command.evaluate((field) => field === document.activeElement)).toBe(true)
+    expect(await command.getAttribute('aria-describedby')).toBe(
+      await detail.getByText('Executable must not be empty.', { exact: true }).getAttribute('id'),
+    )
+    await detail.getByRole('button', { name: 'Environment variables (2)', exact: true }).waitFor()
+    await detail.getByRole('button', { name: /^Environment variables(?: \(\d+\))?$/ }).click()
     expect(await detail.getByText('DSH plugin tools', { exact: true }).count()).toBe(0)
     expect(await detail.getByLabel('Environment', { exact: true }).inputValue()).toBe(
       'VT_ACP_ENABLED=1\nVT_ACP_ZED_ENABLED=1',
@@ -180,14 +189,18 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     await detail.getByRole('button', { name: 'Cancel', exact: true }).click()
     await select(/^fast-agent ·/i)
     expect(await detail.getByLabel('Arguments', { exact: true }).inputValue()).toBe('-x')
-    await detail.getByRole('button', { name: 'Advanced options', exact: true }).click()
+    await detail.getByRole('button', { name: /^Environment variables(?: \(\d+\))?$/ }).click()
     expect(await detail.getByLabel('Environment', { exact: true }).inputValue()).toBe('FAST_AGENT_MODEL=codexplan')
     await detail.getByLabel('ID', { exact: true }).fill('my-fast')
     await detail.getByLabel('Executable', { exact: true }).fill(process.execPath)
     await detail.getByLabel('Arguments', { exact: true }).fill(join(root, 'test/mock-agent/mock-agent.ts'))
-    await detail.getByLabel('Environment', { exact: true }).fill('FAST_AGENT_MODEL=my-choice\nMOCK_SCENARIO=regression')
+    await detail
+      .getByLabel('Environment', { exact: true })
+      .fill(`HOME=${host.workspaceCwd}\nFAST_AGENT_MODEL=my-choice\nMOCK_SCENARIO=regression`)
     await detail.getByRole('button', { name: 'Save', exact: true }).click()
     await page.getByRole('alert').filter({ hasText: 'Saved' }).waitFor()
+    await detail.locator('[data-dsh-acp-agent="my-fast"]').getByText('Check passed', { exact: true }).waitFor()
+    expect(checkedAgents()).toEqual(['my-fast'])
     const saved = (
       host.ctx.settings.describe().find((row) => row.ns === 'dsh-acp-adapter')?.value as {
         agents: Record<string, AcpAgentConfig>
@@ -198,7 +211,7 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     expect(saved.env.FAST_AGENT_MODEL).toBe('my-choice')
     await detail.getByRole('button', { name: 'Edit', exact: true }).click()
     expect(await detail.getByLabel('Environment', { exact: true }).count()).toBe(0)
-    await detail.getByRole('button', { name: 'Advanced options', exact: true }).click()
+    await detail.getByRole('button', { name: /^Environment variables(?: \(\d+\))?$/ }).click()
     expect(await detail.getByLabel('Environment', { exact: true }).inputValue()).toContain('FAST_AGENT_MODEL=my-choice')
     expect(await detail.getByLabel('Arguments', { exact: true }).inputValue()).toBe(
       join(root, 'test/mock-agent/mock-agent.ts'),
@@ -230,11 +243,34 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     await detail.getByText(/请在运行 Agent 的主机安装对应平台的程序/).waitFor()
     expect(await detail.getByLabel('登录指引', { exact: true }).count()).toBe(0)
     expect(await detail.getByLabel('环境变量', { exact: true }).count()).toBe(0)
-    await detail.getByRole('button', { name: '高级选项', exact: true }).click()
+    await detail.getByRole('button', { name: /^环境变量(?:（\d+）)?$/ }).click()
     expect(await detail.getByText('DSH 插件工具', { exact: true }).count()).toBe(0)
     expect(await detail.getByLabel('环境变量', { exact: true }).inputValue()).toContain('VT_ACP_ENABLED=1')
     await page.screenshot({ path: join(root, '.local/registry-ui/manual-zh.png'), fullPage: true })
     await detail.getByRole('button', { name: '取消', exact: true }).click()
+    const authFile = join(host.workspaceCwd, 'manual-login-state')
+    writeFileSync(authFile, 'signed-out')
+    await detail.getByRole('button', { name: '添加 Agent', exact: true }).click()
+    await page.getByRole('menuitem', { name: '手动添加', exact: true }).click()
+    await detail.getByLabel('ID', { exact: true }).fill('manual-agent')
+    await detail.getByLabel('显示名称', { exact: true }).fill('Manual Agent')
+    await detail.getByLabel('可执行命令', { exact: true }).fill(process.execPath)
+    await detail.getByLabel('启动参数', { exact: true }).fill(join(root, 'test/mock-agent/probe-refresh-agent.ts'))
+    await detail.getByRole('button', { name: '环境变量', exact: true }).click()
+    await detail
+      .getByLabel('环境变量', { exact: true })
+      .fill(
+        `HOME=${host.workspaceCwd}\nMOCK_PROBE_AUTH_FILE=${authFile}\nMOCK_PROBE_LOG_FILE=${join(host.workspaceCwd, 'manual-probe.jsonl')}`,
+      )
+    await detail.getByRole('button', { name: '保存', exact: true }).click()
+    const manual = detail.locator('[data-dsh-acp-agent="manual-agent"]')
+    await manual.getByText('上次检查未通过', { exact: true }).waitFor()
+    await manual.getByRole('alert').filter({ hasText: 'Agent 尚未登录' }).waitFor()
+    expect(checkedAgents()).toEqual(['my-fast', 'manual-agent'])
+    writeFileSync(authFile, 'authenticated')
+    await manual.getByRole('button', { name: '重新检查', exact: true }).click()
+    await manual.getByText('检查通过', { exact: true }).waitFor()
+    expect(checkedAgents()).toEqual(['my-fast', 'manual-agent', 'manual-agent'])
     await backToPluginList(detail, 'zh')
     const currentSettings = await openNativeSettings(page, 'zh')
     await currentSettings.getByRole('button', { name: '通用设置', exact: true }).click()

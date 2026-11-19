@@ -30,8 +30,6 @@ import {
 import registrySnapshot from '../../../assets/registry/registry.json' with { type: 'json' }
 import { ACP_CATALOG_ENTRIES, catalogEntryOf } from '../../../src/client/data/catalog.ts'
 
-// ---------- 夹具 ----------
-
 const devinConfig: AcpAgentConfig = {
   name: 'Devin',
   command: 'devin',
@@ -77,7 +75,7 @@ const okMatrix = [
   },
 ]
 
-const okRow: AcpProviderHealth = {
+const okRow = {
   id: 'devin',
   name: 'Devin',
   command: 'devin',
@@ -99,7 +97,7 @@ const okRow: AcpProviderHealth = {
     versionCompatibility: 'current',
     matrix: okMatrix,
   },
-}
+} satisfies AcpProviderHealth
 
 const neverRow: AcpProviderHealth = {
   id: 'foo',
@@ -143,15 +141,12 @@ function validDraft(overrides: Partial<AgentDraft> = {}): AgentDraft {
   }
 }
 
-// ---------- 常量 ----------
-
-describe('常量：与宿主侧契约逐字对齐', () => {
-  it('命名空间 / 失败分类', () => {
+describe('settings identifiers and catalog defaults', () => {
+  it('uses the registered settings namespace', () => {
     expect(ACP_SETTINGS_NS).toBe('dsh-acp-adapter')
   })
 
   it('ACP_AGENT_ID_PATTERN：小写字母开头 + 小写字母/数字/连字符', () => {
-    expect(ACP_AGENT_ID_PATTERN.source).toBe('^[a-z][a-z0-9-]*$')
     for (const ok of ['a', 'devin', 'a1', 'a-b', 'z-9-x']) {
       expect(ACP_AGENT_ID_PATTERN.test(ok), ok).toBe(true)
     }
@@ -161,7 +156,6 @@ describe('常量：与宿主侧契约逐字对齐', () => {
   })
 
   it('ACP_ENV_KEY_PATTERN 是 POSIX 标识符字母表', () => {
-    expect(ACP_ENV_KEY_PATTERN.source).toBe('^[A-Za-z_][A-Za-z0-9_]*$')
     for (const ok of ['A', '_', '_1', 'DEEPSEEK_API_KEY', 'a9_Z']) {
       expect(ACP_ENV_KEY_PATTERN.test(ok), ok).toBe(true)
     }
@@ -170,32 +164,7 @@ describe('常量：与宿主侧契约逐字对齐', () => {
     }
   })
 
-  it('catalog installation defaults retain login guidance and explicit runtime binding', () => {
-    const devin = catalogEntryOf('devin')
-    expect(devin).toEqual({
-      id: 'devin',
-      name: 'Devin',
-      version: devin?.version,
-      installHint: devin?.installHint,
-      env: {},
-      requiresCommand: false,
-      verification: 'adapter-tested',
-      loginHint: 'devin auth login',
-      command: 'devin',
-      args: ['acp'],
-      runtime: 'devin',
-    })
-    expect(ACP_AGENT_ID_PATTERN.test(devin?.id ?? '')).toBe(true)
-    const draft = draftFromCatalogEntry('devin')
-    expect(draft).toBeDefined()
-    expect(validateAgentDraft(draft as AgentDraft, {}, undefined).config).toEqual({
-      ...devinConfig,
-      runtime: 'devin',
-      catalogId: 'devin',
-    })
-  })
-
-  it('ACP_CATALOG_ENTRIES 钉版：已验证的六条排前，其余按 registry 顺序', () => {
+  it('lists verified Agents first and builds valid drafts from the bundled registry', () => {
     expect(ACP_CATALOG_ENTRIES.slice(0, 6).map((entry) => entry.id)).toEqual([
       'devin',
       'codebuddy-code',
@@ -206,14 +175,11 @@ describe('常量：与宿主侧契约逐字对齐', () => {
     ])
     expect(ACP_CATALOG_ENTRIES.slice(0, 6).every((entry) => entry.verification === 'adapter-tested')).toBe(true)
     expect(ACP_CATALOG_ENTRIES.slice(6).every((entry) => entry.verification === 'unverified')).toBe(true)
-    expect(new Set(ACP_CATALOG_ENTRIES.map((entry) => entry.id))).toEqual(
-      new Set(
-        registrySnapshot.agents
-          .filter((agent) => agent.id !== 'kimi' && agent.id !== 'kimi-code')
-          .map((agent) => agent.id),
-      ),
-    )
-    // 条目 id 即 profile id 预填值，均合法
+    const testedIds = ACP_CATALOG_ENTRIES.slice(0, 6).map((entry) => entry.id)
+    const otherIds = registrySnapshot.agents
+      .map((agent) => agent.id)
+      .filter((id) => id !== 'kimi' && id !== 'kimi-code' && !testedIds.includes(id))
+    expect(ACP_CATALOG_ENTRIES.slice(6).map((entry) => entry.id)).toEqual(otherIds)
     for (const entry of ACP_CATALOG_ENTRIES) {
       expect(ACP_AGENT_ID_PATTERN.test(entry.id), entry.id).toBe(true)
       const draft = draftFromCatalogEntry(entry.id)
@@ -258,42 +224,17 @@ describe('常量：与宿主侧契约逐字对齐', () => {
     })
   })
 
-  it('claude-acp 条目逐字段钉版：runtime=claude、不假设推理提供方（无 env 预填面）', () => {
-    expect(catalogEntryOf('claude-acp')).toMatchObject({
-      id: 'claude-acp',
-      name: 'Claude Agent',
-      command: 'claude-agent-acp',
-      args: [],
-      runtime: 'claude',
-    })
-  })
-
-  it('codex-acp 条目逐字段钉版（与 host 侧真源对齐）：runtime=codex', () => {
-    expect(catalogEntryOf('codex-acp')).toMatchObject({
-      id: 'codex-acp',
-      name: 'Codex',
-      command: 'codex-acp',
-      args: [],
-      runtime: 'codex',
-    })
-  })
-
   it('round-trips a retired stored binding without silently turning it into generic ACP', () => {
     const stored: AcpAgentConfig = { name: 'Retired', command: 'old-cli', args: [], env: {}, runtime: 'kimi' }
     const draft = draftFromAgent('retired', stored)
     expect(validateAgentDraft(draft, { retired: stored }, 'retired').config).toEqual(stored)
   })
 
-  it('excludes both retired Kimi catalog identities from entries and new drafts', () => {
-    expect(catalogEntryOf('kimi')).toBeUndefined()
-    expect(catalogEntryOf('kimi-code')).toBeUndefined()
-    expect(draftFromCatalogEntry('kimi')).toBeUndefined()
-    expect(draftFromCatalogEntry('kimi-code')).toBeUndefined()
+  it.each(['kimi', 'kimi-code', 'no-such-entry'])('does not create a draft for %s', (id) => {
+    expect(draftFromCatalogEntry(id)).toBeUndefined()
   })
 
-  it('catalog 预填纪律钉：全部条目的 command/args 无 shell 元字符（spawn 姿态写入闸口径），不含疑似 secret 值', () => {
-    // Catalog presets use bare PATH executable names; user-entered paths may contain spaces.
-    // 纯 PATH 可执行名（无空白/管道/重定向/引号），绝不 npx -y 下载式形态。
+  it('uses bare catalog commands and keeps Anthropic credential names out of launch arguments', () => {
     const forbidden = /[\s|&;<>()$`"'\\]/
     for (const entry of ACP_CATALOG_ENTRIES) {
       expect(forbidden.test(entry.command), `${entry.id}: ${entry.command}`).toBe(false)
@@ -303,8 +244,6 @@ describe('常量：与宿主侧契约逐字对齐', () => {
     }
   })
 })
-
-// ---------- args 文本 ----------
 
 describe('parseArgsText / formatArgsText', () => {
   it('逐行 trim、空行丢弃、行内空白保留', () => {
@@ -326,8 +265,6 @@ describe('parseArgsText / formatArgsText', () => {
     expect(formatArgsText(parseArgsText('  acp \n\n --verbose '))).toBe('acp\n--verbose')
   })
 })
-
-// ---------- env 文本 ----------
 
 describe('parseEnvText / formatEnvText', () => {
   it('逐行 KEY=VALUE：首个 = 切分、key trim、行 trim 后值原样、空行忽略', () => {
@@ -380,8 +317,6 @@ describe('parseEnvText / formatEnvText', () => {
     expect(parseEnvText(formatEnvText(env))).toEqual({ ok: true, env })
   })
 })
-
-// ---------- 草稿校验 ----------
 
 describe('validateAgentDraft', () => {
   it('全合法 → 仅出 config：name/command/loginHint 保留，args/env 解析', () => {
@@ -536,8 +471,6 @@ describe('validateAgentDraft', () => {
   })
 })
 
-// ---------- 草稿种子 ----------
-
 describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', () => {
   it('preserves a saved Claude command, arguments and environment instead of reseeding catalog defaults', () => {
     const config: AcpAgentConfig = {
@@ -571,75 +504,37 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
     expect(emptyDraft()).toEqual({ id: '', name: '', command: '', argsText: '', envText: '', loginHint: '' })
   })
 
-  it('draftFromCatalogEntry 按条目 id 播种：内置 runtime 预设绑定各回其编辑态', () => {
-    expect(draftFromCatalogEntry('devin')).toEqual({
-      id: 'devin',
-      catalogId: 'devin',
-      name: 'Devin',
-      command: 'devin',
-      argsText: 'acp',
-      envText: '',
-      loginHint: 'devin auth login',
-      runtime: 'devin',
-    })
-    expect(validateAgentDraft(draftFromCatalogEntry('devin') as AgentDraft, {}, undefined).config).toEqual({
-      ...devinConfig,
-      runtime: 'devin',
-      catalogId: 'devin',
-    })
-
-    // claude-acp 通用预设：env 空（不假设推理提供方）
-    const claudeDraft = draftFromCatalogEntry('claude-acp')
-    expect(claudeDraft).toMatchObject({
-      id: 'claude-acp',
-      name: 'Claude Agent',
-      command: 'claude-agent-acp',
-      argsText: '',
-      envText: '',
-      loginHint: 'claude',
-      runtime: 'claude',
-    })
-
-    // codex-acp 预设：env 空，runtime 绑定随草稿过站
-    const codexDraft = draftFromCatalogEntry('codex-acp')
-    expect(codexDraft).toEqual({
-      id: 'codex-acp',
-      catalogId: 'codex-acp',
-      name: 'Codex',
-      command: 'codex-acp',
-      argsText: '',
-      envText: '',
-      loginHint: 'codex login',
-      runtime: 'codex',
-    })
-    expect(validateAgentDraft(codexDraft as AgentDraft, {}, undefined).config).toEqual({
-      name: 'Codex',
-      command: 'codex-acp',
-      args: [],
-      env: {},
-      loginHint: 'codex login',
-      runtime: 'codex',
-      catalogId: 'codex-acp',
-    })
-
-    // CodeBuddy has explicit adapter coverage and keeps its catalog runtime binding.
-    const codebuddy = catalogEntryOf('codebuddy-code')
-    expect(codebuddy).toMatchObject({
-      runtime: 'codebuddy',
-      loginHint: 'codebuddy',
-      args: ['--acp'],
-      verification: 'adapter-tested',
-    })
-    const codebuddyDraft = draftFromCatalogEntry('codebuddy-code')
-    expect(codebuddyDraft).toMatchObject({ runtime: 'codebuddy', catalogId: 'codebuddy-code', argsText: '--acp' })
-    expect(validateAgentDraft(codebuddyDraft as AgentDraft, {}, undefined).config).toMatchObject({
-      runtime: 'codebuddy',
-      catalogId: 'codebuddy-code',
-    })
-
-    // 未知条目 id → undefined（菜单只从 catalog 列表渲染，正常不可达）
-    expect(draftFromCatalogEntry('no-such-entry')).toBeUndefined()
-  })
+  it.each([
+    ['devin', 'devin', 'devin', ['acp'], 'devin auth login'],
+    ['claude-acp', 'claude', 'claude-agent-acp', [], 'claude'],
+    ['codex-acp', 'codex', 'codex-acp', [], 'codex login'],
+    ['codebuddy-code', 'codebuddy', 'codebuddy-code', ['--acp'], 'codebuddy'],
+  ] as const)(
+    'preserves %s launch settings from the catalog through saving the draft',
+    (id, runtime, command, args, loginHint) => {
+      const draft = draftFromCatalogEntry(id)!
+      const name = registrySnapshot.agents.find((agent) => agent.id === id)!.name
+      expect(draft).toEqual({
+        id,
+        name,
+        command,
+        argsText: args.join('\n'),
+        envText: '',
+        loginHint,
+        runtime,
+        catalogId: id,
+      })
+      expect(validateAgentDraft(draft, {}, undefined).config).toEqual({
+        name,
+        command,
+        args,
+        env: {},
+        loginHint,
+        runtime,
+        catalogId: id,
+      })
+    },
+  )
 
   it('draftFromCatalogEntry 普通条目：sidecar 预填 command/args、无 runtime、无 loginHint', () => {
     const entry = ACP_CATALOG_ENTRIES.find((candidate) => candidate.runtime === undefined)
@@ -700,8 +595,6 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
   })
 })
 
-// ----------：疑似 secret env 键的掩码过站 ----------
-
 describe(' env 密钥掩码（draftFromAgent / validateAgentDraft / dropMaskedEnvKey）', () => {
   const secretConfig: AcpAgentConfig = {
     name: 'Secretive',
@@ -750,8 +643,6 @@ describe(' env 密钥掩码（draftFromAgent / validateAgentDraft / dropMaskedEn
   })
 })
 
-// ---------- agents map 纯操作 ----------
-
 describe('agents map projection', () => {
   it('sortedAgentIds 按 localeCompare 序返回全部 id', () => {
     expect(sortedAgentIds({})).toEqual([])
@@ -763,8 +654,6 @@ describe('agents map projection', () => {
     ])
   })
 })
-
-// ---------- settings 快照投影 ----------
 
 describe('panelSettingsOf', () => {
   it('ready → ready，agents/writable/revision 透传；value 缺席时 agents 归零', () => {
@@ -810,8 +699,6 @@ describe('panelSettingsOf', () => {
   })
 })
 
-// ---------- 健康响应解码 ----------
-
 describe('decodeHealthResponse', () => {
   it('preserves the typed retirement diagnostic without inventing a failed probe', () => {
     const retired = { ...neverRow, state: 'unavailable', unavailableReason: 'agent-retired' }
@@ -826,63 +713,29 @@ describe('decodeHealthResponse', () => {
     expect(decodeHealthResponse({ providers: [{ ...okRow, extra: 1 }], extra: true })).toEqual([okRow])
   })
 
-  it('authMethods：null（宿主未透传）与空数组均合法；description 可缺/为 null', () => {
-    const withNull = {
+  it.each([
+    { modelCount: 0, authMethods: null },
+    { modelCount: 0, authMethods: [] },
+    { modelCount: 1, authMethods: [{ id: 'oauth', name: 'OAuth', description: null }] },
+  ])('decodes optional authentication details $authMethods', (auth) => {
+    const row = {
       ...okRow,
       probe: {
-        status: 'ok',
-        at: 1,
-        modelCount: 0,
-        authMethods: null,
+        ...okRow.probe,
+        ...auth,
         agentInfo: null,
         capabilities: null,
         cleanup: null,
         capabilityHash: null,
         protocolVersion: null,
         versionCompatibility: null,
-        matrix: okMatrix,
       },
     }
-    const withEmpty = {
-      ...okRow,
-      probe: {
-        status: 'ok',
-        at: 1,
-        modelCount: 0,
-        authMethods: [],
-        agentInfo: null,
-        capabilities: null,
-        cleanup: null,
-        capabilityHash: null,
-        protocolVersion: null,
-        versionCompatibility: null,
-        matrix: okMatrix,
-      },
-    }
-    const withDesc = {
-      ...okRow,
-      probe: {
-        status: 'ok',
-        at: 1,
-        modelCount: 1,
-        authMethods: [{ id: 'oauth', name: 'OAuth', description: null }],
-        agentInfo: null,
-        capabilities: null,
-        cleanup: null,
-        capabilityHash: null,
-        protocolVersion: null,
-        versionCompatibility: null,
-        matrix: okMatrix,
-      },
-    }
-    expect(decodeHealthResponse({ providers: [withNull] })).toEqual([withNull])
-    expect(decodeHealthResponse({ providers: [withEmpty] })).toEqual([withEmpty])
-    expect(decodeHealthResponse({ providers: [withDesc] })).toEqual([withDesc])
+    expect(decodeHealthResponse({ providers: [row] })).toEqual([row])
   })
 
   it('readiness 两键：null 词表与三态合法值解出；词表外/畸形整行拒', () => {
     const probe = okRow.probe
-    if (probe.status !== 'ok') throw new Error('fixture: okRow.probe must be the ok branch')
     // 合法：versionCompatibility 三态 + null；protocolVersion number|null
     for (const versionCompatibility of ['current', 'different', 'unknown', null] as const) {
       const row = { ...okRow, probe: { ...probe, protocolVersion: 1, versionCompatibility } }
@@ -950,162 +803,52 @@ describe('decodeHealthResponse', () => {
     }
   })
 
-  it('probe 分支违规逐一拒绝', () => {
-    const okBase = {
-      status: 'ok',
-      at: 1,
-      modelCount: 1,
-      authMethods: null,
-      agentInfo: null,
-      capabilities: null,
-      cleanup: null,
-      capabilityHash: null,
-      matrix: okMatrix,
+  it('rejects successful probes missing required fields', () => {
+    for (const key of [
+      'at',
+      'agentInfo',
+      'capabilities',
+      'cleanup',
+      'capabilityHash',
+      'matrix',
+      'protocolVersion',
+      'versionCompatibility',
+    ] as const) {
+      const { [key]: _removed, ...probe } = okRow.probe
+      expect(decodeHealthResponse({ providers: [{ ...okRow, probe }] }), key).toBeUndefined()
     }
+  })
+
+  it('rejects malformed probe data', () => {
+    const okBase = okRow.probe
+    const { id: _id, ...matrixWithoutId } = okMatrix[0]!
     const errBase = { status: 'error', at: 1, failureKind: 'timeout', message: 'boom', phase: null }
     const badProbes: Array<[string, unknown]> = [
       ['probe 非 object', 'ok'],
       ['probe status 未知', { status: 'pending', at: 1 }],
       ['never 的 at 非 null', { status: 'never', at: 1 }],
       ['never 缺 at', { status: 'never' }],
-      ['ok 缺 at', { ...okBase, at: undefined }],
       ['ok 的 modelCount 非 number', { ...okBase, modelCount: '2' }],
       ['ok 的 authMethods 非 null/数组', { ...okBase, authMethods: 'oauth' }],
       ['authMethods 元素缺 name', { ...okBase, authMethods: [{ id: 'oauth' }] }],
       ['authMethods 元素 id 非 string', { ...okBase, authMethods: [{ id: 1, name: 'OAuth' }] }],
-      [
-        'ok 缺 agentInfo（宿主恒发 string|null 词表）',
-        {
-          status: 'ok',
-          at: 1,
-          modelCount: 1,
-          authMethods: null,
-          capabilities: null,
-          cleanup: null,
-          capabilityHash: null,
-          matrix: okMatrix,
-        },
-      ],
-      [
-        'ok 缺 capabilities',
-        {
-          status: 'ok',
-          at: 1,
-          modelCount: 1,
-          authMethods: null,
-          agentInfo: null,
-          cleanup: null,
-          capabilityHash: null,
-          matrix: okMatrix,
-        },
-      ],
       ['agentInfo 缺 version', { ...okBase, agentInfo: { name: 'devin-acp' } }],
       ['agentInfo name 非 string', { ...okBase, agentInfo: { name: 1, version: '1' } }],
       ['capabilities 缺键', { ...okBase, capabilities: { loadSession: true } }],
       ['capabilities 值非 boolean', { ...okBase, capabilities: { ...fullCaps(), promptImage: 'yes' } }],
       // cleanup/capabilityHash 为宿主恒发键（null 词表或合法事实）
-      [
-        'ok 缺 cleanup',
-        {
-          status: 'ok',
-          at: 1,
-          modelCount: 1,
-          authMethods: null,
-          agentInfo: null,
-          capabilities: null,
-          capabilityHash: null,
-          matrix: okMatrix,
-        },
-      ],
-      [
-        'ok 缺 capabilityHash',
-        {
-          status: 'ok',
-          at: 1,
-          modelCount: 1,
-          authMethods: null,
-          agentInfo: null,
-          capabilities: null,
-          cleanup: null,
-          matrix: okMatrix,
-        },
-      ],
       ['cleanup 步骤词表外', { ...okBase, cleanup: { close: 'maybe', delete: 'done', message: null } }],
       ['cleanup 缺 delete', { ...okBase, cleanup: { close: 'done', message: null } }],
       ['cleanup message 非 string/null', { ...okBase, cleanup: { close: 'done', delete: 'failed', message: 7 } }],
       ['capabilityHash 非 string/null', { ...okBase, capabilityHash: 16 }],
       // matrix 为 probe-ok 宿主恒发键（逐行严检，畸形整包拒）
-      [
-        'ok 缺 matrix',
-        {
-          status: 'ok',
-          at: 1,
-          modelCount: 1,
-          authMethods: null,
-          agentInfo: null,
-          capabilities: null,
-          cleanup: null,
-          capabilityHash: null,
-        },
-      ],
       ['matrix 非数组', { ...okBase, matrix: {} }],
       ['matrix 行非 object', { ...okBase, matrix: ['loadSession'] }],
-      [
-        'matrix 行缺 id',
-        {
-          ...okBase,
-          matrix: [{ advertised: true, adapterPath: 'resume-staging', hostSeam: null, status: 'supported' }],
-        },
-      ],
-      [
-        'matrix advertised 非 boolean/null',
-        {
-          ...okBase,
-          matrix: [
-            {
-              id: 'loadSession',
-              advertised: 'yes',
-              adapterPath: 'resume-staging',
-              hostSeam: null,
-              status: 'supported',
-            },
-          ],
-        },
-      ],
-      [
-        'matrix hostSeam 非 string/null',
-        {
-          ...okBase,
-          matrix: [
-            { id: 'sandbox', advertised: null, adapterPath: 'confined-spawn', hostSeam: 1, status: 'supported' },
-          ],
-        },
-      ],
-      [
-        'matrix status 词表外',
-        {
-          ...okBase,
-          matrix: [
-            { id: 'loadSession', advertised: true, adapterPath: 'resume-staging', hostSeam: null, status: 'half' },
-          ],
-        },
-      ],
-      [
-        'matrix note 非 string',
-        {
-          ...okBase,
-          matrix: [
-            {
-              id: 'mcpHttp',
-              advertised: false,
-              adapterPath: 'mcpServers-empty',
-              hostSeam: null,
-              status: 'unsupported',
-              note: 10,
-            },
-          ],
-        },
-      ],
+      ['matrix 行缺 id', { ...okBase, matrix: [matrixWithoutId] }],
+      ['matrix advertised 非 boolean/null', { ...okBase, matrix: [{ ...okMatrix[0], advertised: 'yes' }] }],
+      ['matrix hostSeam 非 string/null', { ...okBase, matrix: [{ ...okMatrix[0], hostSeam: 1 }] }],
+      ['matrix status 词表外', { ...okBase, matrix: [{ ...okMatrix[0], status: 'half' }] }],
+      ['matrix note 非 string', { ...okBase, matrix: [{ ...okMatrix[0], note: 10 }] }],
       ['error 缺 failureKind', { ...errBase, failureKind: undefined }],
       ['error 的 message 非 string', { ...errBase, message: 42 }],
       ['error 的 at 非 number', { ...errBase, at: 'now' }],
@@ -1120,8 +863,6 @@ describe('decodeHealthResponse', () => {
     }
   })
 })
-
-// ---------- boundSessions 应答解码（删除确认提示的 binding 计数） ----------
 
 describe('decodeBoundSessions', () => {
   it('合法应答原样往返（count=0 也是合法计数）', () => {
@@ -1157,8 +898,6 @@ describe('healthRowOf', () => {
     expect(healthRowOf([], 'devin')).toBeUndefined()
   })
 })
-
-// ---------- 错误文本整形 ----------
 
 describe('错误文本整形：errorMessageOf', () => {
   it('errorMessageOf：Error 取 message，其余 String()', () => {

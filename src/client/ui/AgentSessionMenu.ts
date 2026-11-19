@@ -137,7 +137,7 @@ export function AgentSessionMenu({
         onSelect(choice)
       },
       anchor: h(Tooltip, {
-        label: t('agentControlTooltip'),
+        label: t(groups.some((item) => item.kind === 'model') ? 'agentModelSettings' : 'agentControlTooltip'),
         portal: true,
         side: 'top',
         disabled: open,

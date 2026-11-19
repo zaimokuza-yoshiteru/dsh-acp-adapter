@@ -114,7 +114,7 @@ function Loaded({
       doc.removeEventListener('scroll', onScroll, true)
     }
   }, [addMenuOpen])
-  // Opening the panel reads saved health facts; only an explicit recheck probes.
+  // Opening the panel reads saved health. Adding an Agent or choosing Re-check runs a probe.
   useEffect(() => {
     panel.refreshHealth()
   }, [panel])
@@ -182,18 +182,14 @@ function Loaded({
         t('hostVersionMismatch', snapshot.health.hostVersion),
       ),
     )
-  if (snapshot.health.status === 'unreachable') {
-    children.push(h('p', { key: 'unreachable', className: css.notice }, t('healthUnreachable')))
-    if (snapshot.health.message !== undefined) {
-      children.push(
-        h(
-          'p',
-          { key: 'unreachable-detail', className: css.hint },
-          localizedDiagnostic(t, 'healthCheckTransportFailed', snapshot.health.message),
-        ),
-      )
-    }
-  }
+  if (snapshot.health.status === 'unreachable')
+    children.push(
+      h(
+        'p',
+        { key: 'unreachable', className: css.notice },
+        localizedDiagnostic(t, 'healthUnreachable', snapshot.health.message),
+      ),
+    )
   const refreshing = snapshot.health.status === 'loading'
   const checkingAnyAgent = snapshot.health.checkingAgentIds.length > 0
   const checkAll = ids.length > 1
@@ -230,7 +226,7 @@ function Loaded({
               openEdit(id)
             },
             onDeleted,
-            onCloseEditor: (changed) => closeEditor(editor?.key ?? -1, changed),
+            onCloseEditor: closeEditor,
             onOpenAgent: openExisting,
           })
         }),
@@ -417,7 +413,7 @@ function AgentCard(props: {
   onCheck(): void
   onDeleted(id: string): void
   editorKey: number
-  onCloseEditor(changed: boolean): void
+  onCloseEditor(key: number, changed: boolean): void
   onOpenAgent(id: string): void
 }): ReactNode {
   const { t, id, config, panel } = props
@@ -433,7 +429,8 @@ function AgentCard(props: {
     },
     [],
   )
-  const checking = props.health.status === 'loading' || props.health.checkingAgentIds.includes(id)
+  const checkingAgent = props.health.checkingAgentIds.includes(id)
+  const refreshingPanel = props.health.status === 'loading'
   const checkError = props.health.agentErrors[id]
   const confirmDelete = (): void => {
     setDeleting(true)
@@ -481,7 +478,11 @@ function AgentCard(props: {
         'span',
         { className: css.rowIdentity },
         h('span', { className: css.rowName }, config.name),
-        h(Tag, { tone: statusTone }, statusText),
+        h(
+          'span',
+          { role: 'status' },
+          h(Tag, { tone: checkingAgent ? 'neutral' : statusTone }, checkingAgent ? t('refreshing') : statusText),
+        ),
       ),
       h(
         'span',
@@ -491,10 +492,10 @@ function AgentCard(props: {
           {
             variant: 'outline',
             size: 'sm',
-            disabled: checking || retired,
+            disabled: checkingAgent || refreshingPanel || retired,
             onClick: props.onCheck,
           },
-          t(checking ? 'refreshing' : 'refresh'),
+          t(refreshingPanel ? 'refreshing' : 'refresh'),
         ),
         h(
           Button,
@@ -602,7 +603,7 @@ function AgentCard(props: {
         readOnly: props.readOnly,
         panel,
         editorKey: props.editorKey,
-        onClose: (_key, changed) => props.onCloseEditor(changed),
+        onClose: props.onCloseEditor,
         onOpenAgent: props.onOpenAgent,
       }),
     )
@@ -664,7 +665,11 @@ function AgentForm(props: {
   const { t } = props
   const [draft, setDraft] = useState<AgentDraft>(() => props.initial)
   const [busy, setBusy] = useState(false)
-  const [attempted, setAttempted] = useState(false)
+  const form = useRef<HTMLDivElement>(null)
+  const [invalidSubmissions, setInvalidSubmissions] = useState(0)
+  useEffect(() => {
+    if (invalidSubmissions > 0) form.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus()
+  }, [invalidSubmissions])
   const [failure, setFailure] = useState<string | undefined>(undefined)
   // Built-in templates work with their tested defaults. Keep implementation
   // details out of the common path, while manual profiles open the same fields
@@ -683,9 +688,8 @@ function AgentForm(props: {
     setFailure(undefined)
   }
   const save = (): void => {
-    setAttempted(true)
     if (validation.config === undefined) {
-      // Reveal the section holding the first unmet field instead of leaving a silent, unusable Save.
+      setInvalidSubmissions((count) => count + 1)
       if (validation.id !== undefined || validation.command !== undefined) setAdvancedOpen(true)
       if (validation.env !== undefined) setOptionsOpen(true)
       return
@@ -715,7 +719,7 @@ function AgentForm(props: {
   // first save attempt; format/uniqueness errors answer actual input at once
   // (the CustomProviderCard route-field precedent).
   const shown = (error: DraftError | undefined, value: string): DraftError | undefined =>
-    error !== undefined && (attempted || value.trim() !== '') ? error : undefined
+    error !== undefined && (invalidSubmissions > 0 || value.trim() !== '') ? error : undefined
 
   // catalog 播种条目的安装指引（来自 registry 分发事实；纯展示，不自动安装）
   const seededEntry = props.editingId === undefined ? catalogEntryOf(draft.catalogId ?? draft.id) : undefined
@@ -725,7 +729,7 @@ function AgentForm(props: {
 
   return h(
     'div',
-    { className: css.editor },
+    { ref: form, className: css.editor },
     h(
       'div',
       { className: css.editorHeader },
@@ -832,14 +836,12 @@ function AgentForm(props: {
         size: 14,
         className: optionsOpen ? `${css.chevron} ${css.chevronFlip}` : css.chevron,
       }),
-      t('advancedOptions'),
+      envCount ? t('advancedOptionsConfigured', { envCount }) : t('advancedOptions'),
     ),
-    envCount === 0 ? null : h('p', { className: css.hint }, t('advancedOptionsConfigured', { envCount })),
     optionsOpen
       ? h(
           'div',
           { className: css.advancedFields },
-          h('p', { className: css.hint }, t('advancedOptionsHint')),
           textField({
             t,
             id: `dsh-acp-${scope}-env`,
@@ -872,7 +874,6 @@ function AgentForm(props: {
                         'li',
                         { key, className: css.maskedEnvRow },
                         h('code', { className: css.maskedEnvKey }, key),
-                        h('span', { className: css.healthMuted }, t('envMaskedConfigured')),
                         h(
                           Button,
                           {
@@ -957,10 +958,12 @@ function textField(props: {
   placeholder?: string
 }): ReactNode {
   const invalid = props.error !== undefined
+  const descriptionId = `${props.id}-description`
   const control =
     props.multiline === true
       ? h('textarea', {
           id: props.id,
+          'aria-describedby': descriptionId,
           className: invalid ? `${css.textarea} ${css.textareaInvalid}` : css.textarea,
           value: props.value,
           disabled: props.disabled,
@@ -973,6 +976,7 @@ function textField(props: {
         })
       : h(Input, {
           id: props.id,
+          'aria-describedby': descriptionId,
           className: invalid ? `${css.input} ${css.inputInvalid}` : css.input!,
           type: 'text',
           value: props.value,
@@ -990,7 +994,7 @@ function textField(props: {
     control,
     h(
       'p',
-      { className: invalid ? css.error : css.hint },
+      { id: descriptionId, className: invalid ? css.error : css.hint },
       props.error !== undefined ? props.t(props.error.key, props.error.params) : props.hint,
     ),
   )

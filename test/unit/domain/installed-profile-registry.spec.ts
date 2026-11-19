@@ -718,22 +718,13 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
     expect(registry.agents().get('foo')?.runtime).toBe('kimi')
   })
 
-  it('首个 agent 注册独立 profile 路由（只 registerAdapter，不再有 configurable-provider 目录注册）', async () => {
+  it('registers the first configured Agent under its own route', async () => {
     const { ctx, llm, settings } = fakeHarness()
     await installInstalledProfileRegistry(ctx, settings.config)
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }])
     expect(llm.calls).toEqual(['registerAdapter:acp-devin'])
     expect(llm.adapters).toHaveLength(1)
     expect(llm.adapters[0]).toBeDefined()
-  })
-
-  it('模型选择器开关的 settings 更新不重新注册 ACP providers', async () => {
-    const { ctx, llm, settings } = fakeHarness()
-    await installInstalledProfileRegistry(ctx, settings.config)
-    await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }])
-    llm.calls.length = 0
-    expect(llm.calls).toEqual([])
-    expect(llm.adapters).toHaveLength(1)
   })
 
   it('增删 agent 维持每 profile 的独立注册并回收删除项', async () => {
@@ -782,14 +773,12 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
     expect(llm.adapters).toHaveLength(2)
   })
 
-  it('：删除 profile 后目录失效——路由撤下、resolveRoute 归 undefined、listModels 响亮拒绝（不静默改用其他 profile）', async () => {
+  it('withdraws the deleted profile route and preserves the other profile', async () => {
     const { ctx, settings } = fakeHarness()
     const registry = await installInstalledProfileRegistry(ctx, settings.config)
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }])
     await settings.mutate([{ op: 'set', path: ['agents', 'foo'], value: { ...fooAgent } }])
     await settings.mutate([{ op: 'unset', path: ['agents', 'devin'] }])
-    // 删除后该路由不再解析到任何 agent；agent-loop 会响亮拒绝，绝不回落到
-    // native LLM stub 或其他 ACP profile。
     expect(registry.resolveRoute('acp-devin')).toBeUndefined()
     expect(registry.resolveRoute('acp-foo')).toEqual({ id: 'foo', config: fooAgent })
   })

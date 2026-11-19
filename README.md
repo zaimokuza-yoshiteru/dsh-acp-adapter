@@ -44,22 +44,21 @@ npx @deepseek-ai/dsh@0.2.2-rc.3 plugin --profile web add @zaimokuza/dsh-acp-adap
 
 ## 连接 Agent
 
-插件附带一份 [ACP 官方 Agent 目录](https://agentclientprotocol.com/registry)快照，提供安装、登录指引和命令预填；也可手动添加目录外的 ACP Agent。在运行 DSH 的主机上安装 Agent CLI。若 Agent 需要登录，请在同一台主机完成。打开 **插件 → ACP 适配器**，按目录指引添加 Agent 并检查连接，再在新会话选择 Agent 模型。插件不会替你安装 CLI 或登录账号。
-
-> Agent 没有模型目录时，选择 **Agent current configuration** 使用其当前配置。
->
-> RC.4 开发版中，CodeBuddy 和 OpenCode 的新会话可选择 **由 Agent 管理模型**。首轮后，在输入区点击当前模型名即可原地切换。专用 **ACP 模式**也支持用原生模型选择器切模。按具体模型创建的其他会话可按原模式另开，历史和草稿留在原会话。
+1. 在运行 DSH 的电脑上安装 Agent CLI，按需登录。
+2. 打开 **插件 → ACP 适配器**，从[官方 Agent 目录](https://agentclientprotocol.com/registry)选择 Agent 或手动填写启动命令，然后保存。RC.4 开发版会自动检查连接。使用 RC.3 或需要重试时，点击**重新检查**。
+3. 新建会话，在模型菜单选择 Agent 和模型。如果 Agent 没有列出模型，选择其当前配置。
 
 常用 Agent 的启动与登录方式：
 
-| Agent                      | ACP 命令                                                | 认证               |
-| -------------------------- | ------------------------------------------------------- | ------------------ |
-| Devin (3000.14.30821+)     | `devin acp`                                             | `devin auth login` |
-| CodeBuddy CLI（WorkBuddy） | `codebuddy --acp`                                       | `codebuddy`        |
-| Antigravity                | `agy_acp_server.par`（Windows 为 `agy_acp_server.exe`） | ACP 独立登录       |
-| Claude                     | `claude-agent-acp`                                      | `claude`           |
-| Codex                      | `codex-acp`                                             | `codex login`      |
-| Qwen Code                  | `qwen --acp`                                            | `qwen`             |
+| Agent                                 | ACP 命令                                                | 认证                 |
+| ------------------------------------- | ------------------------------------------------------- | -------------------- |
+| Devin（RC.4 开发版需 3000.14.30821+） | `devin acp`                                             | `devin auth login`   |
+| CodeBuddy CLI（WorkBuddy）            | `codebuddy --acp`                                       | `codebuddy`          |
+| OpenCode                              | `opencode acp`                                          | 按所选模型服务商配置 |
+| Antigravity                           | `agy_acp_server.par`（Windows 为 `agy_acp_server.exe`） | ACP 独立登录         |
+| Claude                                | `claude-agent-acp`                                      | `claude`             |
+| Codex                                 | `codex-acp`                                             | `codex login`        |
+| Qwen Code                             | `qwen --acp`                                            | `qwen`               |
 
 > WorkBuddy 用户可通过 CodeBuddy CLI 接入 DSH。参见 [ACP 命令参考](https://www.codebuddy.cn/docs/cli/cli-reference)和 [CodeBuddy 账号与订阅说明](https://www.codebuddy.cn/docs/ide/Account/pricing)。
 
@@ -68,6 +67,8 @@ npx @deepseek-ai/dsh@0.2.2-rc.3 plugin --profile web add @zaimokuza/dsh-acp-adap
 标准模式可直接使用 ACP Agent。需要通过对话创建插件时，选择**创造模式**。
 
 如需让 Agent 管理对话上下文，可选择 **ACP** 模式。此模式提供 DSH 工具，不加载 DSH 的插件管理、子代理和压缩工具。
+
+**RC.4 开发版的会话内切模**。在标准、创造、PTC 或极简模式新建 CodeBuddy 或 OpenCode 主会话时，可在模型菜单选择 **由 Agent 管理模型**。连接后，点击输入区旁的模型名即可切换并继续原对话。专用 **ACP** 模式通过原生模型选择器切换。其他按具体模型创建的会话可以按原模式另开，历史和草稿留在原会话。
 
 ## 使用会话
 
@@ -99,4 +100,4 @@ npx @deepseek-ai/dsh@0.2.2-rc.3 plugin --profile web add @zaimokuza/dsh-acp-adap
 
 在 **ACP 诊断**中可导出安全摘要 JSON；其中不含消息正文、命令、路径、原始会话 ID 或 ACP 凭据。DSH 原生会话日志 ZIP 可能含提示词、工具参数、文件路径和附件；分享前请检查并移除敏感信息。
 
-需要求助时，向 [Issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) 附上错误编号、DSH/插件版本和已脱敏的日志片段。技术边界见[原生复用说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.3.1/docs/native-reuse.md)。
+需要求助时，向 [Issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) 附上错误编号、DSH/插件版本和已脱敏的日志片段。已发布版本的技术边界见[原生复用说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.3.1/docs/native-reuse.md)。

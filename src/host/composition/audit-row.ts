@@ -1,8 +1,7 @@
 /** Convert bounded sidecar facts into the client-facing ACP audit row. */
-import type { AcpAuditSummaryCode } from '../../remote/service.ts'
 import { redactSecretText } from '../../domain/policy/events.ts'
 import type { AcpSidecarEntry } from '../../persistence/sidecar.ts'
-import type { AcpAuditTimelineEntry } from '../../contract/remote.ts'
+import type { AcpAuditSummaryCode, AcpAuditTimelineEntry } from '../../contract/remote.ts'
 
 function boundedAuditSubject(value: unknown): string | null {
   if (typeof value !== 'string') return null

@@ -44,22 +44,21 @@ To update, choose a version matching DSH in the plugin manager. Select prereleas
 
 ## Connect an Agent
 
-The plugin ships with a snapshot of the [official ACP Agent catalog](https://agentclientprotocol.com/registry), with installation and sign-in guidance and command prefill. You can also add an ACP Agent manually. Install the Agent CLI on the computer running DSH and sign in there if required. Open **Plugins → ACP adapter**, follow the catalog guidance to add the Agent and check its connection, then choose its model in a new session. The plugin does not install CLIs or sign in to accounts.
-
-> If an Agent has no model catalog, select **Agent current configuration** to use its current settings.
->
-> In the RC.4 development build, choose **Agent-managed model** in a new CodeBuddy or OpenCode chat. After the first reply, select the current model name by the composer to switch in the same chat. Dedicated **ACP mode** also supports switching via the native picker. Other chats started with a named model can open a separate session in the same mode, keeping the original history and draft.
+1. Install the Agent CLI on the computer running DSH and sign in if required.
+2. Open **Plugins → ACP adapter**. Choose an Agent from the [official catalog](https://agentclientprotocol.com/registry) or enter its command manually, then save. The RC.4 development build checks the connection automatically. On RC.3, or to retry a failed check, select **Re-check**.
+3. Start a chat and choose the Agent and model in the model menu. If the Agent lists no models, select its current configuration.
 
 Launch and sign-in commands for common Agents:
 
-| Agent                     | ACP command                                            | Authentication       |
-| ------------------------- | ------------------------------------------------------ | -------------------- |
-| Devin (3000.14.30821+)    | `devin acp`                                            | `devin auth login`   |
-| CodeBuddy CLI (WorkBuddy) | `codebuddy --acp`                                      | `codebuddy`          |
-| Antigravity               | `agy_acp_server.par` (`agy_acp_server.exe` on Windows) | Separate ACP sign-in |
-| Claude                    | `claude-agent-acp`                                     | `claude`             |
-| Codex                     | `codex-acp`                                            | `codex login`        |
-| Qwen Code                 | `qwen --acp`                                           | `qwen`               |
+| Agent                                                  | ACP command                                            | Authentication                |
+| ------------------------------------------------------ | ------------------------------------------------------ | ----------------------------- |
+| Devin (RC.4 development build requires 3000.14.30821+) | `devin acp`                                            | `devin auth login`            |
+| CodeBuddy CLI (WorkBuddy)                              | `codebuddy --acp`                                      | `codebuddy`                   |
+| OpenCode                                               | `opencode acp`                                         | Configure your model provider |
+| Antigravity                                            | `agy_acp_server.par` (`agy_acp_server.exe` on Windows) | Separate ACP sign-in          |
+| Claude                                                 | `claude-agent-acp`                                     | `claude`                      |
+| Codex                                                  | `codex-acp`                                            | `codex login`                 |
+| Qwen Code                                              | `qwen --acp`                                           | `qwen`                        |
 
 > To use WorkBuddy with DSH, connect through the CodeBuddy CLI. See the [ACP CLI reference](https://www.codebuddy.cn/docs/cli/cli-reference) and [CodeBuddy account and subscription details](https://www.codebuddy.cn/docs/ide/Account/pricing).
 
@@ -68,6 +67,8 @@ Launch and sign-in commands for common Agents:
 Standard mode works with ACP Agents. Choose **Creator mode** to create plugins through conversation.
 
 Choose the optional **ACP** mode to let the Agent manage conversation context. This mode provides DSH tools and omits DSH plugin management, subagent, and compaction tools.
+
+**Switch models in the RC.4 development build.** When starting a CodeBuddy or OpenCode main chat in Standard, Creator, PTC, or Minimal mode, choose **Agent-managed model** in the model menu. Once connected, select the model name beside the composer to switch and continue the conversation. In dedicated **ACP** mode, use the native model picker. Other chats started with a named model can open a new chat in the same mode. The original chat keeps its history and draft.
 
 ## Working in a session
 
@@ -99,4 +100,4 @@ Choose the optional **ACP** mode to let the Agent manage conversation context. T
 
 Export the safe summary JSON from **ACP Diagnostics**; it excludes message text, commands, paths, raw session IDs, and ACP credentials. DSH's native session-log ZIP may contain prompts, tool arguments, file paths, and attachments; inspect and redact it before sharing.
 
-For help, open an [issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) with the error reference, DSH/plugin versions, and redacted log excerpts. See the [native reuse boundaries](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.3.1/docs/native-reuse.en.md).
+For help, open an [issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) with the error reference, DSH/plugin versions, and redacted log excerpts. For the released version, see the [native reuse boundaries](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.3.1/docs/native-reuse.en.md).
