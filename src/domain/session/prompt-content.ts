@@ -4,7 +4,11 @@ import type * as acp from '@agentclientprotocol/sdk'
 import type { RequestMessage } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-session'
 import type { ModelContextSnapshot } from './model-context-snapshots.ts'
-import { generatedContextBlock, generatedContextSeparator } from '../../runtime/text-block-boundary.ts'
+import {
+  generatedContextBlock,
+  generatedContextSeparator,
+  type AcpPromptProjection,
+} from '../../runtime/text-block-boundary.ts'
 
 /** A prompt block that cannot be represented by the negotiated ACP bridge. */
 export class AcpPromptContentError extends Error {
@@ -142,32 +146,40 @@ export function validImageLimits(limits: ImageAttachmentLimits): boolean {
   )
 }
 
-/**
- * Resolve claimed DSH messages into ordered ACP prompt blocks. Images are read
- * only through DSH's durable attachment service; UI paths and arbitrary file
- * URLs are never trusted as attachment bytes.
- */
+interface PromptContentOptions {
+  /** ACP has no system role. Supply the host's current instructions as
+   * explicitly labelled request context, including an empty replacement. */
+  readonly system?: string
+  /** Current DSH-owned model context snapshots, already source-allow-listed. */
+  readonly modelContextSnapshots?: readonly ModelContextSnapshot[]
+  /** Effective frozen request history, supplied only for an explicit blank rebind. */
+  readonly reboundAgentInstructions?: readonly RequestMessage[]
+  /** Effective frozen request history, supplied only when starting an Agent session over undelivered conversation. */
+  readonly undeliveredHistory?: readonly RequestMessage[]
+  /** Route exposed by the final tool presentation for this model request. */
+  readonly skillRoute?: SkillRoute
+  /** Whether the current Agent scope has the Skill tool used by either route. */
+  readonly skillCatalogAvailable?: boolean
+  readonly imageEnabled: boolean
+  readonly attachments?: Pick<AttachmentStore, 'readImage' | 'imageLimits'>
+  readonly signal: AbortSignal
+}
+
 export async function toAcpPrompt(
   messages: readonly UserMessage[],
-  options: {
-    /** ACP has no system role. Supply the host's current instructions as
-     * explicitly labelled request context, including an empty replacement. */
-    readonly system?: string
-    /** Current DSH-owned model context snapshots, already source-allow-listed. */
-    readonly modelContextSnapshots?: readonly ModelContextSnapshot[]
-    /** Effective frozen request history, supplied only for an explicit blank rebind. */
-    readonly reboundAgentInstructions?: readonly RequestMessage[]
-    /** Effective frozen request history, supplied only when starting an Agent session over undelivered conversation. */
-    readonly undeliveredHistory?: readonly RequestMessage[]
-    /** Route exposed by the final tool presentation for this model request. */
-    readonly skillRoute?: SkillRoute
-    /** Whether the current Agent scope has the Skill tool used by either route. */
-    readonly skillCatalogAvailable?: boolean
-    readonly imageEnabled: boolean
-    readonly attachments?: Pick<AttachmentStore, 'readImage' | 'imageLimits'>
-    readonly signal: AbortSignal
-  },
+  options: PromptContentOptions,
 ): Promise<acp.ContentBlock[]> {
+  return (await prepareAcpPrompt(messages, options)).content
+}
+
+/**
+ * Validate all admitted messages before session setup. The runtime decides
+ * whether this generated projection needs sending on the final connection.
+ */
+export async function prepareAcpPrompt(
+  messages: readonly UserMessage[],
+  options: PromptContentOptions,
+): Promise<{ content: acp.ContentBlock[]; projection?: AcpPromptProjection }> {
   const skillRoute = options.skillRoute ?? 'direct'
   const snapshots = options.modelContextSnapshots ?? []
   const skillCatalogAvailable =
@@ -321,8 +333,9 @@ export async function toAcpPrompt(
       ),
     })
   }
-  const currentIds = new Set(admittedMessages.map((message) => String(message.id)))
+  const admittedBlockCount = blocks.length
   if (options.modelContextSnapshots !== undefined) {
+    const currentIds = new Set(admittedMessages.map((message) => String(message.id)))
     const snapshotsByKind = new Map(
       snapshots
         .filter((snapshot) => snapshot.source !== 'skill-catalog' || canDeliverSkillCatalog)
@@ -355,5 +368,16 @@ export async function toAcpPrompt(
     const notice = skillRoute === 'disabled' ? DISABLED_SKILL_ROUTE_NOTICE : UNAVAILABLE_SKILL_CATALOG_NOTICE
     blocks.unshift({ type: 'text', text: generatedContextBlock(notice) })
   }
-  return blocks
+  if (options.modelContextSnapshots === undefined) return { content: blocks }
+  // Stable across replacement message IDs. Include route availability because
+  // revoking Skill or switching to PTC changes what the Agent may do.
+  const key = JSON.stringify([
+    skillRoute,
+    skillCatalogReferenced,
+    canDeliverSkillCatalog,
+    snapshots
+      .filter(({ source }) => source !== 'skill-catalog' || canDeliverSkillCatalog)
+      .map(({ source, text }) => [source, text]),
+  ])
+  return { content: blocks, projection: { key, prefixLength: blocks.length - admittedBlockCount } }
 }

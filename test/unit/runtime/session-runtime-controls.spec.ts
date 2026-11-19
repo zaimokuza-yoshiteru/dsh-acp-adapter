@@ -1,5 +1,8 @@
 import { afterEach, expect, it } from 'vitest'
 import { createHmac } from 'node:crypto'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { prepareAcpPrompt, type SkillRoute } from '../../../src/domain/session/prompt-content.ts'
+import type { ModelContextSnapshot } from '../../../src/domain/session/model-context-snapshots.ts'
 import { AcpSessionRuntime } from '../../../src/runtime/session/session-runtime.ts'
 import type { AcpMcpLease } from '../../../src/runtime/session/mcp-lease.ts'
 import { createLiveDiagnosticTrace } from '../../../src/contract/live-diagnostic-trace.ts'
@@ -28,9 +31,12 @@ async function fixture(
     const option = value => [{id:'mode',name:'Mode',type:'select',currentValue:value,options:[{value:'code',name:'Code'},{value:'plan',name:'Plan'}]}];
     const update = (sessionId, update) => send({jsonrpc:'2.0',method:'session/update',params:{sessionId,update}});
     let writing = false;
+    let finishHeld;
+    const echo = blocks => update('parent',{sessionUpdate:'agent_message_chunk',content:{type:'text',text:blocks.filter(x=>x.type==='text').map(x=>x.text).join('')}});
     require('node:readline').createInterface({input:process.stdin}).on('line', line => {
       const r = JSON.parse(line), reply = result => send({jsonrpc:'2.0',id:r.id,result});
-      if(r.method==='initialize') reply({protocolVersion:1,agentCapabilities:{}});
+      if(r.method==='initialize') reply({protocolVersion:1,agentCapabilities:{loadSession:true},_meta:{steering:{supported:true,idleBehavior:'promptRequired'}}});
+      if(r.method==='session/load' && r.params.sessionId==='parent') reply({});
       if(r.method==='session/new') {
         if(${sessionNewUpdates !== 'none'}) {
           update('child',{sessionUpdate:'config_option_update',configOptions:option('child')});
@@ -46,16 +52,28 @@ async function fixture(
       if(r.method==='session/set_config_option' || r.method==='session/set_mode') {
         writing=true; setTimeout(()=>{writing=false; reply(r.method==='session/set_config_option'?{configOptions:option('plan')}:{})},80);
       }
+      if(r.method==='_session/steering') {
+        if (!finishHeld) return reply({outcome:'promptRequired'});
+        echo(r.params.prompt);
+        reply({outcome:'injected'});
+        finishHeld();
+        finishHeld=undefined;
+      }
       if(r.method==='session/prompt') {
         if(writing) return send({jsonrpc:'2.0',id:r.id,error:{code:-32603,message:'Prompt raced configuration write'}});
-        if(${echoPrompt}) update('parent',{sessionUpdate:'agent_message_chunk',content:{type:'text',text:r.params.prompt.filter(x=>x.type==='text').map(x=>x.text).join('')}});
+        if(${echoPrompt}) echo(r.params.prompt);
+        if(r.params.prompt.some(block=>block.type==='text' && block.text==='hold for steering')) {
+          finishHeld=()=>reply({stopReason:'end_turn'});
+          return;
+        }
         update('parent',{sessionUpdate:'usage_update',used:100,size:1000});
         if(${foreignUpdates}) {
           update('child',{sessionUpdate:'config_option_update',configOptions:option('plan')});
           update('child',{sessionUpdate:'current_mode_update',currentModeId:'plan'});
           update('child',{sessionUpdate:'usage_update',used:900,size:1000});
         }
-        reply({stopReason:'end_turn'});
+        const cancelled=r.params.prompt.some(block=>block.type==='text' && block.text==='cancel this turn');
+        reply({stopReason:cancelled?'cancelled':'end_turn'});
       }
     });`
   const argv = [process.execPath, '-e', script]
@@ -293,4 +311,136 @@ it('forwards successful Host-result evidence and separates bridge instructions i
   forwarded?.()
   expect(callbackCount).toBe(1)
   expect(echoed).toContain('generated bridge instructions\n\noriginal user content')
+})
+
+it('delivers the current projection and bridge once per confirmed connection, including revocations and retry', async () => {
+  const lease: AcpMcpLease & { instructions?: string } = {
+    instructions: 'bridge-A',
+    signal: new AbortController().signal,
+    servers: [],
+    beginPrompt() {},
+    endPrompt() {},
+    permission: () => undefined,
+    close: async () => {},
+  }
+  const runtime = await fixture(false, undefined, lease, true)
+  const send = async (
+    input: string,
+    snapshots: readonly ModelContextSnapshot[],
+    skillRoute: SkillRoute = 'direct',
+    system?: string,
+  ) => {
+    const message = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: input }] })
+    const prepared = await prepareAcpPrompt([message], {
+      ...(system === undefined ? {} : { system }),
+      modelContextSnapshots: snapshots,
+      skillRoute,
+      imageEnabled: false,
+      signal: new AbortController().signal,
+    })
+    let text = ''
+    const response = await runtime.prompt(
+      prepared.content,
+      ({ update }) => {
+        if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text')
+          text += update.content.text
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { projection: prepared.projection },
+    )
+    return { text, reason: response.stopReason }
+  }
+  const skills: ModelContextSnapshot[] = [{ source: 'skill-catalog', id: 'first', text: 'SKILL_A' }]
+  const initial = await send('first', skills)
+  expect(initial.text).toContain('bridge-A')
+  expect(initial.text).toContain('SKILL_A')
+  // A new message id with identical Agent-visible content is the same snapshot.
+  const ordinary = await send('second', [{ ...skills[0]!, id: 'updated' }], 'direct', 'CURRENT_SYSTEM')
+  expect(ordinary.text).toContain('CURRENT_SYSTEM')
+  expect(ordinary.text).toContain('second')
+  expect(ordinary.text).not.toMatch(/bridge-A|SKILL_A|model context projection/)
+
+  const ptc = await send('switch route', skills, 'ptc')
+  expect(ptc.text).toContain('SKILL_A')
+  expect(ptc.text).toContain('run_code')
+  expect((await send('same route', skills, 'ptc')).text).toBe('same route')
+
+  delete lease.instructions
+  const revoked = await send('revoked', [])
+  expect(revoked.text).toContain('Discard earlier DSH tool connection instructions')
+  expect(revoked.text).toContain('do not apply older DSH skill names')
+  expect(revoked.text).not.toMatch(/bridge-A|SKILL_A/)
+  expect((await send('still empty', [])).text).toBe('still empty')
+
+  lease.instructions = 'bridge-B'
+  const cancelled = await send('cancel this turn', skills)
+  expect(cancelled.reason).toBe('cancelled')
+  expect(cancelled.text).toContain('bridge-B')
+  expect(cancelled.text).toContain('SKILL_A')
+  const retry = await send('retry', skills)
+  expect(retry.text).toContain('bridge-B')
+  expect(retry.text).toContain('SKILL_A')
+
+  await runtime.close()
+  expect(await runtime.restore({ agentSessionId: 'parent' })).toBe('loaded')
+  const restored = await send('same session after reconnect', skills)
+  expect(restored.text).toContain('SKILL_A')
+  expect(restored.text).toContain('bridge-B')
+  expect((await send('warm again', skills)).text).toBe('warm again')
+
+  const stopped = await send('cancel this turn', skills)
+  expect(stopped.reason).toBe('cancelled')
+  expect((await send('after stop', skills)).text).not.toContain('bridge-B')
+
+  lease.instructions = 'never dispatched'
+  await expect(
+    runtime.prompt([], () => {}, undefined, undefined, undefined, undefined, {
+      beforeDispatch: () => {
+        throw new Error('local refusal')
+      },
+    }),
+  ).rejects.toThrow('local refusal')
+  lease.instructions = 'bridge-B'
+  expect((await send('after refusal', skills)).text).not.toContain('bridge-B')
+})
+
+it('keeps the injected projection when the original prompt completes after the steering acknowledgment', async () => {
+  const runtime = await fixture(false, undefined, undefined, true)
+  const held = Promise.withResolvers<void>()
+  const heard: string[] = []
+  const prepare = (input: string, text: string) =>
+    prepareAcpPrompt([createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: input }] })], {
+      modelContextSnapshots: [{ source: 'runtime-context', text }],
+      imageEnabled: false,
+      signal: new AbortController().signal,
+    })
+  const send = async (input: string, context: string) => {
+    const prepared = await prepare(input, context)
+    return runtime.prompt(
+      prepared.content,
+      ({ update }) => {
+        if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
+          heard.push(update.content.text)
+          if (update.content.text === 'hold for steering') held.resolve()
+        }
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { projection: prepared.projection },
+    )
+  }
+  await send('first', 'CONTEXT_A')
+  const active = send('hold for steering', 'CONTEXT_A')
+  await held.promise
+  const replacement = await prepare('inject', 'CONTEXT_B')
+  expect(await runtime.steer(replacement.content, undefined, replacement.projection)).toBe('injected')
+  await active
+  expect(heard.at(-1)).toContain('CONTEXT_B')
+  await send('follow up', 'CONTEXT_B')
+  expect(heard.at(-1)).toBe('follow up')
 })
