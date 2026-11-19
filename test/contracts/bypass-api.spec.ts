@@ -2,6 +2,7 @@
 //
 // 浏览器业务 API 只经 Typert；唯一网络例外是会话绑定的 Teams MCP transport。
 // 其 loopback、Origin、随机能力地址、工具白名单和生命周期由 team-bridge.spec.ts 验证。
+// 官方 agy 钩子另用进程私有 Unix socket，不绑定 TCP 地址。
 // 全部浏览器宿主交互只经 typert
 // typed Remote（strict descriptor 预生成，gateway 经 /api 信任围栏派发，承担
 // loopback/same-origin/CSRF 防线）； webServer 旁路路由已删除。本套件把
@@ -87,7 +88,7 @@ const PINNED_REMOTE_METHODS: readonly string[] = [
 ]
 
 describe(' 旁路 API 消除门', () => {
-  it('only the session-owned Teams MCP transport may create a network listener', () => {
+  it('limits transport primitives to the Teams MCP bridge and the private agy hook socket', () => {
     const violations: string[] = []
     for (const abs of walkTsFiles(SRC_DIR)) {
       const rel = path.relative(SRC_DIR, abs).split(path.sep).join('/')
@@ -100,7 +101,17 @@ describe(' 旁路 API 消除门', () => {
       'host/tools/bridge.ts: createServer',
       'host/tools/bridge.ts: .listen(',
       'host/tools/bridge.ts: node:http(s)/node:net import',
+      'runtime/process/agy-hook-client.ts: node:http(s)/node:net import',
+      'runtime/process/agy-hook-workspace.ts: createServer',
+      'runtime/process/agy-hook-workspace.ts: .listen(',
+      'runtime/process/agy-hook-workspace.ts: node:http(s)/node:net import',
     ])
+  })
+
+  it('binds the agy hook only to its private socket path', () => {
+    const source = stripComments(fs.readFileSync(path.join(SRC_DIR, 'runtime/process/agy-hook-workspace.ts'), 'utf8'))
+    expect(source.match(/\.listen\s*\(\s*[^,)]*/g)).toEqual(['.listen(socketPath'])
+    expect(source).toContain("const socketPath = join(root, 'policy.sock')")
   })
 
   it('Remote 调用面钉版：@Remote 装饰器只暴露当前公开面（无旁路增删）', () => {
