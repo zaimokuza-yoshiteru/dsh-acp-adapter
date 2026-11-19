@@ -19,6 +19,7 @@ import { acpPermissionAudit } from './acp-permission-audit.ts'
 const before = process.env.DSH_E2E_PARENT_APPROVAL_BASELINE === '1'
 const directory =
   process.env.DSH_E2E_PARENT_APPROVAL_EVIDENCE_DIRECTORY ??
+  process.env.DSH_E2E_EVIDENCE_DIR ??
   join(root, '.local/parent-approval-20261021', before ? 'before' : 'after')
 mkdirSync(directory, { recursive: true })
 
@@ -189,7 +190,7 @@ async function fixture(parentKind: 'native' | 'acp' = 'native', locale: 'en' | '
     const card = (key: string): Locator =>
       page.locator('section[data-question-key]').filter({ hasText: parentPermissionMarker(key) })
     const save = async (name: string, details: unknown = {}) => {
-      await page.screenshot({ path: join(directory, `${name}.png`), fullPage: true })
+      await page.screenshot({ path: join(directory, `${name}.png`), fullPage: true, animations: 'disabled' })
       writeFileSync(
         join(directory, `${name}.json`),
         JSON.stringify(
@@ -531,11 +532,15 @@ it.each([
   90_000,
 )
 
-it.each(['file-write', 'long-scope'] as const)(
-  'keeps the complete %s operation available before choosing an authorization scope',
-  async (shape) => {
-    const world = await fixture()
-    const key = `${shape}-review`
+it.each([
+  { shape: 'file-write', locale: 'en' },
+  { shape: 'file-write', locale: 'zh' },
+  { shape: 'long-scope', locale: 'en' },
+] as const)(
+  'keeps the complete $shape operation available before choosing an authorization scope in $locale',
+  async ({ shape, locale }) => {
+    const world = await fixture('native', locale)
+    const key = `${shape}-review-${locale}`
     try {
       const { activation, child } = await world.spawn(key)
       if (before) {
@@ -551,11 +556,28 @@ it.each(['file-write', 'long-scope'] as const)(
       expect(await card.locator('[data-question-detail]').count()).toBe(0)
       expect(text).toContain(world.marker(key))
       if (shape === 'file-write') {
-        expect(text).toContain('write')
-        expect(text).toContain('Content: A short review marker.')
-        expect(text).toContain(`File path: ${world.marker(key)}`)
-        expect(text).not.toContain('Input: {')
-        await saveOptions(world, key, `${key}-default-wide`)
+        expect(text.split('\n')[0]).toBe(locale === 'zh' ? '编辑文件' : 'Edit file')
+        expect(text).toContain(locale === 'zh' ? '内容 (120 行)' : 'Content (120 lines)')
+        expect(text).toContain(`${locale === 'zh' ? '文件路径' : 'File path'}: ${world.marker(key)}`)
+        expect(text).toContain('review line 1')
+        expect(text).toContain(locale === 'zh' ? '如果文件已存在，将覆盖原文件。' : 'Overwrite the file if it exists.')
+        expect(text).not.toContain('"overwrite"')
+        expect(text).not.toContain('review line 120')
+        for (const width of [1600, 390]) {
+          await world.page.setViewportSize({ width, height: width === 390 ? 844 : 1000 })
+          if (width === 390) await world.page.locator('[data-sidebar-collapsed="true"]').waitFor()
+          await details.click({ trial: true })
+          await world.save(`${key}-folded-${width}`)
+          await details.click()
+          const detail = card.locator('[data-question-detail]')
+          await detail.waitFor()
+          const expanded = await detail.innerText()
+          expect(expanded.split('review line 120')).toHaveLength(2)
+          expect(expanded).toContain('"overwrite": true')
+          expect(await world.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+          await world.save(`${key}-expanded-${width}`)
+          await details.click()
+        }
       } else {
         expect(text).toContain('review-permission-context '.repeat(120))
         expect(text).toContain('ACP_LONG_COMMAND_END')

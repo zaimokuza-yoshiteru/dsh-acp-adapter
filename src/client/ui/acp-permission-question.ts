@@ -140,7 +140,7 @@ function PermissionQuestionSurface(props: Props) {
   const selected = draft?.selectedByQuestion ?? {}
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([])
   // Older in-flight questions carry the operation only in detail. Keep that
-  // content open; current producers put the complete operation in question.
+  // content open; current producers put targets and approval scope in the question.
   const [detailsOpen, setDetailsOpen] = useState(question.header === undefined)
   const options = question.options ?? []
   const selectedIndex = options.findIndex((option) => selected[question.id] === option.label)

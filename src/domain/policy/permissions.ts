@@ -223,14 +223,124 @@ function nativePermissionReason(tool: acp.RequestPermissionRequest['toolCall'], 
     .filter((value) => value !== undefined)
     .join('\n')
 }
+
+/** Recognize file and mode directives before shortening a patch. An unknown format stays visible verbatim. */
+function patchScope(patch: string): readonly string[] | undefined {
+  const scope = new Set<string>()
+  const lines = patch.split(/\r?\n/)
+  const applyPatch = lines[0] === '*** Begin Patch'
+  let inGitHunk = false
+  for (const line of lines) {
+    if (line.startsWith('diff --git ')) inGitHunk = false
+    if (line.startsWith('@@')) inGitHunk = true
+    const directive = applyPatch
+      ? /^\*\*\* (?:Add File|Update File|Delete File|Move to): \S/.test(line)
+      : /^(?:diff --git |(?:rename|copy) (?:from|to) |(?:old|new|new file|deleted file) mode )\S/.test(line) ||
+        ((!inGitHunk || !patch.startsWith('diff --git ')) && /^(?:---|\+\+\+) \S/.test(line))
+    if (directive) {
+      scope.add(line)
+    } else if (!(
+      line === '' ||
+      /^[+ -]|^@@/.test(line) ||
+      /^\*\*\* (?:Begin Patch|End Patch|End of File)$/.test(line) ||
+      line === '\\ No newline at end of file' ||
+      /^index [a-f\d]+\.\.[a-f\d]+(?: [0-7]{6})?$/i.test(line) ||
+      /^(?:dis)?similarity index \d+%$/.test(line)
+    ))
+      return undefined
+  }
+  return [...scope]
+}
+
+function fileOperation(name: string | null | undefined, copy: PermissionCopy): string | undefined {
+  switch (name?.startsWith('mcp__') ? /^mcp__[^\s]+?__(\w+)$/.exec(name)?.[1] : name) {
+    case 'edit':
+    case 'client_edit_file':
+    case 'replace_file_content':
+      return copy.editFile
+    case 'client_create_file':
+      return copy.createFile
+    case 'write':
+    case 'write_to_file':
+      return copy.writeFile
+    case 'patch':
+    case 'apply_patch':
+      return copy.applyPatch
+    default:
+      return undefined
+  }
+}
+
+/** Summarize file text only on cards with a full disclosure. Unknown authorization fields stay in the question. */
+function filePermissionText(tool: acp.ToolCallUpdate, copy: PermissionCopy) {
+  const input = recordValue(tool.rawInput)
+  if (!input) return
+  const operation = fileOperation(tool.name ?? tool.title, copy)
+  if (tool.kind !== 'edit' && !((tool.kind == null || tool.kind === 'other') && operation !== undefined)) return
+
+  const pathKeys = ['file_path', 'path', 'target_file', 'TargetFile', 'AbsolutePath'].filter(
+    (key) => typeof input[key] === 'string' && (input[key] as string).trim() !== '',
+  )
+  const patch = typeof input.patch === 'string' ? patchScope(input.patch) : undefined
+  if (pathKeys.length === 0 && !tool.locations?.length && !patch?.length) return
+  const bodies = [
+    ['content', copy.content],
+    ['code_content', copy.content],
+    ['CodeContent', copy.content],
+    ['old_string', copy.beforeEdit],
+    ['TargetContent', copy.beforeEdit],
+    ['new_string', copy.afterEdit],
+    ['ReplacementContent', copy.afterEdit],
+    ['patch', copy.patch],
+  ] as const
+  const shown = new Set(pathKeys)
+  const otherInput = { ...input }
+  const summary = [...new Set(pathKeys.map((key) => `${copy.filePath}: ${visibleCommand(input[key] as string)}`))]
+  if (typeof input.overwrite === 'boolean') {
+    shown.add('overwrite')
+    summary.push(input.overwrite ? copy.overwriteFile : copy.preserveFile)
+  }
+  const details: string[] = []
+  for (const [key, label] of bodies) {
+    const body = input[key]
+    if (typeof body !== 'string' || (key === 'patch' && patch === undefined)) continue
+    shown.add(key)
+    delete otherInput[key]
+    const lines = body.replace(/\r\n/g, '\n').split('\n')
+    if (lines.at(-1) === '') lines.pop()
+    const preview = visibleCommand(lines.slice(0, 2).join('\n'))
+    if (body === '') {
+      summary.push(`${label}: ${copy.previewLines(0)}`)
+    } else if (lines.length <= 2 && preview.length <= 120) {
+      summary.push(`${label}: ${visibleCommand(body)}`)
+    } else {
+      summary.push(`${label} (${copy.previewLines(lines.length)}): ${preview.slice(0, 120)}…`)
+      if (key === 'patch' && patch) for (const directive of patch) summary.push(visibleCommand(directive))
+    }
+    const ambiguous = bodies.some(
+      ([other, otherLabel]) => other !== key && otherLabel === label && typeof input[other] === 'string',
+    )
+    details.push(`${ambiguous ? `${label} (\`${key}\`)` : label}\n\n${markdownCodeBlock(visibleCommand(body))}`)
+  }
+  if (!details.length) return
+  details.push(permissionRequestDetail({ ...tool, rawInput: otherInput })!)
+  return {
+    title: tool.title ? fileOperation(tool.title, copy) : operation,
+    shown,
+    summary,
+    detail: details.join('\n\n'),
+  }
+}
+
 /** Keep targets and unknown scope visible; verified Team task prose stays in raw-request details. */
 function permissionQuestionFacts(
   tool: acp.RequestPermissionRequest['toolCall'],
   copy: PermissionCopy,
   profile?: AcpNativeQuestionProfile,
+  file?: ReturnType<typeof filePermissionText>,
 ): string {
   const command = tool.kind === 'execute' ? commandOf(tool) : undefined
-  const title = tool.title ?? tool.name
+  const title = file?.title ?? tool.title ?? tool.name
   const lines: string[] = []
   if (typeof title === 'string' && title.trim() !== '' && title !== command) lines.push(visibleCommand(title))
   else if (command === undefined) lines.push(copy.actions[tool.kind ?? ''] ?? copy.restrictedOperation)
@@ -282,18 +392,14 @@ function permissionQuestionFacts(
         presented.add('WaitMsBeforeAsync')
       }
     }
-    const fileContent = typeof record.file_path === 'string' && typeof record.content === 'string'
-    if (fileContent) {
-      lines.push(`${copy.filePath}: ${visibleCommand(record.file_path as string)}`)
-      lines.push(`${copy.content}: ${visibleCommand(record.content as string)}`)
-    }
+    if (file) lines.push(...file.summary)
     const remaining = Object.fromEntries(
       Object.entries(record).filter(
         ([key]) =>
           key !== commandKey &&
           !presented.has(key) &&
           !(key === 'cwd' && directory !== undefined) &&
-          !(fileContent && (key === 'file_path' || key === 'content')),
+          !file?.shown.has(key),
       ),
     )
     input = Object.keys(remaining).length === 0 ? undefined : remaining
@@ -552,9 +658,10 @@ export function createAcpNativePermissionHandler(
     const renderedLabels = optionLabels(params.options, copy)
     const labels = new Map(renderedLabels.map((label, index) => [label, params.options[index]!]))
     try {
+      const file = nativeInteractionQuestion ? undefined : filePermissionText(params.toolCall, copy)
       const detail = nativeInteractionQuestion
         ? permissionQuestionDetail(params.toolCall, copy)
-        : permissionRequestDetail(params.toolCall)
+        : (file?.detail ?? permissionRequestDetail(params.toolCall))
       const questionRequest = {
         agent,
         questions: [
@@ -562,7 +669,7 @@ export function createAcpNativePermissionHandler(
             id: questionId,
             question: nativeInteractionQuestion
               ? params.toolCall.title!
-              : [permissionQuestionFacts(params.toolCall, copy, deps.nativeQuestionProfile), humanPolicyReason]
+              : [permissionQuestionFacts(params.toolCall, copy, deps.nativeQuestionProfile, file), humanPolicyReason]
                   .filter((part) => part !== undefined)
                   .join('\n\n'),
             ...(nativeInteractionQuestion ? {} : { header: copy.permission }),

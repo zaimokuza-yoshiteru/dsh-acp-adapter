@@ -429,9 +429,93 @@ describe('complete ACP permission choices', () => {
       expect(question.question).toContain('"network": true')
       expect(question.question).not.toContain('"file_path"')
       expect(question.detail).toContain('"file_path": "/workspace/review.md"')
-      expect(question.detail).toContain('"content": "first line\\nsecond line\\u001b"')
+      expect(question.detail).toContain('first line\nsecond line\\x1b')
     },
   )
+
+  it.each([
+    ['client_create_file', 'target_file', 'code_content', 'en', 'Content'],
+    ['client_edit_file', 'TargetFile', 'CodeContent', 'zh', '内容'],
+    ['edit', 'file_path', 'new_string', 'en', 'After'],
+  ] as const)(
+    'previews long %s changes without dropping the target or approval scope',
+    async (name, pathKey, bodyKey, locale, label) => {
+      const path = '/workspace/new file'
+      const body = ['x'.repeat(2000), ...Array.from({ length: 119 }, (_, i) => `file line ${i + 2}`)].join('\n')
+      const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async ({ questions: [question] }) => ({
+        answers: [{ id: question!.id, selected: ['Reject'] }],
+      }))
+      const response = await createAcpNativePermissionHandler({ userQuestions: { ask }, getAgent: () => ({}), locale })(
+        {
+          ...request([
+            option('one', 'Allow', 'allow_once'),
+            option('many', 'Always', 'allow_always'),
+            option('no', 'Reject', 'reject_once'),
+          ]),
+          toolCall: {
+            toolCallId: 'long-file',
+            kind: 'edit',
+            name,
+            ...(name === 'edit' ? { title: 'Update the reviewer’s draft' } : {}),
+            rawInput: {
+              [pathKey]: path,
+              [bodyKey]: body,
+              ...(name === 'edit' ? { old_string: 'old text' } : {}),
+              overwrite: name !== 'edit',
+            },
+            locations: [{ path: '/workspace/second', line: 5 }],
+          },
+        },
+      )
+      const card = ask.mock.calls[0]![0].questions[0]!
+      expect(response.outcome).toEqual({ outcome: 'selected', optionId: 'no' })
+      expect(card.question).toContain(path)
+      expect(card.question).toContain('/workspace/second:5')
+      expect(card.question.split('\n')[0]).toBe(
+        name === 'edit' ? 'Update the reviewer’s draft' : locale === 'zh' ? '编辑文件' : 'Create file',
+      )
+      expect(card.question).toContain(
+        name === 'edit'
+          ? 'Keep the existing file.'
+          : locale === 'zh'
+            ? '如果文件已存在，将覆盖原文件。'
+            : 'Overwrite the file if it exists.',
+      )
+      expect(card.question).not.toContain('"overwrite"')
+      expect(card.detail).toContain(`"overwrite": ${name !== 'edit'}`)
+      expect(card.question).toContain(`${label} (${locale === 'zh' ? '120 行' : '120 lines'})`)
+      expect(card.question).not.toContain('file line 120')
+      expect(card.question?.length).toBeLessThan(400)
+      expect(card.detail?.split(body)).toHaveLength(2)
+      if (name === 'edit') expect(card.question).toContain('Before: old text')
+    },
+  )
+
+  it('finds later targets in a patch-only request and keeps unknown patch directives visible', async () => {
+    const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async () => ({ answers: [] }))
+    const patch = [
+      '*** Begin Patch',
+      '*** Update File: /a',
+      '+visible',
+      ...Array(50).fill('+body'),
+      '*** Update File: /b',
+      '+last',
+      '*** End Patch',
+    ].join('\n')
+    const handler = createAcpNativePermissionHandler({ userQuestions: { ask }, getAgent: () => ({}) })
+    const requestPatch = (patch: string) =>
+      handler({
+        ...request([option('one', 'Allow', 'allow_once')]),
+        toolCall: { toolCallId: 'patch', name: 'apply_patch', rawInput: { patch } },
+      })
+    await requestPatch(patch)
+    const card = ask.mock.calls[0]![0].questions[0]!
+    expect(card.question).toContain('*** Update File: /b')
+    expect(card.question).not.toContain('+last')
+    expect(card.detail).toContain(patch)
+    await requestPatch(`${patch}\n*** External grant: access all files`)
+    expect(ask.mock.calls[1]![0].questions[0]!.question).toContain('*** External grant: access all files')
+  })
 
   it('preserves null input without fabricating a location or a line number', async () => {
     const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async () => ({ answers: [] }))
