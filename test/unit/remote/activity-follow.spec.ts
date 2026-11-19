@@ -1,5 +1,5 @@
 import { getEventListeners } from 'node:events'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { AcpRemoteService } from '../../../src/remote/service.ts'
 import type { AcpActivityRecord } from '../../../src/persistence/sidecar.ts'
@@ -45,7 +45,7 @@ function createService(source: {
 }
 
 describe('ACP activity follow lifecycle', () => {
-  it('marks only a recognized initial binding race as retryable', async () => {
+  it('distinguishes an initial binding wait from a confirmed denial', async () => {
     const source = {
       page: async () => [],
       head: async () => 0,
@@ -66,19 +66,32 @@ describe('ACP activity follow lifecycle', () => {
     await expect(denied.next()).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
   })
 
-  it('treats an errored pending-state probe as unauthorized', async () => {
+  it('withholds the journal through a temporary ownership-read failure and opens on a confirmed retry', async () => {
+    const subscribe = vi.fn(() => () => undefined)
+    const status = vi
+      .fn<() => Promise<'owned'>>()
+      .mockRejectedValueOnce(new Error('binding store unavailable'))
+      .mockResolvedValue('owned')
     const service = createService({
       page: async () => [],
       head: async () => 0,
-      subscribe: () => () => undefined,
-      activityReadStatus: async () => {
-        throw new Error('binding store unavailable')
-      },
+      subscribe,
+      activityReadStatus: status,
     })
-    const iterator = service
-      .activityFollow('session-1', undefined, new AbortController().signal)
-      [Symbol.asyncIterator]()
-    await expect(iterator.next()).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
+    const controller = new AbortController()
+    const open = (id: string) => service.activityFollow(id, undefined, controller.signal)[Symbol.asyncIterator]()
+    await expect(open('../invalid').next()).rejects.toMatchObject({ code: 'gateway/bad-request' })
+    expect(status).not.toHaveBeenCalled()
+    await expect(open('session-1').next()).rejects.toMatchObject({ code: 'dsh-acp/activity-owner-unavailable' })
+    expect(subscribe).not.toHaveBeenCalled()
+    const retry = open('session-1')
+    try {
+      await expect(retry.next()).resolves.toMatchObject({ value: { type: 'opened' } })
+      expect(subscribe).toHaveBeenCalledTimes(1)
+    } finally {
+      controller.abort()
+      await retry.return?.()
+    }
   })
 
   it('uses one abort listener for a long stream and releases it on iterator return', async () => {

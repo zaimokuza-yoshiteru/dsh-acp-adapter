@@ -49,6 +49,7 @@ export type AcpErrorCategory =
   | 'agent-crash'
   | 'user-rejected'
   | 'activity-binding-pending'
+  | 'activity-owner-unavailable'
   | 'resume-conflict'
 
 /**

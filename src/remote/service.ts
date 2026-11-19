@@ -875,12 +875,13 @@ export class AcpRemoteService extends TypertRemoteService {
     request: { readonly limit?: number; readonly filter?: AcpActivityFilterView } | undefined,
     signal: AbortSignal,
   ): AsyncIterable<AcpActivityJournalFrame> {
+    validateActivitySessionId(sessionId)
     if (this.resolved.activityReadStatus !== null) {
-      let status: 'owned' | 'binding-pending' | 'denied' = 'denied'
+      let status: 'owned' | 'binding-pending' | 'denied'
       try {
         status = await this.resolved.activityReadStatus(sessionId)
-      } catch {
-        status = 'denied'
+      } catch (cause) {
+        throw acpRemoteFailure('activity-owner-unavailable', 'ACP activity ownership could not be read', cause)
       }
       if (status === 'binding-pending')
         throw acpRemoteFailure('activity-binding-pending', 'ACP activity is waiting for the session binding')
@@ -982,8 +983,7 @@ export class AcpRemoteService extends TypertRemoteService {
   }
 
   private async hasOwnedSessionAccess(sessionId: string): Promise<boolean> {
-    if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > 256)
-      throw badRequest('ACP activity session id is invalid')
+    validateActivitySessionId(sessionId)
     const access = this.resolved.ownedSessionReadGate
     return access !== null && (await access(sessionId))
   }
@@ -1547,6 +1547,16 @@ export class AcpRemoteService extends TypertRemoteService {
     }
     return { agentId, count: await facts.countBoundSessions(acpRouteId(agentId)) }
   }
+}
+
+function validateActivitySessionId(sessionId: string): void {
+  if (
+    typeof sessionId !== 'string' ||
+    !/^[A-Za-z0-9._-]{1,256}$/.test(sessionId) ||
+    sessionId === '.' ||
+    sessionId === '..'
+  )
+    throw badRequest('ACP activity session id is invalid')
 }
 
 function validateActivityReadRequest(limit: number, filter: AcpActivityFilterView | undefined): void {

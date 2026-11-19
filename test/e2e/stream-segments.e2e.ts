@@ -310,11 +310,11 @@ it.each(['claude', 'codex', 'devin'])(
       ).toBe(1)
       expect(await page.getByRole('button', { name: 'Stopped', exact: true }).count()).toBe(1)
       if (profile === 'claude') {
-        // Reconnect can restore the transcript before the Host confirms the Agent route.
+        // Reconnect can restore the transcript before either live or stored routes arrive.
         const remote = host.ctx.get('dshAcp') as AcpRemoteService
         const routes = vi.spyOn(remote, 'ownedProviderRoutes').mockResolvedValue({
           providers: [],
-          historicalProviders: [provider],
+          historicalProviders: [],
         })
         try {
           await page.reload()
@@ -326,6 +326,18 @@ it.each(['claude', 'codex', 'devin'])(
         }
         host.ctx.emit('llm/adapters-updated')
         await verifyOrder()
+        // Deleting the configured Agent revokes new actions. The original input's
+        // persisted activity still belongs to this interrupted conversation after reload.
+        await host.ctx.settings.replace('dsh-acp-adapter', { agents: {} })
+        await expect
+          .poll(() => remote.ownedProviderRoutes())
+          .toMatchObject({
+            providers: expect.not.arrayContaining([provider]),
+            historicalProviders: expect.arrayContaining([provider]),
+          })
+        await page.reload()
+        await verifyOrder()
+        expect(await page.getByRole('button', { name: 'Stopped', exact: true }).count()).toBe(1)
       }
       expect(errors).toEqual([])
     } catch (error) {

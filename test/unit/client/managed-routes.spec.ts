@@ -45,13 +45,33 @@ it('ignores a late authority reply from before reconnect or disposal', async () 
   expect(catalog.owns('acp-new')).toBe(false)
 })
 
-it('fails closed when the Host cannot confirm a previously registered route', async () => {
+it('fails closed while routes are unavailable and restores authority without another adapter event', async () => {
+  vi.useFakeTimers()
+  const routes = { providers: ['acp-old'], historicalProviders: [] }
   const read = vi
     .fn<() => Promise<AcpOwnedRoutesView>>()
-    .mockResolvedValueOnce({ providers: ['acp-old'], historicalProviders: [] })
+    .mockResolvedValueOnce(routes)
     .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValueOnce(routes)
+    .mockRejectedValue(new Error('offline'))
   const catalog = new ManagedAcpRouteCatalog(read)
-  await catalog.refresh()
-  await catalog.refresh()
-  expect(catalog.owns('acp-old')).toBe(false)
+  try {
+    await catalog.refresh()
+    await catalog.refresh()
+    expect(catalog.owns('acp-old')).toBe(false)
+    await vi.runAllTimersAsync()
+    expect(catalog.owns('acp-old')).toBe(true)
+    await catalog.refresh()
+    await vi.runAllTimersAsync()
+    expect(read).toHaveBeenCalledTimes(7)
+    expect(catalog.owns('acp-old')).toBe(false)
+    catalog.reset()
+    await Promise.resolve()
+    catalog.dispose()
+    await vi.runAllTimersAsync()
+    expect(read).toHaveBeenCalledTimes(8)
+  } finally {
+    catalog.dispose()
+    vi.useRealTimers()
+  }
 })

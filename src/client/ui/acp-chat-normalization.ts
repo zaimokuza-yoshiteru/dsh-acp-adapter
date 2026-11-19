@@ -288,6 +288,7 @@ export function normalizeAcpChatNodes(
     // is ambiguous instead of repeating rows under every step.
     const window = owners.get(windowKey) === 1 ? windows.get(windowKey) : undefined
     const journalReady = window !== undefined && !window.unavailable
+    if (data.historicalLookup && (!journalReady || window.rows.length === 0)) continue
     // A committed response keeps its final record even before its journal loads.
     // Native ChatNodeSeat owns whether earlier replies fold with the process,
     // according to ui-chat.foldedReplies; projection must not override placement.
