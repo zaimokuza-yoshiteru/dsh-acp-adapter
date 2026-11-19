@@ -5,6 +5,7 @@ import type {
   ConversationNodeDefinition,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { acpReplayPayloadOf } from '../data/acp-replay-payload.ts'
+import type { ManagedAcpRouteCatalog } from '../data/managed-routes.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-conversation/client' {
   interface ConversationStepDataMap {
@@ -59,6 +60,34 @@ type ActivityNode = ChatConversationViewNode & {
 }
 
 type OwnsAcpRoute = (provider: string | undefined) => boolean
+
+/** A changed provider set must also rematch already loaded, interrupted history. */
+export function followAcpActivityDefinitions(
+  catalog: ManagedAcpRouteCatalog,
+  register: (definition: ConversationNodeDefinition) => () => void,
+): () => void {
+  let current: ReadonlySet<string> | undefined
+  let removeLive: (() => void) | undefined
+  let removeSettled: (() => void) | undefined
+  const reconcile = (): void => {
+    const providers = new Set(catalog.store.getSnapshot().providers)
+    const previous = current
+    if (previous?.size === providers.size && [...providers].every((provider) => previous.has(provider))) return
+    current = providers
+    removeSettled?.()
+    removeLive?.()
+    // DSH coalesces synchronous registry changes into one history rebuild.
+    removeLive = register(createAcpLiveActivityDefinition(catalog.owns))
+    removeSettled = register(createAcpActivityDefinition(catalog.owns))
+  }
+  reconcile()
+  const unsubscribe = catalog.store.subscribe(reconcile)
+  return () => {
+    unsubscribe()
+    removeSettled?.()
+    removeLive?.()
+  }
+}
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)

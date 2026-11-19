@@ -10,6 +10,7 @@ Find installation commands, release dates, and package checksums on [GitHub Rele
 
 - 兼容 DSH `0.2.2-rc.4`。DSH RC.3 用户请安装插件 `0.2.2-rc.3.1`。Devin CLI 需要 `3000.14.30821` 或更新版本。
 - 添加 Agent 后自动检查连接。检查失败会保留配置，修正后可直接重试。
+- 停止回复后刷新页面，即使 Agent 目录稍后才加载，也能在原回复中展开工具调用。
 - 专用 ACP 模式在原会话确认切模后更新选择。在其他模式新建 CodeBuddy 或 OpenCode 主会话时，选择**由 Agent 管理模型**也可原地切模。已有具名会话可按原模式另开，历史和草稿保留在原会话。
 - OpenCode 自定义回答保留在原问题卡上。策略插件可以接入二选一审批，Teams 批量审批只处理仍可回答的请求，全队中断操作显示在成员设置页脚。
 - 工具消费最后一条排队消息后，Agent 可以继续完成本轮任务。感谢 lukstei 提供复现和修复。Agent 拒绝插话时，会提示下次请求将跳过本轮内容。
@@ -19,6 +20,7 @@ Find installation commands, release dates, and package checksums on [GitHub Rele
 
 - Support DSH `0.2.2-rc.4`. For DSH RC.3, install plugin `0.2.2-rc.3.1`. Devin CLI requires `3000.14.30821` or later.
 - Saving a new Agent checks its connection automatically. A failed check keeps the configuration so you can correct the problem and retry.
+- After stopping a reply and refreshing the page, you can expand its tool calls even if the Agent directory loads after the conversation.
 - Dedicated ACP mode updates the model after the current Agent session confirms the switch. In other modes, start a CodeBuddy or OpenCode main chat with **Agent-managed model** to switch within that conversation. Existing named-model chats can open a separate chat in the same mode and keep their original history and draft.
 - OpenCode custom answers stay on the original question card. Policy plugins can handle binary approvals. Teams batch approvals cover only actionable requests, and the team-wide interrupt is in the member settings footer.
 - Agents can finish their turn after a tool consumes the last queued message. Thanks to lukstei for the reproduction and fix. When an Agent declines a mid-turn message, the UI explains which turn the next request will skip.

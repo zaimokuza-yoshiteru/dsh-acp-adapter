@@ -1,6 +1,7 @@
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
 import type { SessionEventLikeEntry } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionEvent } from '@deepseek-ai/dsh-session/types'
 import type {
@@ -13,15 +14,19 @@ import type {
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {
   ConversationEventDefinitions,
+  ConversationEventRegistry as ConversationEventRegistryType,
   ConversationNodeAssembler as ConversationNodeAssemblerType,
   ConversationViewDefinitions,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { AcpActivityNodeData } from '../../src/client/ui/activity-definitions.ts'
+import { ManagedAcpRouteCatalog } from '../../src/client/data/managed-routes.ts'
+import type { AcpOwnedRoutesView } from '../../src/contract/remote.ts'
 import {
   acpPromptAnchorDefinition,
   createAcpEffectiveRouteDefinition,
   createAcpActivityDefinition,
   createAcpLiveActivityDefinition,
+  followAcpActivityDefinitions,
 } from '../../src/client/ui/activity-definitions.ts'
 
 type EventEntry = SessionEventLikeEntry
@@ -38,13 +43,18 @@ type ActivitySnapshot = {
   readonly timeline: ConversationTimelineSnapshot
 }
 
-const upstreamAssemblerPath = resolve(
+const upstreamConversationPath = resolve(
   process.env.DSH_UPSTREAM_CHECKOUT ?? resolve(process.cwd(), '../reference/deepseek-harness'),
-  'packages/client/ui-conversation/src/client/conversation/assembler.ts',
+  'packages/client/ui-conversation/src/client/conversation',
 )
-const { ConversationNodeAssembler } = (await import(pathToFileURL(upstreamAssemblerPath).href)) as {
-  readonly ConversationNodeAssembler: typeof ConversationNodeAssemblerType
-}
+const [{ ConversationNodeAssembler }, { ConversationEventRegistry }] = (await Promise.all(
+  ['assembler.ts', 'event-registry.ts'].map(
+    (file) => import(pathToFileURL(resolve(upstreamConversationPath, file)).href),
+  ),
+)) as [
+  { ConversationNodeAssembler: typeof ConversationNodeAssemblerType },
+  { ConversationEventRegistry: typeof ConversationEventRegistryType },
+]
 
 let nextSeq = 1
 let nextTime = 1
@@ -115,6 +125,10 @@ function makeAssembler(includeRequestPrompt = true, includeSettledActivity = fal
     acpPromptAnchorDefinition,
     ...(includeSettledActivity ? [createAcpActivityDefinition((provider) => provider === 'acp-devin')] : []),
   ]
+  return assemblerFor({ entries: () => definitions, fallbackEntry: () => undefined })
+}
+
+function assemblerFor(eventDefinitions: ConversationEventDefinitions) {
   const view: ConversationViewDefinition<ConversationViewNode, ActivitySnapshot> = {
     target: 'chat',
     create: () => {
@@ -133,10 +147,6 @@ function makeAssembler(includeRequestPrompt = true, includeSettledActivity = fal
         },
       }
     },
-  }
-  const eventDefinitions: ConversationEventDefinitions = {
-    entries: () => definitions,
-    fallbackEntry: () => undefined,
   }
   const viewDefinitions: ConversationViewDefinitions = { entries: () => [view] }
   const assembler = new ConversationNodeAssembler(eventDefinitions, viewDefinitions)
@@ -179,6 +189,79 @@ function nodeFor(harness: ReturnType<typeof makeAssembler>, messageId: string): 
   expect(node, `expected live marker anchored to ${messageId}`).toBeDefined()
   return node!
 }
+
+it('restores the journal anchor of an interrupted turn when the current route read finishes after history replay', async () => {
+  const older = Promise.withResolvers<AcpOwnedRoutesView>()
+  const current = Promise.withResolvers<AcpOwnedRoutesView>()
+  const reconnect = Promise.withResolvers<AcpOwnedRoutesView>()
+  const read = vi
+    .fn<() => Promise<AcpOwnedRoutesView>>()
+    .mockReturnValueOnce(older.promise)
+    .mockReturnValueOnce(current.promise)
+    .mockResolvedValueOnce({ providers: ['acp-codex', 'acp-claude'], historicalProviders: ['acp-old'] })
+    .mockReturnValueOnce(reconnect.promise)
+  const catalog = new ManagedAcpRouteCatalog(read)
+  const initialRead = catalog.refresh()
+  const currentRead = catalog.refresh()
+  older.resolve({ providers: ['acp-claude'], historicalProviders: [] })
+  await initialRead
+
+  const registry = new ConversationEventRegistry(new Context())
+  registry.register(requestPromptDefinition())
+  registry.register(createAcpEffectiveRouteDefinition())
+  registry.register(acpPromptAnchorDefinition)
+  const staticRules = registry.entries()
+  const stopFollowing = followAcpActivityDefinitions(catalog, (definition) => registry.register(definition))
+  const harness = assemblerFor(registry)
+  const unsubscribe = registry.subscribe(() => {
+    harness.assembler.rebuildRegistry()
+    harness.assembler.flush()
+  })
+  const anchor = () => harness.snapshot().timeline.turns.get(1)?.steps[0]?.data.get('acp-activity')
+  try {
+    harness.replaceWindow(
+      [
+        turnStart(1),
+        stepStart(1, 1),
+        userMessage('cancelled-input'),
+        header('acp-claude'),
+        event('assistant/message', {
+          interrupted: true,
+          message: { source: { kind: 'model', provider: 'acp-claude' }, content: [{ type: 'text', text: 'partial' }] },
+        }),
+        event('step/end', { turn: 1, step: 1 }),
+        event('turn/end', { turn: 1 }),
+      ],
+      false,
+    )
+    expect(anchor()).toBeUndefined()
+    expect(liveNodes(harness).filter((node) => node.visibility === 'visible')).toEqual([])
+
+    current.resolve({ providers: ['acp-claude', 'acp-codex'], historicalProviders: [] })
+    await currentRead
+    expect(anchor()).toMatchObject({ settled: true, profileId: 'acp-claude', promptAnchorMessageId: 'cancelled-input' })
+    expect(liveNodes(harness).find((node) => node.id === 'input:cancelled-input')?.visibility).toBe('visible')
+
+    const admittedRules = registry.entries()
+    await catalog.refresh()
+    expect(registry.entries()).toBe(admittedRules)
+    catalog.reset()
+    expect(anchor()).toBeUndefined()
+    expect(liveNodes(harness).filter((node) => node.visibility === 'visible')).toEqual([])
+
+    stopFollowing()
+    expect(registry.entries()).toEqual(staticRules)
+    const stoppedRules = registry.entries()
+    reconnect.resolve({ providers: ['acp-claude'], historicalProviders: [] })
+    await vi.waitFor(() => expect(catalog.owns('acp-claude')).toBe(true))
+    expect(registry.entries()).toBe(stoppedRules)
+    expect(liveNodes(harness)).toEqual([])
+  } finally {
+    unsubscribe()
+    stopFollowing()
+    catalog.dispose()
+  }
+})
 
 it('replays a request header arriving after its direct input and retracts a native-route marker', () => {
   nextSeq = 1
