@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -45,7 +46,7 @@ const binding: AcpBindingData = {
   provider: 'acp-local',
   profileId: 'local',
   agentSessionId: 'remote-id',
-  canonicalCwd: '/work',
+  canonicalCwd: realpathSync.native(process.cwd()),
   agent: { name: 'OpenCode' },
   protocolVersion: 1,
   generation: 1,
@@ -124,11 +125,12 @@ it('recovers a legacy picker label from the bound receipt and suppresses it for 
       1,
     ),
   )
+  let workingDirectory = process.cwd()
   const adapter = new AcpProfileAdapter(
     'local',
     () => config,
     { ok: false, message: 'no process in this test' },
-    () => ({ workingDirectory: binding.canonicalCwd }) as never,
+    () => ({ workingDirectory }) as never,
     {} as never,
     undefined,
     undefined,
@@ -136,6 +138,9 @@ it('recovers a legacy picker label from the bound receipt and suppresses it for 
   )
   try {
     expect(await adapter.confirmedLegacyModel(id, 'acp-local')).toBe(b)
+    workingDirectory = root
+    expect(await adapter.confirmedLegacyModel(id, 'acp-local')).toBeUndefined()
+    workingDirectory = process.cwd()
     await store.beginDispatch({
       key: 'sending',
       provider: 'acp-local',
