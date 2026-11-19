@@ -6,13 +6,13 @@
 
 ## 安装
 
-已发布版本 [`0.2.2-rc.3.1`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.3.1) 兼容 DSH `0.2.2-rc.3`。安装前请确认宿主版本一致。其他版本见 [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
+已发布版本 [`0.2.2-rc.4.1`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.4.1) 兼容 DSH `0.2.2-rc.4`。安装前请确认宿主版本一致。其他版本见 [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
 
 **推荐：** 在 DSH 创造模式中发送：
 
-> 请安装并启用 ACP 插件：`@zaimokuza/dsh-acp-adapter@0.2.2-rc.3.1`。
+> 请安装并启用 ACP 插件：`@zaimokuza/dsh-acp-adapter@0.2.2-rc.4.1`。
 
-按提示确认安装。也可打开 **插件 → 添加插件**，粘贴 `@zaimokuza/dsh-acp-adapter@0.2.2-rc.3.1`。如果安装完成后提示启用，选择 **立即启用**。
+按提示确认安装。也可打开 **插件 → 添加插件**，粘贴 `@zaimokuza/dsh-acp-adapter@0.2.2-rc.4.1`。如果安装完成后提示启用，选择 **立即启用**。
 
 <details>
 <summary>其他安装方式：命令行、Git 与压缩包</summary>
@@ -23,18 +23,18 @@
 
 ```bash
 # Desktop
-dsh plugin --profile desktop add @zaimokuza/dsh-acp-adapter@0.2.2-rc.3.1
+dsh plugin --profile desktop add @zaimokuza/dsh-acp-adapter@0.2.2-rc.4.1
 
 # Web
-npx @deepseek-ai/dsh@0.2.2-rc.3 plugin --profile web add @zaimokuza/dsh-acp-adapter@0.2.2-rc.3.1
+npx @deepseek-ai/dsh@0.2.2-rc.4 plugin --profile web add @zaimokuza/dsh-acp-adapter@0.2.2-rc.4.1
 ```
 
 使用 Git 或压缩包安装时，将下表的 Git 地址或 .tgz 下载地址粘贴到插件管理器。
 
 | 来源              | 示例                                                                                                                                                   |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Git               | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.2-rc.3.1`                                                                         |
-| 预构建插件包 .tgz | [下载 0.2.2-rc.3.1](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.2-rc.3.1/zaimokuza-dsh-acp-adapter-0.2.2-rc.3.1.tgz) |
+| Git               | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.2-rc.4.1`                                                                         |
+| 预构建插件包 .tgz | [下载 0.2.2-rc.4.1](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.2-rc.4.1/zaimokuza-dsh-acp-adapter-0.2.2-rc.4.1.tgz) |
 
 此包包含编译产物，与 npm 发布包一致。GitHub 自动生成的 Source code ZIP/TAR.GZ 是源码归档，不是构建后的插件包；未缓存的依赖仍需联网安装。
 
@@ -45,20 +45,20 @@ npx @deepseek-ai/dsh@0.2.2-rc.3 plugin --profile web add @zaimokuza/dsh-acp-adap
 ## 连接 Agent
 
 1. 在运行 DSH 的电脑上安装 Agent CLI，按需登录。
-2. 打开 **插件 → ACP 适配器**，从[官方 Agent 目录](https://agentclientprotocol.com/registry)选择 Agent 或手动填写启动命令，然后保存。RC.4 开发版会自动检查连接。使用 RC.3 或需要重试时，点击**重新检查**。
+2. 打开 **插件 → ACP 适配器**，从[官方 Agent 目录](https://agentclientprotocol.com/registry)选择 Agent 或手动填写启动命令，并保存，插件会自动检查连接。检查失败时，按提示处理并点击**重新检查**。
 3. 新建会话，在模型菜单选择 Agent 和模型。如果 Agent 没有列出模型，选择其当前配置。
 
 常用 Agent 的启动与登录方式：
 
-| Agent                                 | ACP 命令                                                | 认证                 |
-| ------------------------------------- | ------------------------------------------------------- | -------------------- |
-| Devin（RC.4 开发版需 3000.14.30821+） | `devin acp`                                             | `devin auth login`   |
-| CodeBuddy CLI（WorkBuddy）            | `codebuddy --acp`                                       | `codebuddy`          |
-| OpenCode                              | `opencode acp`                                          | 按所选模型服务商配置 |
-| Antigravity                           | `agy_acp_server.par`（Windows 为 `agy_acp_server.exe`） | ACP 独立登录         |
-| Claude                                | `claude-agent-acp`                                      | `claude`             |
-| Codex                                 | `codex-acp`                                             | `codex login`        |
-| Qwen Code                             | `qwen --acp`                                            | `qwen`               |
+| Agent                      | ACP 命令                                                | 认证                 |
+| -------------------------- | ------------------------------------------------------- | -------------------- |
+| Devin（3000.14.30821+）    | `devin acp`                                             | `devin auth login`   |
+| CodeBuddy CLI（WorkBuddy） | `codebuddy --acp`                                       | `codebuddy`          |
+| OpenCode                   | `opencode acp`                                          | 按所选模型服务商配置 |
+| Antigravity                | `agy_acp_server.par`（Windows 为 `agy_acp_server.exe`） | ACP 独立登录         |
+| Claude                     | `claude-agent-acp`                                      | `claude`             |
+| Codex                      | `codex-acp`                                             | `codex login`        |
+| Qwen Code                  | `qwen --acp`                                            | `qwen`               |
 
 > WorkBuddy 用户可通过 CodeBuddy CLI 接入 DSH。参见 [ACP 命令参考](https://www.codebuddy.cn/docs/cli/cli-reference)和 [CodeBuddy 账号与订阅说明](https://www.codebuddy.cn/docs/ide/Account/pricing)。
 
@@ -68,7 +68,7 @@ npx @deepseek-ai/dsh@0.2.2-rc.3 plugin --profile web add @zaimokuza/dsh-acp-adap
 
 如需让 Agent 管理对话上下文，可选择 **ACP** 模式。此模式提供 DSH 工具，不加载 DSH 的插件管理、子代理和压缩工具。
 
-**RC.4 开发版的会话内切模**。在标准、创造、PTC 或极简模式新建 CodeBuddy 或 OpenCode 主会话时，可在模型菜单选择 **由 Agent 管理模型**。连接后，点击输入区旁的模型名即可切换并继续原对话。专用 **ACP** 模式通过原生模型选择器切换。其他按具体模型创建的会话可以按原模式另开，历史和草稿留在原会话。
+**在会话中切换模型**。在标准、创造、PTC 或极简模式新建 CodeBuddy 或 OpenCode 主会话时，可在模型菜单选择 **由 Agent 管理模型**。连接后，点击输入区旁的模型名即可切换并继续原对话。专用 **ACP** 模式通过原生模型选择器切换。其他按具体模型创建的会话可以按原模式另开，历史和草稿留在原会话。
 
 ## 使用会话
 
@@ -100,4 +100,4 @@ npx @deepseek-ai/dsh@0.2.2-rc.3 plugin --profile web add @zaimokuza/dsh-acp-adap
 
 在 **ACP 诊断**中可导出安全摘要 JSON；其中不含消息正文、命令、路径、原始会话 ID 或 ACP 凭据。DSH 原生会话日志 ZIP 可能含提示词、工具参数、文件路径和附件；分享前请检查并移除敏感信息。
 
-需要求助时，向 [Issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) 附上错误编号、DSH/插件版本和已脱敏的日志片段。已发布版本的技术边界见[原生复用说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.3.1/docs/native-reuse.md)。
+需要求助时，向 [Issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) 附上错误编号、DSH/插件版本和已脱敏的日志片段。已发布版本的技术边界见[原生复用说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.4.1/docs/native-reuse.md)。

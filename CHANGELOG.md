@@ -4,16 +4,25 @@
 
 Find installation commands, release dates, and package checksums on [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases).
 
-## Unreleased
+## 0.2.2-rc.4.1
 
-- 适配 DSH `0.2.2-rc.4`。ACP Agent 拒绝继续时，提示会说明下次请求会跳过本轮内容。
-- 在插件详情中滚动页面会收起打开的 Agent 目录，避免列表移出小屏。
-- 工具读走最后一条排队消息后，Agent 可以继续完成本轮任务。感谢 lukstei 提供复现和修复。
-- Devin CLI 的最低支持版本升至 `3000.14.30821`。
-- Support DSH `0.2.2-rc.4`. When an ACP Agent refuses to continue, the message explains which turn it will skip on the next request.
-- Scrolling the plugin details page dismisses the open Agent catalog so its entries stay reachable on small screens.
-- Agents can finish their work after a tool consumes the last queued message. Thanks to lukstei for the reproduction and fix.
-- Devin CLI now requires version `3000.14.30821` or later.
+### 中文
+
+- 兼容 DSH `0.2.2-rc.4`。DSH RC.3 用户请安装插件 `0.2.2-rc.3.1`。Devin CLI 需要 `3000.14.30821` 或更新版本。
+- 添加 Agent 后自动检查连接。检查失败会保留配置，修正后可直接重试。
+- 专用 ACP 模式在原会话确认切模后更新选择。在其他模式新建 CodeBuddy 或 OpenCode 主会话时，选择**由 Agent 管理模型**也可原地切模。已有具名会话可按原模式另开，历史和草稿保留在原会话。
+- OpenCode 自定义回答保留在原问题卡上。策略插件可以接入二选一审批，Teams 批量审批只处理仍可回答的请求，全队中断操作显示在成员设置页脚。
+- 工具消费最后一条排队消息后，Agent 可以继续完成本轮任务。感谢 lukstei 提供复现和修复。Agent 拒绝插话时，会提示下次请求将跳过本轮内容。
+- 改进中英文模型名称、连接错误和切模恢复提示。配置验证失败时，焦点移到第一个出错字段。
+
+### English
+
+- Support DSH `0.2.2-rc.4`. For DSH RC.3, install plugin `0.2.2-rc.3.1`. Devin CLI requires `3000.14.30821` or later.
+- Saving a new Agent checks its connection automatically. A failed check keeps the configuration so you can correct the problem and retry.
+- Dedicated ACP mode updates the model after the current Agent session confirms the switch. In other modes, start a CodeBuddy or OpenCode main chat with **Agent-managed model** to switch within that conversation. Existing named-model chats can open a separate chat in the same mode and keep their original history and draft.
+- OpenCode custom answers stay on the original question card. Policy plugins can handle binary approvals. Teams batch approvals cover only actionable requests, and the team-wide interrupt is in the member settings footer.
+- Agents can finish their turn after a tool consumes the last queued message. Thanks to lukstei for the reproduction and fix. When an Agent declines a mid-turn message, the UI explains which turn the next request will skip.
+- Improve Chinese and English model labels, connection errors, and model-switch recovery messages. Invalid configuration focuses the first field that needs attention.
 
 ## 0.2.2-rc.3.1
 

@@ -2,7 +2,7 @@
 
 [中文](native-reuse.md)
 
-The current development branch targets DSH `0.2.2-rc.4`, using the exact official npm dependencies pinned in `package.json`; upstream source is only a test scaffold. README installation commands refer to the published release. DSH owns input admission, host tools, and native presentation. An external Agent owns its model loop, native tool permissions, and private context. The adapter translates protocol data between them and retains continuity, permission, and persistence behavior that public host interfaces cannot yet provide equivalently.
+This version targets DSH `0.2.2-rc.4`, using the exact official npm dependencies pinned in `package.json`; upstream source is only a test scaffold. README installation commands refer to the published release. DSH owns input admission, host tools, and native presentation. An external Agent owns its model loop, native tool permissions, and private context. The adapter translates protocol data between them and retains continuity, permission, and persistence behavior that public host interfaces cannot yet provide equivalently.
 
 ## Sessions and input
 
