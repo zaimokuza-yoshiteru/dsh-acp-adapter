@@ -136,6 +136,7 @@ export function auditRecordedCause(entry: AcpAuditTimelineEntry): string | null 
 const summaryKeys: Record<AcpAuditSummaryCode, AcpLocaleKey> = {
   'binding.established': 'auditSummaryBinding',
   'permission.asked': 'auditSummaryPermissionAsked',
+  'permission.pre-tool-denied': 'auditSummaryPreToolDenied',
   'permission.bridge': 'auditSummaryPermissionBridge',
   'permission.decided': 'auditSummaryPermissionDecided',
   'reconciliation.required': 'auditSummaryReconciliation',

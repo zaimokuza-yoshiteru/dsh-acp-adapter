@@ -34,7 +34,6 @@ import type { AcpSpawnPlanView } from '../../runtime/process/types.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
 import { normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
 import {
-  ACP_AGENT_MANAGED_MODEL_ID,
   ACP_CURRENT_CONFIG_MODEL_ID,
   acpDeclaredModelRoute,
   acpModelConfigOption,
@@ -192,12 +191,7 @@ export function reasoningInfoFromConfigOptions(
   }
 }
 
-export function probeModels(
-  provider: string,
-  configOptions: AcpProbeResult['configOptions'],
-  peer?: Pick<AcpProbeResult, 'agentInfo' | 'agentCapabilities'>,
-  profile?: AcpStubAgentConfig,
-): LlmModelInfo[] {
+export function probeModels(provider: string, configOptions: AcpProbeResult['configOptions']): LlmModelInfo[] {
   const option = acpModelConfigOption(configOptions)
   const seen = new Set<string>()
   const models: LlmModelInfo[] = []
@@ -220,15 +214,27 @@ export function probeModels(
   }
   if (models.length === 0)
     return [{ provider, id: ACP_CURRENT_CONFIG_MODEL_ID, name: acpRouteNames.en.agentCurrentConfiguration }]
-  const declared = disambiguateModelLabels(models)
-  if (
-    peer?.agentCapabilities?.loadSession === true &&
-    supportsAgentManagedModels(peer.agentInfo?.name, profile) &&
+  return disambiguateModelLabels(models)
+}
+
+export function supportsNamedModelSwitch(
+  result: Pick<
+    Extract<AcpProbeCacheEntry['result'], { kind: 'ok' }>,
+    'agentInfo' | 'agentCapabilities' | 'configOptions'
+  >,
+  profile?: AcpStubAgentConfig,
+): boolean {
+  const option = acpModelConfigOption(result.configOptions)
+  return (
+    result.agentCapabilities?.loadSession === true &&
+    supportsAgentManagedModels(result.agentInfo?.name, profile) &&
     option !== undefined &&
-    seen.has(option.currentValue)
+    option.options.some((entry) =>
+      'options' in entry
+        ? entry.options.some((item) => item.value === option.currentValue)
+        : entry.value === option.currentValue,
+    )
   )
-    declared.push({ provider, id: ACP_AGENT_MANAGED_MODEL_ID, name: acpRouteNames.en.agentManagedModel })
-  return declared
 }
 
 /**
@@ -480,7 +486,7 @@ export class AcpStubAdapter extends LlmAdapter {
               ...(onProcessWarn === undefined ? {} : { onProcessWarn }),
             },
       )
-      const models = probeModels(provider, probe.configOptions, probe, config)
+      const models = probeModels(provider, probe.configOptions)
       const entry = {
         key,
         at: Date.now(),

@@ -50,13 +50,13 @@ export function apply(ctx) {
   )
 }
 
-it.each(['named', 'managed'] as const)(
+it.each(['other-agent', 'opencode'] as const)(
   'keeps Creator tools usable through install, refresh and restore on a %s route',
   verifyCreator,
   120_000,
 )
 
-async function verifyCreator(route: 'named' | 'managed') {
+async function verifyCreator(route: 'other-agent' | 'opencode') {
   const host = await launchAdapterWorld()
   let browser: TestBrowser | undefined
   const errors: string[] = []
@@ -83,7 +83,7 @@ async function verifyCreator(route: 'named' | 'managed') {
             HOME: host.workspaceCwd,
             MOCK_SCENARIO: 'regression',
             MOCK_PROFILE: 'codex',
-            ...(route === 'managed' ? { MOCK_AGENT_NAME: 'OpenCode' } : {}),
+            ...(route === 'opencode' ? { MOCK_AGENT_NAME: 'OpenCode' } : {}),
             MOCK_CREATOR_RESULTS: results,
             MOCK_UNIQUE_SESSION_IDS: '1',
             MOCK_LOG: agentLog,
@@ -133,12 +133,6 @@ async function verifyCreator(route: 'named' | 'managed') {
     expect((await composer.innerText()).trim()).toBe('')
     await page.getByRole('button', { name: 'Creator mode', exact: true }).waitFor()
     expect(host.ctx.agentPresets.defaultId).toBe('standard')
-    if (route === 'managed') {
-      await conversation.getByRole('button', { name: /^Select model, current Mock Model A/ }).click()
-      await page.getByRole('menuitem', { name: /^Model/ }).click()
-      await page.getByRole('menuitemradio', { name: 'Agent-managed model', exact: true }).click()
-      await conversation.getByRole('button', { name: /^Select model, current Agent-managed model/ }).waitFor()
-    }
     const run = async (plan: CreatorPlan, sessionId = owner) => {
       const active = page.locator(`[data-conversation-session="${sessionId}"]`)
       const settled = host.whenTurnSettled()
@@ -157,8 +151,16 @@ async function verifyCreator(route: 'named' | 'managed') {
       const id = await settled
       expect(id).toBe(sessionId)
       expect(records(plan.label).filter((row) => row.kind === 'failure')).toEqual([])
-      expect(records(plan.label).filter((row) => row.kind === 'complete')).toHaveLength(1)
-      if (route === 'managed' && plan.label !== 'official-skill') {
+      const reason = host.ctx.sessions
+        .get(id)
+        ?.snapshotEvents()
+        .findLast((event) => event.type === 'turn/end')?.data.reason
+      expect(reason?.kind, plan.label + ' ' + JSON.stringify(reason)).toBe('completed')
+      expect(
+        records(plan.label).filter((row) => row.kind === 'complete'),
+        plan.label,
+      ).toHaveLength(1)
+      if (route === 'opencode' && plan.label !== 'official-skill') {
         expect(records(plan.label)[0]).toMatchObject({ model: 'mock-model-b', sessionId: initialRemote })
       }
       await page.getByText(`E2E_CREATOR_DONE ${plan.label}`, { exact: true }).waitFor()
@@ -170,10 +172,10 @@ async function verifyCreator(route: 'named' | 'managed') {
       calls: [{ name: 'skill', arguments: { name: 'dsh-doc' } }, { name: 'cordis_inspect_list' }],
     })
     const initialRemote = initial[0]!.sessionId
-    if (route === 'managed') {
+    if (route === 'opencode') {
       await conversation.getByRole('button', { name: /Mock Model A/ }).click()
       await page.getByRole('menuitem', { name: /^Model\b/ }).click()
-      await page.getByRole('menuitem', { name: /^Mock Model B\b/ }).click()
+      await page.getByRole('menuitemradio', { name: 'Mock Model B', exact: true }).click()
       await conversation.getByRole('button', { name: /Mock Model B/ }).waitFor()
     }
     const skill = initial.find((row) => row.kind === 'call' && row.name === 'skill')?.text
@@ -221,7 +223,7 @@ async function verifyCreator(route: 'named' | 'managed') {
     expect(host.ctx.agentPresets.defaultId).toBe('standard')
     expect(errors).toEqual([])
     await page.screenshot({ path: join(evidence, 'creator-restored.png') })
-    if (route === 'managed') return
+    if (route === 'opencode') return
     const [reopening] = await Promise.all([
       page.waitForResponse('**/api/session/create'),
       page.getByRole('button', { name: 'New session', exact: true }).filter({ hasText: 'New Session' }).click(),

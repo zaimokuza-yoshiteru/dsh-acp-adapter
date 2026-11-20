@@ -116,6 +116,25 @@ interface ManagedModelFeedback {
   readonly capacityRisks?: readonly { readonly model: string; readonly lastUsed: number; readonly targetSize: number }[]
 }
 
+/** A fresh tool connection can report its default even after this binding completed on another model. */
+export async function lastConfirmedBindingModel(
+  store: Pick<AcpSidecar, 'readManagedModelTurns' | 'hasUncertainDispatch'>,
+  sessionId: string,
+  binding: AcpBindingData,
+  target: string,
+): Promise<boolean> {
+  const id = SessionId(sessionId)
+  const turns = await store.readManagedModelTurns(id, acpCanonicalHash16(modeIntentBindingKey(binding)))
+  const last = turns[0]
+  return (
+    binding.committedPromptOrdinal > 0 &&
+    last?.model === target &&
+    last.ordinal === binding.committedPromptOrdinal &&
+    !turns.some((turn) => (turn.failureOrdinal ?? 0) > last.ordinal) &&
+    !(await store.hasUncertainDispatch(id))
+  )
+}
+
 export async function readManagedModelFeedback(
   store: Pick<AcpSidecar, 'readManagedModelTurns'>,
   sessionId: string,

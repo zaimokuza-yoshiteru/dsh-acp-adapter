@@ -168,7 +168,9 @@ export interface SessionLike {
   >
   recordUndispatchedModelInput?(ticket: z.infer<typeof unsentModelSwitchSchema>): void
   /** Verify both the native selection and the composed stock main-conversation scope. */
-  managedModelRoute?(provider: string): boolean
+  managedModelRoute?(provider: string, source?: 'selected' | 'committed'): boolean
+  /** A stored named route is independent of a new native picker selection. */
+  committedNamedModel?(provider: string): boolean
   /** Observe committed directory changes without treating them as user steering. */
   watchWorkingDirectory?(listener: (cwd: string) => void): () => void
   /** Observe pending next-step user input without claiming or copying the inbox. */

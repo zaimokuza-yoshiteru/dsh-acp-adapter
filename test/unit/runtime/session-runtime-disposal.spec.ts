@@ -8,6 +8,8 @@ import type { AcpSubprocessHandle, SubprocessSeam } from '../../../src/runtime/p
 it.each(['launch', 'initialize', 'lease'])('closes resources if disposal races pending %s', async (phase) => {
   const entered = Promise.withResolvers<void>()
   const release = Promise.withResolvers<void>()
+  const cleanupEntered = Promise.withResolvers<void>()
+  const releaseCleanup = Promise.withResolvers<void>()
   const leaseClose = vi.fn(async () => {})
   const lease: AcpMcpLease = {
     servers: [],
@@ -36,7 +38,15 @@ it.each(['launch', 'initialize', 'lease'])('closes resources if disposal races p
         entered.resolve()
         await release.promise
       }
-      return { argv, env: {}, spawnPlan: { argv, env: {} } }
+      return {
+        argv,
+        env: {},
+        spawnPlan: { argv, env: {} },
+        close: () => {
+          cleanupEntered.resolve()
+          return releaseCleanup.promise
+        },
+      }
     },
     createMcpLease: async () => {
       entered.resolve()
@@ -55,6 +65,9 @@ it.each(['launch', 'initialize', 'lease'])('closes resources if disposal races p
     await new Promise<void>((resolve) => setImmediate(resolve))
     expect(closed).toBe(false)
     release.resolve()
+    await cleanupEntered.promise
+    expect(closed).toBe(false)
+    releaseCleanup.resolve()
     await rejected
     await closing
     if (phase === 'lease') expect(leaseClose).toHaveBeenCalledOnce()
@@ -64,6 +77,7 @@ it.each(['launch', 'initialize', 'lease'])('closes resources if disposal races p
     expect(runtime.agentCapabilities).toBeUndefined()
   } finally {
     release.resolve()
+    releaseCleanup.resolve()
     await runtime.close()
     initialize.mockRestore()
     connectionClose.mockRestore()

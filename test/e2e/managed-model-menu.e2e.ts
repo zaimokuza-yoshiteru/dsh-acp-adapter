@@ -7,16 +7,25 @@ import { en, zh } from '../../src/client/ui/locales.ts'
 import { launchBrowser, newEnglishPage, type TestBrowser } from './browser.ts'
 import { launchAdapterWorld, root } from './scaffold.ts'
 
-async function fitsViewport(locator: Locator) {
+type WireEvent = {
+  method: string
+  session: string
+  model?: string
+  target?: string
+  markers?: string[]
+  history?: string[]
+}
+
+async function fitsViewport(locator: Locator, width: number) {
   await locator.waitFor()
   const rect = await locator.boundingBox()
   expect(rect).not.toBeNull()
   expect(rect!.x).toBeGreaterThanOrEqual(0)
-  expect(rect!.x + rect!.width).toBeLessThanOrEqual(391)
+  expect(rect!.x + rect!.width).toBeLessThanOrEqual(width + 1)
 }
 
 it.each(['en', 'zh'] as const)(
-  'keeps model choices usable at 390px and explains a failed desktop reply in %s',
+  'selects named models in one picker and recovers an undelivered message in %s',
   async (locale) => {
     const host = await launchAdapterWorld()
     let browser: TestBrowser | undefined
@@ -47,56 +56,99 @@ it.each(['en', 'zh'] as const)(
       await host.ctx.settings.replace('ui-theme', { preference: locale === 'zh' ? 'dark' : 'light' })
       const copy = locale === 'zh' ? zh : en
       const picker = page.getByRole('button', { name: locale === 'zh' ? /^选择模型/ : /^Select model/ }).first()
-      await picker.click()
-      await page
-        .getByRole('menuitem', { name: locale === 'zh' ? /^模型/ : /^Model\b/ })
-        .first()
-        .click()
-      await page.getByRole('menuitemradio', { name: copy.agentManagedModel, exact: true }).click()
       const composer = page.locator('[data-composer-input]').first()
-      await writeComposerDraft(page, composer, 'SWITCH_TEST_FIRST')
-      const settled = host.whenTurnSettled()
-      await page.getByRole('button', { name: locale === 'zh' ? '发送消息' : 'Send message', exact: true }).click()
-      await settled
-      await page.setViewportSize({ width: 390, height: 844 })
-      const model = page.getByRole('button', { name: 'A', exact: true })
-      await model.focus()
-      await model.press('Enter')
-      const choices = page.getByRole('menuitem', { name: locale === 'zh' ? /^模型/ : /^Model\b/ }).first()
-      await choices.press('Enter')
-      const target = page.getByRole('menuitem', { name: 'B', exact: true })
-      await fitsViewport(target)
-      writeFileSync(join(directory, 'fault'), 'refuse')
-      await target.press('Enter')
-      const recovery = page.locator('[data-acp-managed-model-recovery]')
-      await fitsViewport(recovery)
-      expect(await recovery.innerText()).toContain(copy.managedModelChooseAgain)
-      const restore = recovery.getByRole('button', { name: copy.managedModelRestore.replace('{model}', 'A') })
-      await fitsViewport(restore)
-      await fitsViewport(recovery.getByRole('button', { name: copy.managedModelNew, exact: true }))
-      writeFileSync(join(directory, 'fault'), 'none')
-      await restore.press('Enter')
-      await expect.poll(() => recovery.count()).toBe(0)
-      const trace = readFileSync(join(directory, 'trace'), 'utf8')
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line) as { method: string })
-      expect(trace.filter((e) => e.method === 'session/prompt')).toHaveLength(1)
+      const send = page.getByRole('button', { name: locale === 'zh' ? '发送消息' : 'Send message', exact: true })
+      const capture = async (name: string) => {
+        const screenshots = process.env.DSH_E2E_EVIDENCE_DIR
+        if (!screenshots) return
+        mkdirSync(screenshots, { recursive: true })
+        await page.screenshot({ path: join(screenshots, `${name}-${locale}.png`) })
+      }
+      const trace = (): WireEvent[] =>
+        readFileSync(join(directory, 'trace'), 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line))
+      const select = async (label: 'A' | 'B', width: number) => {
+        await picker.click()
+        await page
+          .getByRole('menuitem', { name: locale === 'zh' ? /^模型/ : /^Model\b/ })
+          .first()
+          .click()
+        const target = page.getByRole('menuitemradio', { name: label, exact: true })
+        await fitsViewport(target, width)
+        expect(await page.getByRole('menuitemradio', { name: copy.agentManagedModel, exact: true }).count()).toBe(0)
+        await capture(`named-model-picker-${width}`)
+        await target.press('Enter')
+        await page.keyboard.press('Escape')
+      }
+      const submit = async (marker: string) => {
+        await writeComposerDraft(page, composer, marker)
+        const settled = host.whenTurnSettled()
+        await send.click()
+        return await settled
+      }
 
       await page.setViewportSize({ width: 1280, height: 900 })
+      await select('B', 1280)
+      const sessionId = await submit('SWITCH_TEST_FIRST')
+      const firstTrace = trace()
+      const firstPrompt = firstTrace.findIndex((event) => event.method === 'session/prompt')
+      expect(firstPrompt).toBeGreaterThan(0)
+      const first = firstTrace[firstPrompt]!
+      expect(first).toMatchObject({ model: 'b', markers: ['SWITCH_TEST_FIRST'], history: [] })
+      expect(
+        firstTrace
+          .slice(0, firstPrompt)
+          .some(
+            (event) =>
+              event.session === first.session && event.method === 'session/set_config_option' && event.target === 'b',
+          ),
+      ).toBe(true)
+      // The left-side Agent options must not become a second model trigger.
+      expect(await page.getByRole('button', { name: 'B', exact: true }).count()).toBe(0)
+      const session = host.ctx.sessions.get(sessionId)!
+      await page.setViewportSize({ width: 390, height: 844 })
+      writeFileSync(join(directory, 'fault'), 'refuse')
+      await select('A', 390)
+      expect(await submit('SWITCH_TEST_SECOND')).toBe(sessionId)
+      const retry = page.getByRole('button', { name: copy.resendUnsentMessage, exact: true })
+      await fitsViewport(retry, 390)
+      expect(trace().filter((event) => event.method === 'session/prompt')).toHaveLength(1)
+      expect(session.requestHeader()?.config.model).toBe('b')
+      await capture('unsent-model-recovery-390')
+      await page.setViewportSize({ width: 1280, height: 900 })
+      await fitsViewport(retry, 1280)
+      await capture('unsent-model-recovery-desktop')
+
+      writeFileSync(join(directory, 'fault'), 'none')
+      const retried = host.whenTurnSettled()
+      await retry.click()
+      expect(await retried).toBe(sessionId)
+      await expect.poll(() => retry.count()).toBe(0)
+      const prompts = trace().filter((event) => event.method === 'session/prompt')
+      expect(prompts).toHaveLength(2)
+      expect(session.requestHeader()?.config.model).toBe('a')
+      expect(prompts[1]).toMatchObject({
+        session: first.session,
+        model: 'a',
+        markers: ['SWITCH_TEST_SECOND'],
+        history: ['SWITCH_TEST_FIRST'],
+      })
+      await capture('resumed-conversation-desktop')
+
       writeFileSync(join(directory, 'fault'), 'prompt-error')
-      await writeComposerDraft(page, composer, 'SWITCH_TEST_SECOND')
-      const failedTurn = host.whenTurnSettled()
-      await page.getByRole('button', { name: locale === 'zh' ? '发送消息' : 'Send message', exact: true }).click()
-      await failedTurn
+      expect(await submit('SWITCH_TEST_THIRD')).toBe(sessionId)
       await page.getByText('The selected model rejected the submitted prompt', { exact: true }).waitFor()
-      await recovery.getByText(copy.managedModelIncomplete, { exact: true }).waitFor()
-      expect(await page.getByText(copy.actionSaveFailed.replace('{reference}', ''), { exact: true }).count()).toBe(0)
-      const screenshots = process.env.DSH_E2E_EVIDENCE_DIR
-      if (screenshots) {
-        mkdirSync(screenshots, { recursive: true })
-        await page.screenshot({ path: join(screenshots, `recovery-desktop-${locale}.png`) })
-      }
+      expect(
+        trace()
+          .filter((event) => event.method === 'session/prompt')
+          .at(-1),
+      ).toMatchObject({
+        session: first.session,
+        markers: ['SWITCH_TEST_THIRD'],
+      })
+      expect(await retry.count()).toBe(0)
     } finally {
       await browser?.close()
       await host.close()

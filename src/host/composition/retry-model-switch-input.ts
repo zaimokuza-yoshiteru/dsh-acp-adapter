@@ -7,7 +7,8 @@ import { RemoteError, type Principal } from '@deepseek-ai/dsh-typert-protocol'
 import { unsentModelSwitchRecord, unsentModelSwitchSchema } from '../../domain/session/unsent-model-switch.ts'
 import { acpCanonicalHash16, modeIntentBindingKey, type AcpSidecar } from '../../persistence/sidecar.ts'
 import { managedModelRetryNotice } from './managed-model-resend.ts'
-import { permitsManagedModelScope } from './managed-model.ts'
+import { permitsManagedModelScope, permitsOrdinaryModelScope } from './managed-model.ts'
+import { acpModelSelection } from '../../contract/model-selection.ts'
 import { readSessionFacts } from './session-facts.ts'
 
 /** A resend re-admits the original Host message; the Agent checks its model again before dispatch. */
@@ -20,6 +21,7 @@ export async function retryModelSwitchInput(
   authorized: () => boolean,
   signal: AbortSignal,
   confirmPending?: (profile: string, optionId: string, target: string) => Promise<void>,
+  canSwitchNamed?: (provider: string) => boolean,
 ): Promise<void> {
   const id = SessionId(sessionId)
   const unavailable = () =>
@@ -93,7 +95,12 @@ export async function retryModelSwitchInput(
       ctx.get('agents', false)?.get(id) !== agent ||
       ctx.get('sessions', false)?.get(id) !== agent.session ||
       (ctx.get('agentPresets', false)?.composedPreset(agent.ctx) !== 'acp-adapter' &&
-        !permitsManagedModelScope(ctx, agent, current.model)) ||
+        !permitsManagedModelScope(ctx, agent, current.model) &&
+        !(
+          canSwitchNamed?.(current.provider) &&
+          acpModelSelection(current.model).kind === 'declared-model' &&
+          permitsOrdinaryModelScope(ctx, agent)
+        )) ||
       ctx.get('workspaceRegistry', false)?.archivedSessionIds.includes(id) ||
       agent.inbox.nextTurn.length > 0 ||
       agent.inbox.nextStep.length > 0 ||

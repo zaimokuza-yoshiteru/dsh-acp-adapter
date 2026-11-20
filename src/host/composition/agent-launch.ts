@@ -4,6 +4,7 @@ import type { AcpAgentId, AcpStubAgentConfig } from '../../contract/agent-config
 import { acpLaunchEnvironment } from '../../domain/session/launch-fingerprint.ts'
 import { buildAcpSpawnPlan } from '../../domain/policy/sandbox.ts'
 import type { AcpRuntimeLaunch } from '../../runtime/session/session-runtime.ts'
+import { prepareAgyPreToolUseLaunch } from '../../runtime/process/agy-pre-tool-use.ts'
 
 /** Python falls back to OS proxy settings only when no environment proxy wins. */
 function hasExplicitProxyEnvironment(env: Record<string, string>): boolean {
@@ -42,6 +43,7 @@ function loopbackEnvironment(env: Record<string, string>, hosts: readonly string
 export async function prepareAgentLaunch(
   runtime: AcpAgentId | undefined,
   config: AcpStubAgentConfig,
+  hook?: Pick<Parameters<typeof prepareAgyPreToolUseLaunch>[0], 'cwd' | 'onPreToolUse' | 'resolveExecutable'>,
 ): Promise<AcpRuntimeLaunch> {
   let env = await acpLaunchEnvironment({ config })
   // Discovery can initialize this process before MCP tools become available;
@@ -59,5 +61,11 @@ export async function prepareAgentLaunch(
     argv: [config.command, ...config.args],
     env,
   })
+  if (hook !== undefined) {
+    const launch = await prepareAgyPreToolUseLaunch({ ...hook, argv: plan.argv, env: plan.env })
+    // Only the verified CLI receives the private hook endpoint. Host terminals
+    // and filesystem handlers still inherit the profile's original environment.
+    if (launch !== undefined) return { argv: plan.argv, env: plan.env, spawnPlan: launch, close: launch.close }
+  }
   return { argv: plan.argv, env: plan.env, spawnPlan: plan }
 }

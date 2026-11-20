@@ -1,13 +1,23 @@
+import { realpathSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import { acpLaunchFingerprint } from '../../../src/domain/session/launch-fingerprint.ts'
-import { createAcpSidecar, type AcpBindingData, type AcpSidecar } from '../../../src/persistence/sidecar.ts'
+import {
+  createAcpSidecar,
+  modeIntentBindingKey,
+  type AcpBindingData,
+  type AcpSidecar,
+} from '../../../src/persistence/sidecar.ts'
+import { acpOptionsSnapshotOf } from '../../../src/persistence/options-snapshot.ts'
+import { AcpProfileAdapter } from '../../../src/host/composition/profile-adapter.ts'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import {
   assertManagedModelImageInput,
   clearManagedModelDeliveryFailure,
   ManagedModelTurnObservation,
+  lastConfirmedBindingModel,
   matchedManagedContextUsage,
   readManagedModelFeedback,
 } from '../../../src/host/composition/managed-model-feedback.ts'
@@ -36,7 +46,7 @@ const binding: AcpBindingData = {
   provider: 'acp-local',
   profileId: 'local',
   agentSessionId: 'remote-id',
-  canonicalCwd: '/work',
+  canonicalCwd: realpathSync.native(process.cwd()),
   agent: { name: 'OpenCode' },
   protocolVersion: 1,
   generation: 1,
@@ -64,6 +74,92 @@ function usage(model: string, used: number, size: number, sessionId = binding.ag
   turn.observe({ sessionId, update: { sessionUpdate: 'usage_update', used, size } }, model)
   return turn
 }
+
+it('restores only the last successful model at the exact binding head with settled delivery', async () => {
+  await usage(a, 100, 32000).commit(store, 's', binding, a)
+  expect(await lastConfirmedBindingModel(store, 's', binding, a)).toBe(true)
+  expect(await lastConfirmedBindingModel(store, 's', binding, b)).toBe(false)
+  expect(await lastConfirmedBindingModel(store, 's', { ...binding, committedPromptOrdinal: 2 }, a)).toBe(false)
+  expect(await lastConfirmedBindingModel(store, 's', { ...binding, bindingEpoch: 2 }, a)).toBe(false)
+  await store.beginDispatch({
+    dshSessionId: 's',
+    key: 'pending',
+    provider: binding.provider,
+    model: b,
+    state: 'dispatch-uncertain',
+    createdAt: 1,
+  })
+  expect(await lastConfirmedBindingModel(store, 's', binding, a)).toBe(false)
+  await store.clearDispatch(SessionId('s'), 'pending')
+  await new ManagedModelTurnObservation(b, binding.agentSessionId).recordFailure(store, 's', {
+    ...binding,
+    committedPromptOrdinal: 2,
+  })
+  expect(await lastConfirmedBindingModel(store, 's', binding, a)).toBe(false)
+})
+
+it('recovers a legacy picker label from the bound receipt and suppresses it for an uncertain dispatch or delivery', async () => {
+  const id = SessionId('old-session')
+  await store.append(id, { kind: 'binding', data: binding })
+  await store.changeManagedModelIntent(id, {
+    bindingKey: modeIntentBindingKey(binding),
+    optionId: 'models',
+    target: b,
+    confirmed: true,
+  })
+  await store.writeOptionSnapshot(
+    id,
+    acpOptionsSnapshotOf(
+      [
+        {
+          type: 'select',
+          id: 'models',
+          category: 'model',
+          name: 'Model',
+          currentValue: b,
+          options: [{ value: b, name: 'B' }],
+        },
+      ],
+      undefined,
+      'hash',
+      1,
+    ),
+  )
+  let workingDirectory = process.cwd()
+  const adapter = new AcpProfileAdapter(
+    'local',
+    () => config,
+    { ok: false, message: 'no process in this test' },
+    () => ({ workingDirectory }) as never,
+    {} as never,
+    undefined,
+    undefined,
+    store,
+  )
+  try {
+    expect(await adapter.confirmedLegacyModel(id, 'acp-local')).toBe(b)
+    workingDirectory = root
+    expect(await adapter.confirmedLegacyModel(id, 'acp-local')).toBeUndefined()
+    workingDirectory = process.cwd()
+    await store.beginDispatch({
+      key: 'sending',
+      provider: 'acp-local',
+      model: b,
+      dshSessionId: id,
+      state: 'dispatch-uncertain',
+      createdAt: 1,
+    })
+    expect(await adapter.confirmedLegacyModel(id, 'acp-local')).toBeUndefined()
+    await store.clearDispatch(id, 'sending')
+    await new ManagedModelTurnObservation(b, binding.agentSessionId).recordFailure(store, id, {
+      ...binding,
+      committedPromptOrdinal: 2,
+    })
+    expect(await adapter.confirmedLegacyModel(id, 'acp-local')).toBeUndefined()
+  } finally {
+    await adapter.close()
+  }
+})
 
 it('warns on a first switch using a corroborated inline model limit, without exposing the previous usage on B', async () => {
   await usage(a, 16280, 32000).commit(store, 's', binding, a)

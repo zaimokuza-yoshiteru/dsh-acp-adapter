@@ -10,7 +10,7 @@ import {
 } from '../../../src/persistence/sidecar.ts'
 import { applySessionFact, initialSessionFacts } from '../../../src/domain/session/session-facts.ts'
 
-function fixture() {
+function fixture(preset = 'acp-adapter', switchable = false) {
   const source = { kind: 'user', rpcId: 'desktop-request', principal: { kind: 'acp-resource-test' as const } }
   const input = {
     id: 'original',
@@ -56,7 +56,7 @@ function fixture() {
     },
     [Symbol.dispose]() {},
   }
-  const session = {}
+  const session = { header: {} }
   const agent = {
     ctx: {},
     session,
@@ -71,7 +71,7 @@ function fixture() {
   const services = {
     agents: { get: () => agent },
     sessions: { get: () => session },
-    agentPresets: { composedPreset: () => 'acp-adapter' },
+    agentPresets: { composedPreset: () => preset, presetForSession: () => preset },
     acpSessionFacts: { read: () => facts },
     sessionQuery: { observeSession: async () => observation },
   }
@@ -93,11 +93,21 @@ function fixture() {
       principal,
       authorized,
       new AbortController().signal,
+      undefined,
+      () => switchable,
     )
   return { retry, input, agent, fold, observation, sidecar, authorized, info, ctx }
 }
 
 describe('explicit retry of an unsent ACP input', () => {
+  it('retries a named model in the original ordinary chat only for a switchable Agent', async () => {
+    const unavailable = fixture('standard')
+    await expect(unavailable.retry()).rejects.toThrow()
+    expect(unavailable.agent.followup).not.toHaveBeenCalled()
+    const ordinary = fixture('standard', true)
+    await ordinary.retry()
+    expect(ordinary.agent.followup).toHaveBeenCalledWith(ordinary.input)
+  })
   it('reuses exactly the accepted request and its ordered durable blocks once for competing clicks', async () => {
     const h = fixture()
     const results = await Promise.allSettled([h.retry(), h.retry()])

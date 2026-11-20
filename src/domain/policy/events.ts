@@ -305,7 +305,34 @@ export interface AcpPermissionDecidedAuditData {
 
 /** The permission audit payload union (discriminant: `phase`). */
 export type AcpPermissionAuditData =
-  AcpPermissionAskedAuditData | AcpPermissionDecidedAuditData | AcpPermissionCheckAuditData
+  AcpPermissionAskedAuditData | AcpPermissionDecidedAuditData | AcpPermissionCheckAuditData | AcpPreToolDenialAuditData
+
+export interface AcpPreToolDenialAuditData {
+  readonly phase: 'pre-tool'
+  readonly source: 'agy-pre-tool-use'
+  readonly agentSessionId: string
+  readonly toolCallId: string
+  readonly outcome: 'deny-once'
+  readonly toolName: 'run_command'
+  readonly reason: string
+}
+
+/** There is no permission request or option ID at Google's pre-execution boundary. */
+export function createPreToolDenialAudit(
+  agentSessionId: string,
+  toolCallId: string,
+  reason: string,
+): AcpPreToolDenialAuditData {
+  return {
+    phase: 'pre-tool',
+    source: 'agy-pre-tool-use',
+    outcome: 'deny-once',
+    toolName: 'run_command',
+    agentSessionId: boundedAuditText(agentSessionId),
+    toolCallId: boundedAuditText(toolCallId),
+    reason: boundedAuditText(reason).trim(),
+  }
+}
 
 export interface AcpPermissionCheckAuditData extends AcpPermissionCheck {
   readonly phase: 'bridge'

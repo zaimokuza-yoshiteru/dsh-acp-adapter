@@ -244,6 +244,8 @@ export interface AcpHostVersionMismatchView {
 export interface AcpOwnedRoutesView {
   /** Live routes registered by this plugin on the Host. */
   readonly providers: readonly string[]
+  /** Live providers verified to support switching named models on the same main ACP session. */
+  readonly switchableProviders?: readonly string[]
   /** Opaque registration lifetimes. An existing user choice cannot authorize a replacement Agent. */
   readonly generations?: Readonly<Record<string, string>>
   /** Routes referenced by stored bindings. Only a session-specific record proves historical ownership. */
@@ -258,6 +260,7 @@ export interface AcpProjectedSubagentsView {
 export type AcpAuditSummaryCode =
   | 'binding.established'
   | 'permission.asked'
+  | 'permission.pre-tool-denied'
   | 'permission.bridge'
   | 'permission.decided'
   | 'reconciliation.required'

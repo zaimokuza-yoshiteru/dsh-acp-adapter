@@ -513,6 +513,7 @@ export interface AcpSidecar {
   settleDispatch(sessionId: SessionId, key: string, settledAt?: number): Promise<void>
   /** Read a dispatch ledger row after restart. */
   readDispatch(sessionId: SessionId, key: string): Promise<AcpDispatchRecord | undefined>
+  hasUncertainDispatch(sessionId: SessionId): Promise<boolean>
   /** Clear a user-reviewed dispatch, or an exact key proven not to have crossed the RPC boundary. */
   clearDispatch(sessionId: SessionId, key?: string): Promise<void>
   recordManagedModelTurn(sessionId: SessionId, bindingKey: string, turn: AcpManagedModelTurn): Promise<void>
@@ -1799,6 +1800,15 @@ class SidecarStore implements AcpSidecar {
       }
       throw error
     }
+  }
+
+  async hasUncertainDispatch(sessionId: SessionId): Promise<boolean> {
+    assertSafeSessionId(sessionId)
+    return (
+      this.openIfExists()
+        ?.prepare("SELECT 1 FROM dispatch_ledger WHERE dsh_session_id = ? AND state = 'dispatch-uncertain' LIMIT 1")
+        .get(sessionId) !== undefined
+    )
   }
 
   readDispatch(dshSessionId: SessionId, key: string): Promise<AcpDispatchRecord | undefined> {

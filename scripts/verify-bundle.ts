@@ -189,6 +189,7 @@ const REQUIRED_ARTIFACTS = [
   'lib/index.js',
   // Spawned via new URL rather than a static import; require it in the packed artifact.
   'lib/runtime/session/team-mcp-stdio.js',
+  'lib/runtime/process/agy-hook-client.js',
   'lib/client.js',
   'lib/client.js.map',
   'lib/types/index.d.ts',

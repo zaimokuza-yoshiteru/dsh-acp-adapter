@@ -38,7 +38,7 @@ import type {
   StreamChunk,
   UserMessage,
 } from '@deepseek-ai/dsh-llm'
-import { AcpStubAdapter, reasoningInfoFromConfigOptions } from './llm-stub.ts'
+import { AcpStubAdapter, reasoningInfoFromConfigOptions, supportsNamedModelSwitch } from './llm-stub.ts'
 import type { AcpProbeCacheEntry } from './llm-stub.ts'
 import type { AcpStubAgentConfig } from '../../domain/session/agent-config.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
@@ -58,10 +58,13 @@ import {
   profileLaunchIdentityHash,
 } from '../../domain/session/launch-fingerprint.ts'
 import { prepareAgentLaunch } from './agent-launch.ts'
+import { isAgyPreToolUseCandidate } from '../../runtime/process/agy-pre-tool-use.ts'
+import { agyPreToolPolicy } from './agy-pre-tool-policy.ts'
 import { buildAcpSpawnPlan } from '../../domain/policy/sandbox.ts'
 import { effectiveRuntimeOf, retiredAgentReason } from '../../contract/agent-config.ts'
 import {
   isOpenCodeQuestion,
+  sameSwitchableAgent,
   sessionCompatibilityOptions,
   supportsAgentManagedModels,
 } from '../../agents/compatibility.ts'
@@ -77,8 +80,11 @@ import {
   ManagedModelTurnObservation,
   assertManagedModelImageInput,
   clearManagedModelDeliveryFailure,
+  lastConfirmedBindingModel,
+  readManagedModelFeedback,
 } from './managed-model-feedback.ts'
 import { StreamHandoff } from './stream-handoff.ts'
+import type { ConfirmedNamedModelSwitch, NamedModelSteps } from './named-model-compaction.ts'
 import type { DispatchLedgerStore } from '../../runtime/session/dispatch-ledger.ts'
 import { admitCurrentStep } from '../../domain/session/current-step-admission.ts'
 import { AcpAdmissionError } from '../../domain/session/current-step-admission.ts'
@@ -525,6 +531,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     private readonly hostRoot?: Context,
     private readonly qwenTaskJobs?: (sessionId: string) => QwenTaskJobStarter | undefined,
     continuity?: AcpHostContinuity,
+    private readonly namedSteps?: NamedModelSteps,
   ) {
     super()
     this.ledger = new DispatchLedger(ledgerStore)
@@ -784,11 +791,10 @@ export class AcpProfileAdapter extends LlmAdapter {
     // An empty success hides the route and can remain cached after recovery.
     const models = await generation.probe.listModels(provider)
     if (
-      models.some((model) => isAcpAgentManagedModel(model.id) || isAcpCurrentConfigModel(model.id)) &&
+      models.some((model) => isAcpCurrentConfigModel(model.id)) &&
       hostLocale(this.hostRoot)?.toLowerCase().startsWith('zh')
     )
       return models.map((model) => {
-        if (isAcpAgentManagedModel(model.id)) return { ...model, name: acpRouteNames.zh.agentManagedModel }
         if (isAcpCurrentConfigModel(model.id)) return { ...model, name: acpRouteNames.zh.agentCurrentConfiguration }
         return model
       })
@@ -798,6 +804,11 @@ export class AcpProfileAdapter extends LlmAdapter {
   /** The profile adapter is the single probe cache owner for both ModelPicker and health. */
   probeSnapshot(routeId: string): AcpProbeCacheEntry | undefined {
     return this.currentProbeGeneration()?.probe.probeSnapshot?.(routeId)
+  }
+
+  supportsNamedModelSwitch(provider: string): boolean {
+    const result = this.probeSnapshot(provider)?.result
+    return result?.kind === 'ok' && supportsNamedModelSwitch(result, this.readConfig())
   }
 
   invalidateProbe(routeId: string): void {
@@ -849,6 +860,7 @@ export class AcpProfileAdapter extends LlmAdapter {
 
   /** Capture the current profile generation before model dispatch. */
   override async prepareCall(provider: string, model: string, signal?: AbortSignal) {
+    const confirmedSwitch = this.namedSteps?.prepare(provider, model, signal)
     const generation = this.generationOf(snapshotProfile(this.readConfig()))
     if (generation === undefined)
       throw LlmError.fromFailure({
@@ -860,7 +872,8 @@ export class AcpProfileAdapter extends LlmAdapter {
       model: resolved,
       // This closure is the generation boundary: later settings edits cannot
       // change the command, args, or environment used by an already prepared call.
-      stream: (options: GenerateOptions): AsyncIterable<StreamChunk> => this.streamWithGeneration(options, generation),
+      stream: (options: GenerateOptions): AsyncIterable<StreamChunk> =>
+        this.streamWithGeneration(options, generation, confirmedSwitch),
     }
   }
 
@@ -923,11 +936,62 @@ export class AcpProfileAdapter extends LlmAdapter {
     }
   }
 
+  /** Resolve a saved legacy picker choice from its original local receipt, without starting the Agent. */
+  async confirmedLegacyModel(sessionId: string, provider: string): Promise<string | undefined> {
+    const sidecar = this.sidecar
+    const profile = this.readConfig()
+    if (
+      !sidecar ||
+      !profile ||
+      provider !== `acp-${this.profileId}` ||
+      this.handoffs.has(sessionId) ||
+      this.continuity.settlements.status(sessionId) ||
+      this.recoveryStateFallback(sessionId)
+    )
+      return
+    const id = sessionId as never
+    const [bound, intent, recovery, uncertain, snapshot] = await Promise.all([
+      sidecar.readLatestBinding(id),
+      sidecar.readManagedModelIntent(id),
+      sidecar.readRecoveryState(id),
+      sidecar.hasUncertainDispatch(id),
+      sidecar.readOptionSnapshot(id),
+    ])
+    if (
+      bound?.status !== 'ok' ||
+      !intent?.confirmed ||
+      uncertain ||
+      (recovery && (recovery.kind !== 'healthy' || recovery.lastUserAction === 'rebind-blank'))
+    )
+      return
+    const binding = bound.binding
+    const cwd = this.sessionOf(sessionId)?.workingDirectory
+    if (
+      binding.profileId !== this.profileId ||
+      binding.provider !== provider ||
+      !cwd ||
+      binding.canonicalCwd !== this.canonicalCwd(cwd) ||
+      !supportsAgentManagedModels(binding.agent.name, profile) ||
+      intent.bindingKey !== modeIntentBindingKey(binding) ||
+      !acpLaunchFingerprintsCompatible(binding.launchFingerprint, await this.launchFingerprint(profile)) ||
+      !snapshot?.options.some((option) => option.id === intent.optionId && option.value === intent.target)
+    )
+      return
+    const feedback = await readManagedModelFeedback(sidecar, sessionId, binding)
+    if (!feedback.possiblyDelivered) return acpDeclaredModelRoute(intent.target)
+  }
+
   /** Session-scoped view used by the existing Remote API. */
   async agentSessionSnapshot(sessionId: string): Promise<AgentSessionSnapshotView> {
     const snapshot = await this.sessionControls.agentSessionSnapshot(sessionId)
     const sidecar = this.sidecar
-    if (sidecar === undefined || !this.sessionOf(sessionId)?.managedModelRoute?.(`acp-${this.profileId}`))
+    const session = this.sessionOf(sessionId)
+    const provider = `acp-${this.profileId}`
+    const named = session?.committedNamedModel?.(provider) === true
+    if (
+      sidecar === undefined ||
+      !(named || session?.managedModelRoute?.(provider) || session?.managedModelRoute?.(provider, 'committed'))
+    )
       return snapshot
     return await managedModelSnapshot(
       snapshot,
@@ -935,6 +999,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       this.readConfig(),
       (profile) => this.launchFingerprint(profile),
       this.recoveryStateFallback(sessionId),
+      named,
     )
   }
 
@@ -1077,11 +1142,21 @@ export class AcpProfileAdapter extends LlmAdapter {
     binding: AcpBindingData,
     target: LlmCallConfig,
     turnSignal: AbortSignal,
+    requireKnownAgent = false,
   ): Promise<void> {
     await this.sessionControls.serializeSessionControlWrite(sessionId, async (controlOwner) => {
       if (controlOwner !== owner) throw managedModelUnavailable()
       if (!isAcpAgentManagedModel(target.model))
-        return await this.verifyBoundModel(sessionId, owner, binding, target, turnSignal)
+        return await this.verifyBoundModel(
+          sessionId,
+          owner,
+          binding,
+          target,
+          turnSignal,
+          undefined,
+          undefined,
+          requireKnownAgent,
+        )
       const recovery =
         this.recoveryStateFallback(sessionId) ?? (await this.sidecar?.readRecoveryState(sessionId as never))
       if (recovery?.kind === 'healthy' && recovery.lastUserAction === 'rebind-blank') return
@@ -1122,7 +1197,7 @@ export class AcpProfileAdapter extends LlmAdapter {
           handoff.options.signal?.aborted ||
           actual?.id !== intent.optionId ||
           actual.currentValue !== intent.target ||
-          !supportsAgentManagedModels(runtime.agentInfo?.name, profile)
+          !sameSwitchableAgent(binding.agent.name, runtime.agentInfo?.name, profile)
         )
           throw managedModelUnavailable()
         return
@@ -1147,6 +1222,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     turnSignal?: AbortSignal,
     managedOption?: string,
     authorized?: () => boolean,
+    requireKnownAgent = false,
   ): Promise<void> {
     const zh = this.resolveQuestions?.(sessionId)?.locale?.toLowerCase().startsWith('zh')
     const unavailable = () =>
@@ -1165,7 +1241,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       if (
         sidecar === undefined ||
         profile === undefined ||
-        (managedOption !== undefined && !supportsAgentManagedModels(binding.agent.name, profile))
+        ((managedOption !== undefined || requireKnownAgent) && !supportsAgentManagedModels(binding.agent.name, profile))
       )
         throw unavailable()
       const generation = profileLaunchIdentityHash(this.profileId, profile)
@@ -1235,8 +1311,14 @@ export class AcpProfileAdapter extends LlmAdapter {
         await assertRuntime()
         if (runtime.acpSessionId !== binding.agentSessionId) throw unavailable()
         if (
+          requireKnownAgent &&
+          (!sameSwitchableAgent(binding.agent.name, runtime.agentInfo?.name, profile) ||
+            runtime.agentCapabilities?.loadSession !== true)
+        )
+          throw unavailable()
+        if (
           managedOption !== undefined &&
-          (!supportsAgentManagedModels(runtime.agentInfo?.name, profile) ||
+          (!sameSwitchableAgent(binding.agent.name, runtime.agentInfo?.name, profile) ||
             acpModelConfigOption(runtime.configOptions)?.id !== managedOption)
         )
           throw unavailable()
@@ -1576,6 +1658,7 @@ export class AcpProfileAdapter extends LlmAdapter {
   private streamWithGeneration(
     options: GenerateOptions,
     generation: ProfileGeneration | undefined,
+    confirmedSwitch?: ConfirmedNamedModelSwitch,
   ): AsyncIterable<StreamChunk> {
     const self = this
     return (async function* (): AsyncGenerator<StreamChunk> {
@@ -1710,7 +1793,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             yield { ...chunk, index: indices.get(chunk.index)! }
           } else yield chunk
         }
-        stream.attach(self.executionStream(options, generation, stream, indices.size))
+        stream.attach(self.executionStream(options, generation, stream, indices.size, confirmedSwitch))
         self.handoffs.set(key, owner)
         const captured = owner
         const cleanup = async (abandonSettlementWait = false): Promise<void> => {
@@ -1778,6 +1861,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     generation: ProfileGeneration | undefined,
     handoff: StreamHandoff,
     contentOffset = 0,
+    confirmedSwitch?: ConfirmedNamedModelSwitch,
   ): AsyncIterable<StreamChunk> {
     const self = this
     return (async function* (): AsyncGenerator<StreamChunk> {
@@ -1799,6 +1883,11 @@ export class AcpProfileAdapter extends LlmAdapter {
       const durableSidecar = self.sidecar
       const session = self.sessionOf(sessionKey)
       const managedRoute = isAcpAgentManagedModel(options.model)
+      const selection = acpModelSelection(options.model)
+      const verifiedNamed =
+        selection.kind === 'declared-model' &&
+        session?.committedNamedModel?.(options.provider) === true &&
+        self.supportsNamedModelSwitch(options.provider)
       if (managedRoute && !session?.managedModelRoute?.(options.provider)) throw managedModelUnavailable()
       let admissionProof: CurrentStepProof | undefined
       let messages: readonly import('@deepseek-ai/dsh-llm').UserMessage[]
@@ -1815,7 +1904,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       if (retries.length) {
         const retry = retries[0]!
         if (
-          !managedRoute ||
+          !(managedRoute || verifiedNamed) ||
           retries.length !== 1 ||
           retry.source.kind !== managedModelResendSource ||
           messages.some((message) => message.source.kind === 'user')
@@ -1978,8 +2067,13 @@ export class AcpProfileAdapter extends LlmAdapter {
           generation: generation.id,
           acceptedMessageIds: messages.map((message) => String(message.id)),
         })
-        const recordUnsentManagedInput = async () => {
-          if (managedRoute && admissionProof && originalInputSeq !== undefined && !options.signal?.aborted) {
+        const recordUnsentModelInput = async () => {
+          if (
+            (managedRoute || verifiedNamed) &&
+            admissionProof &&
+            originalInputSeq !== undefined &&
+            !options.signal?.aborted
+          ) {
             const original = messages.find((message) => message.source.kind === 'user')
             const bound = self.runtimeBindings.get(runtime)
             if (
@@ -2153,7 +2247,7 @@ export class AcpProfileAdapter extends LlmAdapter {
               runtime,
               binding,
               options.signal,
-              managedRoute ? { requireFreshConfig: true } : undefined,
+              managedRoute || verifiedNamed ? { requireFreshConfig: true } : undefined,
             )
           } catch (error: unknown) {
             const cancelledRefreshPending = runtime.cancelledSessionRefreshPending === true
@@ -2455,13 +2549,47 @@ export class AcpProfileAdapter extends LlmAdapter {
         // zero prompt, never a silent request with a different model/effort.
         const restoreSavedMode = self.sessionControls.needsModeRestore(sessionKey, bindingForModeRestore)
         let managedDispatch: ManagedDispatchReceipt | undefined
+        let verifyDispatchModel: (() => void) | undefined
         try {
           const pendingAutomaticFailure = runtime.pendingAgentTurnFailure !== undefined
           // No configuration write can repair an already failed remote turn.
           // Keep binding/recovery validation above, then consume its retained
           // output and typed failure before any independently admitted input.
           if (!pendingAutomaticFailure) {
-            if (!managedRoute) await self.convergeConfig(runtime, options)
+            if (!managedRoute) {
+              const bound = self.runtimeBindings.get(runtime)
+              if (
+                verifiedNamed &&
+                (!bound ||
+                  bound.agentSessionId !== runtime.acpSessionId ||
+                  !sameSwitchableAgent(bound.agent.name, runtime.agentInfo?.name, profile) ||
+                  (bound.committedPromptOrdinal > 0 &&
+                    acpModelConfigOption(runtime.configOptions)?.currentValue !== selection.value &&
+                    (!confirmedSwitch?.matches(
+                      session?.identity ?? session,
+                      admissionProof,
+                      modeIntentBindingKey(bound),
+                      options,
+                    ) ||
+                      (confirmedSwitch.kind === 'continuation' &&
+                        !(await lastConfirmedBindingModel(durableSidecar, sessionKey, bound, selection.value))))))
+              )
+                throw managedModelUnavailable()
+              await self.convergeConfig(runtime, options)
+              if (selection.kind === 'declared-model' && 'configOptions' in runtime) {
+                const sessionId = runtime.acpSessionId
+                verifyDispatchModel = () => {
+                  if (
+                    runtime.acpSessionId !== sessionId ||
+                    self.runtimeBindings.get(runtime) !== bound ||
+                    acpModelConfigOption(runtime.configOptions)?.currentValue !== selection.value
+                  )
+                    throw new AcpPromptNotDispatchedError()
+                }
+                if (verifiedNamed && bound)
+                  managedDispatch = { binding: bound, target: selection.value, verify: verifyDispatchModel }
+              }
+            }
             await self.sessionControls.applyMemberMode(sessionKey, runtime)
           }
           if (restoreSavedMode && !pendingAutomaticFailure) {
@@ -2487,10 +2615,11 @@ export class AcpProfileAdapter extends LlmAdapter {
               apply: (target) => self.convergeConfig(runtime, { ...options, model: acpDeclaredModelRoute(target) }),
               changed: () => self.controlsChanged?.(sessionKey),
             })
+            verifyDispatchModel = managedDispatch.verify
           }
           await self.persistRuntimeSnapshot(sessionKey, runtime)
         } catch (error: unknown) {
-          await recordUnsentManagedInput()
+          await recordUnsentModelInput()
           if (!restoreSavedMode) await self.releaseRuntime(runtimeKey, runtime)
           if (error instanceof LlmError) throw error
           throw LlmError.fromFailure(
@@ -2514,7 +2643,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             )
           } catch (error) {
             retainHealthyRuntimeAfterNotDispatched = true
-            await recordUnsentManagedInput()
+            await recordUnsentModelInput()
             throw error
           }
         }
@@ -3094,8 +3223,8 @@ export class AcpProfileAdapter extends LlmAdapter {
           }
           let restoreProjection: (() => void) | undefined
           const applyProjectionAtDispatch = (): void => {
+            verifyDispatchModel?.()
             if (managedDispatch) {
-              managedDispatch.verify()
               assertManagedModelImageInput(
                 managedDispatch.binding,
                 profile,
@@ -3223,7 +3352,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             ...qwenPromptOptions,
             projection: validatedPrompt.projection,
             hostBodySignal,
-            ...(managedDispatch ? { beforeDispatch: managedDispatch.verify } : {}),
+            ...(verifyDispatchModel ? { beforeDispatch: verifyDispatchModel } : {}),
           },
         )
         self.controlsChanged?.(sessionKey)
@@ -3777,7 +3906,7 @@ export class AcpProfileAdapter extends LlmAdapter {
                 self.settlementSink,
                 self.profileId,
               )
-              await recordUnsentManagedInput()
+              await recordUnsentModelInput()
               failure = LlmError.fromFailure({ message: error.message, code: error.code }, { cause: error })
             } catch (settlementError) {
               failure = LlmError.fromFailure(
@@ -4754,8 +4883,26 @@ export class AcpProfileAdapter extends LlmAdapter {
           }),
       config: profile,
       subprocess: processSeam,
+      ...(this.hostRoot !== undefined &&
+      this.sidecar !== undefined &&
+      isAgyPreToolUseCandidate([profile.command, ...profile.args])
+        ? agyPreToolPolicy(this.hostRoot, sessionId as never, (data) =>
+            this.sidecar!.append(sessionId as never, { kind: 'permission', data }),
+          )
+        : {}),
       cwd,
-      prepareLaunch: (config) => prepareAgentLaunch(runtime, config as AcpStubAgentConfig),
+      prepareLaunch: (config, cwd, preToolUse) =>
+        prepareAgentLaunch(
+          runtime,
+          config as AcpStubAgentConfig,
+          preToolUse === undefined
+            ? undefined
+            : {
+                cwd,
+                onPreToolUse: preToolUse,
+                resolveExecutable: (command, env) => processSeam.resolveExecutable(command, env),
+              },
+        ),
       createFileSystemHandlers: () =>
         createAcpFileSystemHandlers({
           profileId: this.profileId,

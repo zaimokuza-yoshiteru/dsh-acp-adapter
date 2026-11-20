@@ -380,6 +380,42 @@ describe('ACP M6a session configuration convergence', () => {
     expect(promptCount.value).toBe(1)
   })
 
+  it('keeps the first message unsent when the named model changes after confirmation', async () => {
+    const runtime = runtimeFor([], options(), { value: 0 })
+    const send = runtime.prompt.bind(runtime)
+    let sent = false
+    runtime.prompt = async (...args) => {
+      await runtime.setConfigOption!('model', 'old-model')
+      args[6]?.beforeDispatch?.()
+      sent = true
+      return send(...args)
+    }
+    const live = session()
+    const ledger = new Ledger()
+    const store = {
+      ...sidecar,
+      clearDispatch: async (_session: unknown, key?: string) => {
+        ledger.records = ledger.records.filter((record) => record.key !== key)
+      },
+    }
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => profile,
+      seam(),
+      () => live,
+      ledger,
+      undefined,
+      () => runtime,
+      store,
+    )
+    await expect(drain(adapter.stream(request('named-drift')))).rejects.toMatchObject({
+      code: 'ACP_PROMPT_NOT_DISPATCHED',
+    })
+    expect(sent).toBe(false)
+    expect(ledger.records).toEqual([])
+    await adapter.close()
+  })
+
   it('accepts Agent-confirmed legacy values that are no longer selectable after restore', async () => {
     const calls: Array<[string, string | boolean]> = []
     const promptCount = { value: 0 }

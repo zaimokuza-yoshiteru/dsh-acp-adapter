@@ -53,6 +53,19 @@ export function supportsAgentManagedModels(
     : codebuddyHasModelSpecificConfiguration(agentName) || agentName === 'OpenCode'
 }
 
+/** An anonymous CodeBuddy handshake can become named across versions; it cannot become OpenCode. */
+export function sameSwitchableAgent(
+  saved: string | undefined,
+  live: string | undefined,
+  profile: Pick<AcpStubAgentConfig, 'command' | 'args' | 'runtime'>,
+): boolean {
+  return (
+    supportsAgentManagedModels(saved, profile) &&
+    supportsAgentManagedModels(live, profile) &&
+    (saved === 'OpenCode') === (live === 'OpenCode')
+  )
+}
+
 export function sessionCompatibilityOptions(runtime: AcpAgentId | undefined): {
   enableClaudeDraftSubagents: boolean
   refreshSessionAfterCancelledPrompt?: true

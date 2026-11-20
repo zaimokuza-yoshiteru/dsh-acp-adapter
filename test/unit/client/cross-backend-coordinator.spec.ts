@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { SessionCreateError } from '@deepseek-ai/dsh-api-session-controller/client'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { AcpOwnedRoutesView } from '../../../src/contract/remote.ts'
-import { ACP_CURRENT_CONFIG_MODEL_ID } from '../../../src/contract/model-selection.ts'
+import { ACP_AGENT_MANAGED_MODEL_ID, ACP_CURRENT_CONFIG_MODEL_ID } from '../../../src/contract/model-selection.ts'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import {
   CrossBackendCoordinator,
@@ -37,7 +37,7 @@ function observable<T>(initial: T) {
 function fixture(
   options: {
     sessionId?: string
-    row?: { blank: boolean; cwd?: string | null; agentPreset?: string }
+    row?: { blank: boolean; cwd?: string | null; agentPreset?: string; origin?: 'subagent' }
     livePreset?: string
     projection?: { lastUsed: Selection | null; next: Selection | null }
   } = {},
@@ -53,6 +53,7 @@ function fixture(
     byId: {
       [sessionId]: {
         id: sessionId,
+        ...(options.row?.origin ? { origin: options.row.origin } : {}),
         blank: options.row?.blank ?? false,
         ...(options.row?.agentPreset ? { projectionValues: { agentPreset: options.row.agentPreset } } : {}),
         cwd: options.row?.cwd === null ? undefined : (options.row?.cwd ?? '/tmp'),
@@ -84,6 +85,10 @@ function fixture(
   const remote = {
     dshAcp: {
       ownedProviderRoutes: vi.fn(async () => ({ ok: true, value: routes.getSnapshot() })),
+      agentSessionSnapshot: vi.fn(async () => ({
+        ok: true,
+        value: { sessionId, profileId: 'buddy', managedModel: { confirmed: 'large' as string | null } },
+      })),
       backendOf: vi.fn(
         async (): Promise<{ ok: true; value: { state: 'established'; provider: string; acpBinding?: true } }> => ({
           ok: true,
@@ -562,6 +567,94 @@ describe('cross-backend coordinator', () => {
       expect(
         shouldConfirmBackendTransition({ lastUsed: source, next: target, blank: false, preset: 'acp-adapter' }, owns),
       ).toBe(true)
+  })
+
+  it.each(['standard', 'cordis', 'ptc', 'minimal', 'acp-adapter'])(
+    'continues named or legacy sessions with the same verified Agent in %s and hands off other providers',
+    async (preset) => {
+      for (const model of ['small', ACP_AGENT_MANAGED_MODEL_ID]) {
+        const source = { provider: 'acp-buddy', model }
+        const target = { ...source, model: 'large' }
+        const f = fixture({ livePreset: preset, projection: { lastUsed: source, next: source } })
+        f.routes.set({ providers: [source.provider], switchableProviders: [source.provider], historicalProviders: [] })
+        const stop = f.coordinator.start()
+        f.projection.set({ lastUsed: source, next: target })
+        await settle()
+        expect(f.coordinator.getSnapshot().pending).toBeNull()
+        expect(f.remote.session.selectModel).not.toHaveBeenCalled()
+        f.projection.set({ lastUsed: source, next: { provider: 'native', model: 'native' } })
+        await settle()
+        expect(f.coordinator.getSnapshot().pending?.ticket.sourceSelection).toEqual(target)
+        expect(f.remote.session.selectModel).toHaveBeenCalledWith({ sessionId: 'session-1', ...target })
+        stop()
+      }
+    },
+  )
+
+  it.each([true, false])(
+    'uses only the original confirmed model when cancelling a cross-backend legacy choice (%s)',
+    async (confirmed) => {
+      const source = { provider: 'acp-buddy', model: ACP_AGENT_MANAGED_MODEL_ID }
+      const f = fixture({ livePreset: 'standard', projection: { lastUsed: source, next: source } })
+      f.routes.set({ providers: [source.provider], switchableProviders: [source.provider], historicalProviders: [] })
+      if (!confirmed)
+        f.remote.dshAcp.agentSessionSnapshot.mockResolvedValue({
+          ok: true,
+          value: { sessionId: 'session-1', profileId: 'buddy', managedModel: { confirmed: null } },
+        })
+      const stop = f.coordinator.start()
+      f.projection.set({ lastUsed: source, next: { provider: 'native', model: 'inference' } })
+      await vi.waitFor(() => expect(f.coordinator.getSnapshot().pending).not.toBeNull())
+      expect(f.coordinator.getSnapshot().pending?.ticket.sourceSelection).toEqual(
+        confirmed ? { provider: source.provider, model: 'large' } : undefined,
+      )
+      if (confirmed)
+        expect(f.remote.session.selectModel).toHaveBeenCalledWith({
+          sessionId: 'session-1',
+          provider: source.provider,
+          model: 'large',
+        })
+      else expect(f.remote.session.selectModel).not.toHaveBeenCalled()
+      stop()
+    },
+  )
+
+  it('rechecks a capability discovered by the first native catalog probe before showing a handoff', async () => {
+    const source = { provider: 'acp-buddy', model: 'small' }
+    const f = fixture({ livePreset: 'standard', projection: { lastUsed: source, next: source } })
+    const registered = {
+      providers: [source.provider],
+      historicalProviders: [],
+      generations: { [source.provider]: '1' },
+    }
+    f.routes.set(registered)
+    f.remote.dshAcp.ownedProviderRoutes.mockResolvedValue({
+      ok: true,
+      value: { ...registered, switchableProviders: [source.provider] },
+    })
+    const stop = f.coordinator.start()
+    f.projection.set({ lastUsed: source, next: { ...source, model: 'large' } })
+    await settle()
+    expect(f.remote.dshAcp.ownedProviderRoutes).toHaveBeenCalledOnce()
+    expect(f.coordinator.getSnapshot().pending).toBeNull()
+    expect(f.remote.session.selectModel).not.toHaveBeenCalled()
+    stop()
+  })
+
+  it('keeps the handoff for an ordinary Teams child even when its Agent supports main-session switches', async () => {
+    const source = { provider: 'acp-buddy', model: 'small' }
+    const target = { ...source, model: 'large' }
+    const f = fixture({
+      row: { origin: 'subagent', blank: false, agentPreset: 'standard' },
+      projection: { lastUsed: source, next: source },
+    })
+    f.routes.set({ providers: [source.provider], switchableProviders: [source.provider], historicalProviders: [] })
+    const stop = f.coordinator.start()
+    f.projection.set({ lastUsed: source, next: target })
+    await settle()
+    expect(f.coordinator.getSnapshot().pending?.reason).toBe('model-switch')
+    expect(f.remote.session.selectModel).toHaveBeenCalledWith({ sessionId: 'session-1', ...source })
+    stop()
   })
 
   it('keeps reasoning-only changes and unowned routes outside the model-switch exit', () => {

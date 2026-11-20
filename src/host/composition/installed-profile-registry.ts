@@ -40,6 +40,7 @@ import { resolveSubprocessSeam } from './subprocess.ts'
 import { AcpRemoteService } from '../../remote/service.ts'
 import { auditTimelineRowOf } from './audit-row.ts'
 import { installAcpBackendGuard } from './backend-guard.ts'
+import { NamedModelSteps } from './named-model-compaction.ts'
 import { retryModelSwitchInput } from './retry-model-switch-input.ts'
 import { createNativeForkRegistrar } from './native-fork.ts'
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
@@ -270,14 +271,21 @@ export async function installInstalledProfileRegistry(
   const log = createAcpLogger(ctx.logger)
   const sidecar = installAcpSidecar(ctx)
   const profileAdapters = new Map<string, AcpProfileAdapter>()
+  const namedSteps = new NamedModelSteps()
+  const canSwitchNamedModel = (provider: string) => {
+    const profile = acpAgentIdFromRoute(provider)
+    return profile !== undefined && profileAdapters.get(profile)?.supportsNamedModelSwitch(provider) === true
+  }
   if (sidecar !== undefined)
     installAcpBackendGuard(ctx, {
+      namedSteps,
       sidecar,
       ownsProvider,
-      confirmModelSwitch: async (profileId, sessionId, owner, binding, target, signal) => {
+      canSwitchNamedModel,
+      confirmModelSwitch: async (profileId, sessionId, owner, binding, target, signal, requireKnownAgent) => {
         const adapter = profileAdapters.get(profileId)
         if (adapter === undefined) throw new Error('The selected ACP Agent is no longer available.')
-        await adapter.confirmModelSwitch(sessionId, owner, binding, target, signal)
+        await adapter.confirmModelSwitch(sessionId, owner, binding, target, signal, requireKnownAgent)
       },
     })
   // The additive composition has no AgentLoop constructor to hand this seam
@@ -551,6 +559,7 @@ export async function installInstalledProfileRegistry(
               signal,
             )
           },
+          canSwitchNamedModel,
         ),
       nativeForkScope: () => {
         if (nativeForkScope === undefined) throw new Error('ACP fork scope has not been initialized')
@@ -566,6 +575,10 @@ export async function installInstalledProfileRegistry(
         // Settings panel's targeted check is always reported as unknown.
         agents: () => new Map(Object.entries(agents)),
         registeredProviders: () => [...registrations.keys()].map(acpRouteId),
+        switchableProviders: () =>
+          [...registrations.keys()]
+            .filter((id) => profileAdapters.get(id)?.supportsNamedModelSwitch(acpRouteId(id)))
+            .map(acpRouteId),
         registeredProviderGenerations: () =>
           Object.fromEntries([...routeGenerations].map(([route, { generation }]) => [route, generation])),
         // Health delegates to the exact adapter registered for the profile;
@@ -809,6 +822,7 @@ export async function installInstalledProfileRegistry(
             ctx.root,
             (sessionId) => resolveQwenTaskJobs(ctx, sessionId),
             continuity,
+            namedSteps,
           )
           profileAdapters.set(id, routeAdapter)
           created.push(id)

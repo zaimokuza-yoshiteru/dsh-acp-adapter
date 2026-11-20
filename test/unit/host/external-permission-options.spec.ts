@@ -261,7 +261,7 @@ describe('complete ACP options with an explicitly installed machine policy', () 
     },
   )
 
-  it.each(['en', 'zh'])('shows the %s policy scope on both original human surfaces', async (locale) => {
+  it.each(['en', 'zh'])('leads with the %s policy scope on both original human surfaces', async (locale) => {
     const f = await fixture({ locale })
     const scope = 'Only the build cache may be written.'
     const handler = async () => ({ decision: 'not-applicable' as const, reason: scope })
@@ -273,7 +273,7 @@ describe('complete ACP options with an explicitly installed machine policy', () 
     const binary = f.legacy.mock.calls[0]![0].reason
     const rich = f.ask.mock.calls[0]![0].questions[0]!
     for (const surface of [binary, rich.question]) {
-      expect(surface).toContain(locale === 'zh' ? '审批规则：' + scope : 'Approval rule: ' + scope)
+      expect(surface?.split('\n')[0]).toBe(locale === 'zh' ? '审批规则：' + scope : 'Approval rule: ' + scope)
       expect(surface).toContain('printf fixture-only')
     }
     expect(binary).toContain('Deny')

@@ -17,7 +17,7 @@ import type {
 } from '../coordinator/native-session-navigation.ts'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { resolveCrossBackendLocation } from '../data/cross-backend-controller.ts'
-import { isAcpAgentManagedModel } from '../../contract/model-selection.ts'
+import { acpModelSelection, isAcpAgentManagedModel } from '../../contract/model-selection.ts'
 import { ManagedModelRecovery } from './ManagedModelRecovery.ts'
 
 type RecoveryDockProps = PropsRuntime<'conversation.input.dock'> &
@@ -256,9 +256,16 @@ export function AcpRecoveryDock({
     )
   if (recovery === null) {
     const route = projection?.lastUsed
-    return ownership === 'active' && route && isAcpAgentManagedModel(route.model)
+    const next = projection?.next
+    const selection =
+      route && next && route.provider === next.provider && route.model !== next.model
+        ? acpModelSelection(next.model)
+        : undefined
+    const target = selection?.kind === 'declared-model' ? selection.value : undefined
+    return ownership === 'active' && route && (target !== undefined || isAcpAgentManagedModel(route.model))
       ? h(ManagedModelRecovery, {
           key: sessionId,
+          target,
           sessionId,
           remote,
           streamFactory,

@@ -232,42 +232,14 @@ afterEach(() => {
   for (const cleanup of runtime.cleanups.values()) cleanup()
 })
 
-it('waits for an explicit choice before switching to a smaller model and checks access at confirmation', () => {
-  runtime.managed = true
-  const h = setup()
-  const dialog = () =>
-    (
-      render(h.props).props as unknown as {
-        confirmation: { props: { model: string; cancel(): void; confirm(): void } }
-      }
-    ).confirmation
-  const ask = () => {
-    const menu = render(h.props)
-    const small = menu.props.groups.flatMap((group) => group.choices).find((choice) => choice.label === 'Small')!
-    menu.props.onSelect(small)
-    expect(dialog().props.model).toBe('Small')
-    expect(h.remote.setAgentSessionOption).not.toHaveBeenCalled()
-  }
-  ask()
-  dialog().props.cancel()
-  ask()
-  const approved = dialog().props.confirm
-  h.revoke()
-  approved()
-  expect(h.remote.setAgentSessionOption).not.toHaveBeenCalled()
-})
-
-it('reports a refused managed switch when there is no inline recovery', async () => {
+it('keeps policy and mode available without a second model selector on old conversations', () => {
   runtime.managed = true
   const fixture = setup()
   const menu = render(fixture.props)
-  const small = menu.props.groups.flatMap((group) => group.choices).find((entry) => entry.label === 'Small')!
-  menu.props.onSelect(small)
-  const confirmation = render(fixture.props).props as Menu['props'] & { confirmation: { props: { confirm(): void } } }
-  confirmation.confirmation.props.confirm()
-  fixture.resolve({ ok: false, error: { message: 'Access denied' } })
-  await vi.waitFor(() => expect(fixture.report).toHaveBeenCalledWith('session-option-failed', undefined))
-  expect(fixture.remote.agentSessionSnapshot).toHaveBeenCalledWith('session-source')
+  const choices = menu.props.groups.flatMap((group) => group.choices)
+  expect(choices.some((choice) => choice.write.kind === 'mode')).toBe(true)
+  expect(choices.some((choice) => choice.write.kind === 'tool-approval-policy')).toBe(true)
+  expect(choices.some((choice) => choice.write.kind === 'config' && choice.write.id === 'engine')).toBe(false)
 })
 
 it('keeps the full source identity and limits wrapping to source-session failure toasts', () => {

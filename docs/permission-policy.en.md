@@ -70,9 +70,23 @@ Return one of the following strings or an object of the form `{ decision, reason
 | `cancelled`      | Cancels authorization without falling back to a human grant.                                                                                                                                                          |
 | `failed`         | Cancels authorization and uses native feedback to state that the rule was unavailable and the operation was not authorized. Exceptions and invalid results receive this treatment without exposing exception details. |
 
-Supply a short, public reason suitable for both the user and the Agent. On human fallback it appears beside the original operation and choices. For a policy denial or cancellation, the adapter includes the explanation once with the next independently admitted `session/prompt` for the same executing Agent and live ACP session. Existing private Agent steps only see the standard ACP permission reply. Sending the explanation does not start another model request. Stop, transport closure, and owner replacement discard pending context. Each explanation is limited to 512 characters and each connection keeps the 16 most recent. Successful grants and rule failures do not forward explanations.
+Supply a short, public reason suitable for both the user and the Agent. When a person needs to decide, the approval card shows the reason first, followed by the original operation and choices. For a policy denial or cancellation, the adapter includes the explanation once with the next independently admitted `session/prompt` for the same executing Agent and live ACP session. Existing private Agent steps only see the standard ACP permission reply. Sending the explanation does not start another model request. Stop, transport closure, and owner replacement discard pending context. Each explanation is limited to 512 characters and each connection keeps the 16 most recent. Successful grants and rule failures do not forward explanations.
 
 A policy decision does not replace Sidecar persistence. The existing permission handler owns the same `asked` / `decided` audit pair and checks persistence, cancellation, and Agent identity before replying to ACP. The service adds no rule store, grant cache, or persistence owner.
+
+## Same-turn command denial in Antigravity
+
+On Apple silicon Macs, the adapter supports Google's verified `agy` 1.5.12 binary launched as `agy acp` or `agy acp --stdio`. A policy provider can register `dsh-acp/pre-tool-policy` on the same service to review the CLI's native `run_command` before execution. The adapter loads Google's `PreToolUse` hook for that process. Users can keep their workspace and existing hook files.
+
+```ts
+ctx.on('dsh-acp/pre-tool-policy', async (request, next) => {
+  if (request.params.toolCall.kind === 'execute')
+    return { decision: 'deny-once', reason: 'This workspace only permits read operations.' }
+  return next()
+})
+```
+
+The event supplies the executing Agent, the ACP session and tool call, and a cancellation signal. The public types are `AcpPreToolPolicyRequest` and `AcpPreToolPolicyDecision`. A rule can return a one-time denial with a public reason, call `next()`, or return `not-applicable` to delegate to the CLI. A denial gets its own `permission` audit entry with `phase: 'pre-tool'` and the real tool call ID. Antigravity receives the reason in the same turn. On delegation, the CLI continues with its own rules and presents its original choices if it requests approval. Existing policy providers can add the new event independently of their ACP approval handlers.
 
 ## Multiple providers and lifecycle
 
@@ -91,7 +105,7 @@ Registrations belong to the provider's Cordis fiber. Removing a registration pre
 - Auto for verified DSH bridge tools keeps its existing path and actual `tools.execute` checks. This extension does not redefine Auto, Full access, bypass, or a child session's native `never` policy.
 - Complete Devin permission requests retain the conservative human route. Agent metadata or mode cannot prove that enterprise-enforced Ask is eligible for an automatic response.
 - The parent page only presents the original child's request. Replies, execution identity, and audit remain with that child. Cancellation, Agent replacement, and late decisions cannot authorize an invalidated request.
-- Only permission requests actually sent over ACP are handled. Operations inside an Agent's private process that send no request cannot be intercepted here, and these tools do not become DSH Auto Review calls. ACP client-provided file and terminal operations retain their separate control paths.
+- The two ACP permission events handle requests sent by the Agent. The Antigravity pre-execution event above covers its native command tool. ACP client-provided file and terminal operations retain their separate control paths.
 - Without a matching rule and an online human, the request still waits. Browser connectivity cannot imply permission. This does not promise universal unattended execution or recovery of an unfinished machine policy call after a Host crash.
 
 Providers must validate their own rules and deployment order. A test provider does not certify compatibility with the Issue author's actual plugin, every Agent, enterprise policy, or operating system. User installation instructions remain in the README; execution logs and test evidence do not belong in this public API document.

@@ -53,16 +53,22 @@ async function openFixture(host: Host, preset: string, managed: boolean, env: Re
   const { sessionId } = await host.ctx.sessionController.create({ cwd: host.workspaceCwd, agentPreset: preset })
   const session = host.ctx.sessions.get(sessionId)!
   const agent = host.ctx.agents.get(sessionId)!
+  // Legacy conversations persisted this selection before the synthetic catalog row was retired.
+  if (managed) agent.model.select({ provider, model: ACP_AGENT_MANAGED_MODEL_ID })
   return { directory, trace, fault, agent, session, sessionId }
 }
 
-async function start(host: Host, preset = 'acp-adapter', managed = false, steering = false) {
-  const { directory, trace, fault, agent, session, sessionId } = await openFixture(
-    host,
-    preset,
-    managed,
-    steering ? { MOCK_SWITCH_STEERING: 'yes' } : {},
-  )
+async function start(
+  host: Host,
+  preset = 'acp-adapter',
+  managed = false,
+  steering = false,
+  namedPeer?: { name: string; firstModel: 'a' | 'b' },
+) {
+  const { directory, trace, fault, agent, session, sessionId } = await openFixture(host, preset, managed, {
+    ...(steering ? { MOCK_SWITCH_STEERING: 'yes' } : {}),
+    ...(namedPeer ? { MOCK_SWITCH_AGENT_NAME: namedPeer.name } : {}),
+  })
   const choose = (model: string) => host.ctx.sessionController.selectModel({ sessionId, provider, model })
   const submit = async (marker: string) => {
     const previous = session.snapshotEvents().filter((e) => e.type === 'turn/end').length
@@ -81,9 +87,10 @@ async function start(host: Host, preset = 'acp-adapter', managed = false, steeri
     )
     return session.snapshotEvents().findLast((e) => e.type === 'turn/end')!.data.reason
   }
+  if (namedPeer) await choose(namedPeer.firstModel)
   expect((await submit('FIRST')).kind).toBe('completed')
   const first = trace().find((entry) => entry.method === 'session/prompt')!
-  expect(first).toMatchObject({ model: 'a', markers: ['SWITCH_TEST_FIRST'], history: [] })
+  expect(first).toMatchObject({ model: namedPeer?.firstModel ?? 'a', markers: ['SWITCH_TEST_FIRST'], history: [] })
   const events = () => trace().filter((entry) => entry.session === first.session)
   const prompts = () => trace().filter((entry) => entry.method === 'session/prompt')
   const header = () => session.requestHeader()?.config.model
@@ -100,7 +107,7 @@ async function start(host: Host, preset = 'acp-adapter', managed = false, steeri
       history: ['SWITCH_TEST_FIRST'],
     })
   }
-  if (!managed) await choose('b')
+  if (!managed && !namedPeer) await choose('b')
   return { directory, agent, choose, events, prompts, header, fault, submit, retry }
 }
 
@@ -198,29 +205,93 @@ it.each(['standard', 'cordis', 'ptc', 'minimal'])(
   },
 )
 
-it.each(['refuse', 'unconfirmed', 'disconnect-before', 'disconnect-after'])(
-  'keeps the committed source and retries on the original ACP session after %s',
-  async (failure) => {
-    const host = await launchAdapterWorld()
-    try {
-      const run = await start(host)
-      run.fault(failure)
-      expect((await run.submit('SECOND')).kind).toBe('error')
-      expect(run.header()).toBe('a')
-      expect(run.prompts()).toHaveLength(1)
-      expect(run.events().filter((e) => e.target === 'b')).toHaveLength(1)
-      const beforeRetry = run.events().length
-      await run.retry('b')
-      if (failure.startsWith('disconnect')) {
-        const retried = run.events().slice(beforeRetry)
-        expect(retried[0]).toMatchObject({ method: 'session/load', model: failure === 'disconnect-before' ? 'a' : 'b' })
-        expect(retried.filter((e) => e.target === 'b')).toHaveLength(failure === 'disconnect-before' ? 1 : 0)
-      }
-    } finally {
-      await host.close()
+it('does not send the first message on the Agent default if the chosen named model is refused', async () => {
+  const host = await launchAdapterWorld()
+  try {
+    const { fault, sessionId, session, trace } = await openFixture(host, 'standard', false, {
+      MOCK_SWITCH_AGENT_NAME: 'OpenCode',
+    })
+    await host.ctx.sessionController.selectModel({ sessionId, provider, model: 'b' })
+    fault('refuse')
+    const settled = host.whenTurnSettled()
+    await host.ctx.sessionController.prompt(
+      {
+        sessionId,
+        requestId: randomUUID() as SessionRequestId,
+        mode: 'queue',
+        content: [{ type: 'text', text: 'SWITCH_TEST_FIRST' }],
+      },
+      new AbortController().signal,
+    )
+    expect(await settled).toBe(sessionId)
+    expect(session.snapshotEvents().findLast((e) => e.type === 'turn/end')?.data.reason.kind).toBe('error')
+    expect(trace().some((e) => e.method === 'session/set_config_option' && e.target === 'b')).toBe(true)
+    expect(trace().filter((e) => e.method === 'session/prompt')).toHaveLength(0)
+  } finally {
+    await host.close()
+  }
+})
+
+it.each([
+  ['standard', 'OpenCode'],
+  ['cordis', 'codebuddy-code'],
+  ['ptc', 'OpenCode'],
+  ['minimal', 'codebuddy-code'],
+  ['acp-adapter', 'OpenCode'],
+])('confirms the initial named model and keeps the same remote conversation in %s with %s', async (preset, name) => {
+  const host = await launchAdapterWorld()
+  try {
+    const run = await start(host, preset, false, false, { name, firstModel: 'b' })
+    const controls = host.ctx.get('dshAcp') as AcpRemoteService
+    expect((await controls.ownedProviderRoutes()).switchableProviders).toContain(provider)
+    expect((await host.ctx.llm.listModels(provider)).map((model) => model.id)).toEqual(['a', 'b'])
+    const original = run.prompts()[0]!.session
+    const wire = run.events()
+    expect(wire.findIndex((e) => e.method === 'session/set_config_option' && e.target === 'b')).toBeGreaterThanOrEqual(
+      0,
+    )
+    expect(wire.findIndex((e) => e.method === 'session/set_config_option' && e.target === 'b')).toBeLessThan(
+      wire.findIndex((e) => e.method === 'session/prompt'),
+    )
+    await run.choose('a')
+    const switched = await run.submit('SECOND')
+    expect(switched.kind, JSON.stringify(switched)).toBe('completed')
+    expect(run.header()).toBe('a')
+    expect(run.prompts()).toMatchObject([
+      { session: original, model: 'b', markers: ['SWITCH_TEST_FIRST'] },
+      { session: original, model: 'a', markers: ['SWITCH_TEST_SECOND'], history: ['SWITCH_TEST_FIRST'] },
+    ])
+  } finally {
+    await host.close()
+  }
+})
+
+it.each([
+  ['acp-adapter', 'refuse'],
+  ['acp-adapter', 'unconfirmed'],
+  ['standard', 'disconnect-before'],
+  ['standard', 'disconnect-after'],
+])('keeps the committed source and retries on the original ACP session in %s after %s', async (preset, failure) => {
+  const host = await launchAdapterWorld()
+  try {
+    const run = await start(host, preset, false, false, { name: 'OpenCode', firstModel: 'a' })
+    await run.choose('b')
+    run.fault(failure)
+    expect((await run.submit('SECOND')).kind).toBe('error')
+    expect(run.header()).toBe('a')
+    expect(run.prompts()).toHaveLength(1)
+    expect(run.events().filter((e) => e.target === 'b')).toHaveLength(1)
+    const beforeRetry = run.events().length
+    await run.retry('b')
+    if (failure.startsWith('disconnect')) {
+      const retried = run.events().slice(beforeRetry)
+      expect(retried[0]).toMatchObject({ method: 'session/load', model: failure === 'disconnect-before' ? 'a' : 'b' })
+      expect(retried.filter((e) => e.target === 'b')).toHaveLength(failure === 'disconnect-before' ? 1 : 0)
     }
-  },
-)
+  } finally {
+    await host.close()
+  }
+})
 
 it.each(['unavailable', 'no-snapshot', 'other-agent'])(
   'holds the old header when reloading the original session returns %s',
@@ -294,7 +365,8 @@ it.each([false, true])(
   async (cancel) => {
     const host = await launchAdapterWorld()
     try {
-      const run = await start(host)
+      const run = await start(host, 'standard', false, false, { name: 'OpenCode', firstModel: 'a' })
+      await run.choose('b')
       run.fault('hold-ack')
       const pending = run.submit('SECOND')
       void pending.catch(() => {})
@@ -419,6 +491,46 @@ it.each(['refuse', 'unconfirmed', 'disconnect-before', 'disconnect-after'])(
     }
   },
 )
+
+it('restores the last confirmed named choice of a legacy conversation without sending or changing its history', async () => {
+  const host = await launchAdapterWorld()
+  try {
+    const run = await start(host, 'standard', true)
+    const session = run.agent.session
+    const controls = host.ctx.get('dshAcp') as AcpRemoteService
+    await controls.setAgentSessionOption(session.id, { kind: 'config', id: 'model', value: 'b' })
+    expect((await run.submit('SECOND')).kind).toBe('completed')
+    const original = run.prompts()[0]!.session
+    const manager = host.ctx.pluginManager
+    const plugin = (await manager.listPlugins()).find((entry) => entry.moduleName === '@zaimokuza/dsh-acp-adapter')!
+    expect(await manager.setPluginEnabled(plugin.entryId, false)).toMatchObject({ application: 'applied' })
+    expect(await manager.setPluginEnabled(plugin.entryId, true)).toMatchObject({ application: 'applied' })
+    await expect.poll(() => run.agent.model.current()?.model).toBe('b')
+    expect(run.prompts()).toHaveLength(2)
+    expect(run.header()).toBe(ACP_AGENT_MANAGED_MODEL_ID)
+    run.fault('reset-on-load')
+    const beforeResume = run.events().length
+    const resumed = await run.submit('RETURN')
+    expect(resumed.kind, JSON.stringify(resumed)).toBe('completed')
+    const resumedWire = run.events().slice(beforeResume)
+    const confirmations = resumedWire.filter(
+      (event) => event.method === 'session/set_config_option' && event.target === 'b',
+    )
+    expect(new Set(confirmations.map((event) => event.pid)).size).toBe(2)
+    const prompts = resumedWire.filter((event) => event.method === 'session/prompt')
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]!.pid).toBe(confirmations.at(-1)!.pid)
+    expect(run.header()).toBe('b')
+    expect(run.prompts().at(-1)).toMatchObject({
+      session: original,
+      model: 'b',
+      markers: ['SWITCH_TEST_RETURN'],
+      history: ['SWITCH_TEST_FIRST', 'SWITCH_TEST_SECOND'],
+    })
+  } finally {
+    await host.close()
+  }
+})
 
 it('keeps input available when the original Agent reloads with a renamed model selector', async () => {
   const host = await launchAdapterWorld()

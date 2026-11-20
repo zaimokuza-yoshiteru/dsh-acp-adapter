@@ -24,6 +24,7 @@ vi.mock('react', () => ({
   useSyncExternalStore: (_subscribe: unknown, getSnapshot: () => unknown) => getSnapshot(),
 }))
 
+import { en, zh } from '../../../src/client/ui/locales.ts'
 import { UnroutedHistoryDock } from '../../../src/client/ui/UnroutedHistoryDock.ts'
 import { UnsentModelSwitchInput } from '../../../src/client/ui/UnsentModelSwitchInput.ts'
 import { AcpAgentControl } from '../../../src/client/ui/AcpAgentControl.ts'
@@ -88,7 +89,11 @@ function setup(owner = false, workspace = true) {
     rebindRecoveryBlank: vi.fn(async () => ({ ok: true, value: undefined })),
   }
   const createNewSession = vi.fn(async () => 'idle' as const)
-  const managedRecovery = (model: NonNullable<AcpAgentSessionSnapshotView['managedModel']>) => {
+  const managedRecovery = (
+    model: NonNullable<AcpAgentSessionSnapshotView['managedModel']>,
+    target?: string,
+    language?: typeof en,
+  ) => {
     seed([
       {
         ...snapshot,
@@ -110,7 +115,9 @@ function setup(owner = false, workspace = true) {
     return ManagedModelRecovery({
       sessionId: 'lead',
       remote,
-      t: (key: string) => key,
+      target,
+      t: (key: keyof typeof en, args: Record<string, string> = {}) =>
+        language ? language[key].replace(/\{(\w+)\}/g, (_match, name: string) => args[name] ?? '') : key,
       writable: true,
       running: false,
       mayCreate: true,
@@ -282,6 +289,22 @@ it('recovers a possibly delivered message by changing only the model or opening 
   ;(recoveryButton(missing, 'managedModelNew').props.onClick as () => void)()
   expect(h.createNewSession).toHaveBeenCalledExactlyOnceWith('lead', expect.any(Function), 'create')
   expect(h.managedRecovery({ optionId: 'engine', confirmed: 'b' })).toBeNull()
+})
+
+it('warns in the active locale only when the selected model has a measured capacity risk', () => {
+  const h = setup()
+  const capacity = {
+    optionId: 'engine',
+    confirmed: 'b',
+    capacityRisks: [{ model: 'a', lastUsed: 16280, targetSize: 12288 }],
+  }
+  for (const language of [en, zh]) {
+    const notice = h.managedRecovery(capacity, 'a', language)
+    expect(nodes(notice).flatMap((node) => node.props.children ?? [])).toContain(
+      language.managedModelWindowDetail.replace('{used}', '16,280').replace('{size}', '12,288'),
+    )
+    expect(h.managedRecovery(capacity, 'b', language)).toBeNull()
+  }
 })
 
 it('preserves owner mode and policy writes while read-only grants disable and block both handlers', async () => {
