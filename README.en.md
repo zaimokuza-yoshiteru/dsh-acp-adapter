@@ -6,13 +6,13 @@ Use ACP Agents in DSH with native sessions, tool approvals, and team collaborati
 
 ## Install
 
-This guide covers DSH `0.2.2-rc.5` with plugin [`0.2.2-rc.5.3`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.5.3). For DSH `0.2.2-rc.4`, use [plugin `0.2.2-rc.4.1`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.4.1).
+This guide covers DSH `0.2.2-rc.5` with plugin [`0.2.2-rc.5.4`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.5.4). For DSH `0.2.2-rc.4`, use [plugin `0.2.2-rc.4.1`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.4.1).
 
 **Recommended:** In DSH Creator mode, send:
 
-> Install and enable the ACP plugin: `@zaimokuza/dsh-acp-adapter@0.2.2-rc.5.3`.
+> Install and enable the ACP plugin: `@zaimokuza/dsh-acp-adapter@0.2.2-rc.5.4`.
 
-Confirm the installation when prompted. Alternatively, open **Plugins → Add plugin**, paste `@zaimokuza/dsh-acp-adapter@0.2.2-rc.5.3`, and install it. If prompted, select **Enable now**.
+Confirm the installation when prompted. Alternatively, open **Plugins → Add plugin**, paste `@zaimokuza/dsh-acp-adapter@0.2.2-rc.5.4`, and install it. If prompted, select **Enable now**.
 
 <details>
 <summary>Other installation methods: CLI, Git, and archive</summary>
@@ -23,18 +23,18 @@ Before using the Desktop CLI, fully quit the app; reopen it after the command co
 
 ```bash
 # Desktop
-dsh plugin --profile desktop add @zaimokuza/dsh-acp-adapter@0.2.2-rc.5.3
+dsh plugin --profile desktop add @zaimokuza/dsh-acp-adapter@0.2.2-rc.5.4
 
 # Web
-npx @deepseek-ai/dsh@0.2.2-rc.5 plugin --profile web add @zaimokuza/dsh-acp-adapter@0.2.2-rc.5.3
+npx @deepseek-ai/dsh@0.2.2-rc.5 plugin --profile web add @zaimokuza/dsh-acp-adapter@0.2.2-rc.5.4
 ```
 
 To install from Git or an archive, paste the Git address or .tgz download URL into the plugin manager.
 
 | Source                         | Example                                                                                                                                                    |
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Git                            | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.2-rc.5.3`                                                                             |
-| Prebuilt plugin archive (.tgz) | [Download 0.2.2-rc.5.3](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.2-rc.5.3/zaimokuza-dsh-acp-adapter-0.2.2-rc.5.3.tgz) |
+| Git                            | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.2-rc.5.4`                                                                             |
+| Prebuilt plugin archive (.tgz) | [Download 0.2.2-rc.5.4](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.2-rc.5.4/zaimokuza-dsh-acp-adapter-0.2.2-rc.5.4.tgz) |
 
 This archive includes compiled output and matches the npm package. GitHub's automatically generated Source code ZIP/TAR.GZ files are source archives, not built plugin packages. Uncached dependencies still require network access.
 
@@ -50,16 +50,15 @@ To update, choose a version matching DSH in the plugin manager. Select prereleas
 
 Launch and sign-in commands for common Agents:
 
-| Agent                     | ACP command                                            | Authentication                |
-| ------------------------- | ------------------------------------------------------ | ----------------------------- |
-| Devin (3000.14.30821+)    | `devin acp`                                            | `devin auth login`            |
-| CodeBuddy CLI (WorkBuddy) | `codebuddy --acp`                                      | `codebuddy`                   |
-| OpenCode                  | `opencode acp`                                         | Configure your model provider |
-| Antigravity CLI           | `agy acp`                                              | `agy acp --login`             |
-| Antigravity ACP Server    | `agy_acp_server.par` (`agy_acp_server.exe` on Windows) | Separate ACP sign-in          |
-| Claude                    | `claude-agent-acp`                                     | `claude`                      |
-| Codex                     | `codex-acp`                                            | `codex login`                 |
-| Qwen Code                 | `qwen --acp`                                           | `qwen`                        |
+| Agent                                                      | ACP command        | Authentication                |
+| ---------------------------------------------------------- | ------------------ | ----------------------------- |
+| Devin (3000.14.30821+)                                     | `devin acp`        | `devin auth login`            |
+| CodeBuddy CLI (WorkBuddy)                                  | `codebuddy --acp`  | `codebuddy`                   |
+| OpenCode                                                   | `opencode acp`     | Configure your model provider |
+| [Antigravity CLI](https://antigravity.google/docs/cli/acp) | `agy acp`          | `agy acp --login`             |
+| Claude                                                     | `claude-agent-acp` | `claude`                      |
+| Codex                                                      | `codex-acp`        | `codex login`                 |
+| Qwen Code                                                  | `qwen --acp`       | `qwen`                        |
 
 > To use WorkBuddy with DSH, connect through the CodeBuddy CLI. See the [ACP CLI reference](https://www.codebuddy.cn/docs/cli/cli-reference) and [CodeBuddy account and subscription details](https://www.codebuddy.cn/docs/ide/Account/pricing).
 
@@ -101,4 +100,4 @@ Choose the optional **ACP** mode to let the Agent manage conversation context. T
 
 Export the safe summary JSON from **ACP Diagnostics**; it excludes message text, commands, paths, raw session IDs, and ACP credentials. DSH's native session-log ZIP may contain prompts, tool arguments, file paths, and attachments; inspect and redact it before sharing.
 
-For help, open an [issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) with the error reference, DSH/plugin versions, and redacted log excerpts. For this version, see the [native reuse boundaries](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.5.3/docs/native-reuse.en.md).
+For help, open an [issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) with the error reference, DSH/plugin versions, and redacted log excerpts. For this version, see the [native reuse boundaries](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.5.4/docs/native-reuse.en.md).

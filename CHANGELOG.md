@@ -4,6 +4,20 @@
 
 Find installation commands, release dates, and package checksums on [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases).
 
+## 0.2.2-rc.5.4
+
+### 中文
+
+- 从目录添加 Antigravity 时，插件会预填 Google 官方的 `agy acp` 命令，并提供安装指南。使用自定义 CLI 路径时，可直接复制对应的登录命令。已保存的 Agent 配置可以继续使用。
+- CodeBuddy CLI 即使未在连接时报告名称，模型菜单也能显示各模型支持的思考档位。在普通模式停止首轮回复后，可以用已选模型在原会话继续，包括手动添加的 `codebuddy --acp`。
+- 消息尚未发出时点停止，下一条消息仍可沿用原 Agent 会话。两个 DSH 实例同时升级旧会话数据库时，也能继续读取已有记录。
+
+### English
+
+- Adding Antigravity from the catalog now prefills Google's official `agy acp` command and links to the installation guide. If you set a custom CLI path, you can copy a sign-in command that uses it. Existing Agent configurations still work.
+- The model picker shows each CodeBuddy model's reasoning options even when the CLI omits its name during connection. After stopping the first reply in standard mode, you can continue with the selected model in the same chat, including when you added `codebuddy --acp` manually.
+- Stopping a message before it is sent keeps the Agent session available for the next message. Two DSH instances can also open existing session records while upgrading the same database.
+
 ## 0.2.2-rc.5.3
 
 ### 中文
