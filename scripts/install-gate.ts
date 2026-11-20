@@ -555,7 +555,7 @@ async function main() {
     console.log(
       `[install-gate] OK: ${entries?.length ?? 'source'} package; additive composition; removal clean${args.skipBoot ? '; boot skipped' : '; HTTP 200/client bootstrap'}`,
     )
-    console.log(`[install-gate] evidence: ${evidence}`)
+    if (process.env.KEEP_INSTALL_GATE === '1') console.log(`[install-gate] evidence: ${evidence}`)
   } catch (error) {
     keep = true
     writeFileSync(
