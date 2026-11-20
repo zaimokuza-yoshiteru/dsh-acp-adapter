@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { Worker } from 'node:worker_threads'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { ACP_CONFIG_IDENTIFIER_MAX } from '../../../src/contract/config-options.ts'
@@ -1749,6 +1749,54 @@ describe('bound managed model selection', () => {
     await store.changeManagedModelIntent(id, { ...b, confirmed: true }, b)
     expect((await store.readManagedModelIntent(id))?.confirmed).toBe(true)
   })
+})
+
+it('upgrades existing model receipts on the first read without inferring earlier cancellations', async () => {
+  const id = SessionId('existing-model-receipts')
+  const key = 'same-binding'
+  await store.recordManagedModelTurn(id, key, { model: 'a', ordinal: 1, used: 12, size: 4000 })
+  await store.recordManagedModelInterruption(id, key, 'b', 2, 'failed')
+  await store.dispose()
+  const old = rawDb()
+  old.exec('ALTER TABLE managed_model_turns DROP COLUMN cancelled_ordinal')
+  old.close()
+
+  const before = await store.readManagedModelTurns(id, key)
+  expect(before).toMatchObject([
+    { model: 'a', ordinal: 1, used: 12, size: 4000, failureOrdinal: null, cancelledOrdinal: null },
+    { model: 'b', ordinal: 0, failureOrdinal: 2, cancelledOrdinal: null },
+  ])
+  await store.recordManagedModelInterruption(id, key, 'b', 4, 'cancelled')
+  await store.recordManagedModelInterruption(id, key, 'b', 3, 'cancelled')
+  await store.dispose()
+  expect(await store.readManagedModelTurns(id, key)).toEqual([before[0], { ...before[1], cancelledOrdinal: 4 }])
+})
+
+it('keeps old model receipts when a second Host finishes the upgrade during the first read', async () => {
+  const id = SessionId('concurrent-upgrade')
+  const key = 'original-binding'
+  await store.recordManagedModelInterruption(id, key, 'original-model', 2, 'failed')
+  await store.dispose()
+  const other = rawDb()
+  const exec = DatabaseSync.prototype.exec
+  let completedByOther = false
+  other.exec('ALTER TABLE managed_model_turns DROP COLUMN cancelled_ordinal')
+  const interleave = vi.spyOn(DatabaseSync.prototype, 'exec').mockImplementation(function (this: DatabaseSync, sql) {
+    if (!completedByOther && sql === 'ALTER TABLE managed_model_turns ADD COLUMN cancelled_ordinal INTEGER') {
+      exec.call(other, sql)
+      completedByOther = true
+    }
+    return exec.call(this, sql)
+  })
+  try {
+    expect(await store.readManagedModelTurns(id, key)).toMatchObject([
+      { model: 'original-model', ordinal: 0, cancelledOrdinal: null, failureOrdinal: 2 },
+    ])
+    expect(completedByOther).toBe(true)
+  } finally {
+    interleave.mockRestore()
+    other.close()
+  }
 })
 
 describe('pending member mode storage', () => {

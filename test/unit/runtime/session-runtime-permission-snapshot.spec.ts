@@ -265,7 +265,7 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
           runtime.prompt(PROMPT, () => {}, controller.signal, undefined, undefined, undefined, {
             beforeDispatch: () => controller.abort(),
           }),
-        ).resolves.toEqual({ stopReason: 'cancelled' })
+        ).rejects.toMatchObject({ code: 'ACP_PROMPT_NOT_DISPATCHED', cancelled: true })
         expect(readPrompts()).toEqual([PROMPT])
       }
       await runtime.prompt(PROMPT, () => {}, undefined, undefined, undefined, undefined, {

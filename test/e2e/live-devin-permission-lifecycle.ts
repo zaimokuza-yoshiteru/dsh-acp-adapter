@@ -184,7 +184,7 @@ export async function verifyLiveDevinPermissionLifecycle({
     await scope.getByRole('button', { name: 'Send message', exact: true }).click()
   }
   const writePrompt = (expected: MarkerWrite) =>
-    `Please use DSH to create the file ${expected.file_path} in this empty workspace. Write exactly ${expected.content}, with no trailing newline. Normal read-only tool discovery is allowed. Do not use shell tools, read other workspace files or delegate this task. Request my approval for this one write. If I reject or stop it, leave the file absent and finish without retrying. After success, reply with ${expected.content}.`
+    `Please use DSH's file-writing tool to create ${expected.file_path} in this empty workspace. Write exactly ${expected.content}, with no trailing newline. Normal read-only tool discovery is allowed. I will answer the permission card when you attempt the write. Do not ask a separate question, use shell tools, read other workspace files or delegate. If I reject or stop the write, leave the file absent and finish without retrying. After success, reply with ${expected.content}.`
   const childPane = () =>
     page.locator('[data-sidebar-chat]').filter({
       has: page.locator(`[data-conversation-session="${String(childId)}"]`),
@@ -279,17 +279,30 @@ export async function verifyLiveDevinPermissionLifecycle({
       expect(bridges).toHaveLength(1)
       await context.assertIsolatedSessionMcp(required(child.session.header.cwd))
       expect(question.options?.map((item) => item.label)).toEqual(asked.options.map((item) => item.name))
-      const card = page.locator('[data-question-key]:visible').filter({ hasText: question.question })
-      await card.waitFor()
-      expect(await card.count()).toBe(1)
-      expect(await card.getByRole('radio').count()).toBe(asked.options.length)
-      for (const option of asked.options) await card.getByRole('radio', { name: option.name, exact: true }).waitFor()
+      const presented = page.locator('[data-question-key]:visible').filter({ hasText: question.question })
+      await presented.waitFor()
+      if (phase.kind === 'reject') {
+        await page.reload()
+        await presented.waitFor()
+        const afterReload = acpPermissionAudit(host, 'asked').filter((row) => row.sessionId === childId)
+        expect(afterReload).toHaveLength(index + 1)
+        expect(afterReload[index]?.data.requestId).toBe(asked.requestId)
+        expect(questions.get(`acp-permission:${asked.requestId}`)).toBe(view)
+      }
+      // The Host keeps the request across reload. The renderer assigns a fresh key to its card.
+      const key = required(await presented.getAttribute('data-question-key'))
+      const card = page.locator(`[data-question-key=${JSON.stringify(key)}]:visible`)
+      const labels = await card
+        .getByRole('radio')
+        .evaluateAll((radios) => radios.map((r) => r.getAttribute('aria-label')))
+      expect(labels).toEqual(asked.options.map((option) => option.name))
       expect(existsSync(phase.expected.file_path)).toBe(false)
       expect(phase.admissions).toEqual([])
       expect(view.request.signal?.aborted).not.toBe(true)
       await card.screenshot({ path: join(evidence.directory, `${token}-${phase.kind}-pending.png`) })
       const row: Record<string, unknown> = {
         phase: phase.kind,
+        ...(phase.kind === 'reject' ? { originalRequestRestoredAfterReload: true } : {}),
         asked: {
           optionCount: asked.optionCount,
           options: asked.options,

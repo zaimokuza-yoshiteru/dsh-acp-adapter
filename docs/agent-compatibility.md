@@ -11,7 +11,11 @@
 3. 由 `src/agents/compatibility.ts` 显式组合所需事实，让对应共享 owner 消费。不要添加万能 driver、任意前后置 hook 或进程级可变注册表。
 4. 增加正例和身份不匹配的负例，并在真实消费路径加一条回归。模板规则的测试不能代替连接/生命周期测试。
 
-CodeBuddy 是小模块实例：`codebuddy.ts` 根据实际握手名启用分模型配置发现；显式 `runtime: codebuddy` 还提供取消后刷新会话的参数。共享 session runtime 负责取消收敛、替代会话和持久化，模块本身没有状态。Qwen 的模型配置发现同样基于握手身份。Devin/Codex 模型探测参数、Claude 的通知扩展与可执行文件覆盖、Antigravity 的覆盖键也各有明确文件。
+CodeBuddy 的握手名称是 `codebuddy-code`。部分版本省略 `agentInfo`，此时适配器可以识别直接启动的 `codebuddy --acp` 或 `codebuddy-code --acp`。如果配置声明了 `runtime: codebuddy`，也可以识别目录中通过 `npx` 启动的 `@tencent-ai/codebuddy-code`。识别后，适配器会读取各模型的思考档位。
+
+CodeBuddy 确认取消后，下一条消息会重新加载原会话。这适用于声明了 `runtime: codebuddy` 的配置和可识别的直接启动命令。手动配置的命令如果在握手时报告为其他 Agent，则沿用该 Agent 的取消行为。取消和持久化由共享的会话运行时负责。
+
+`src/agents/` 中也有其他可参考的实现。按握手身份探测可参考 Qwen，探测参数可参考 Devin 和 Codex，通知扩展可参考 Claude，覆盖可执行文件路径可参考 Antigravity。
 
 ## 四种身份不能混用
 

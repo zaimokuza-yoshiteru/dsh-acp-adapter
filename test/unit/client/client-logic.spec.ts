@@ -1,6 +1,7 @@
 // Client settings logic: draft parsing and validation, catalog identity,
 // panel settings, health response decoding, bound sessions, and error text.
 
+import { execFileSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import {
   ACP_AGENT_ID_PATTERN,
@@ -553,16 +554,79 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
     expect('runtime' in (draft ?? {})).toBe(false)
   })
 
-  it('does not suggest CLI login for Antigravity ACP accounts', () => {
-    expect(catalogEntryOf('antigravity-acp')).toMatchObject({
-      id: 'antigravity-acp',
+  it('saves the official Antigravity launch and derives sign-in from the current command', () => {
+    const draft = draftFromCatalogEntry('antigravity-acp')!
+    const config = validateAgentDraft(draft, {}, undefined).config!
+    expect(config).toEqual({
+      name: 'Google Antigravity',
+      command: 'agy',
+      args: ['acp'],
+      env: {},
       runtime: 'antigravity',
-      verification: 'adapter-tested',
+      catalogId: 'antigravity-acp',
     })
-    const draft = draftFromCatalogEntry('antigravity-acp')
-    expect(draft?.runtime).toBe('antigravity')
-    expect(draft?.loginHint).toBe('')
+    expect(agentLoginHint(draft.id, config)).toBe('agy acp --login')
+    expect(agentLoginHint(draft.id, { ...config, args: ['--help'] })).toBeUndefined()
   })
+
+  it.each([
+    ['agy.exe', 'agy.exe acp --login'],
+    ['//opt/Agent Tools/agy', "'//opt/Agent Tools/agy' acp --login"],
+    ["/Applications/Sam's Agent Tools/agy", "'/Applications/Sam'\\''s Agent Tools/agy' acp --login"],
+    ['C:\\Program Files\\Sam’s Tools\\agy.exe', "& 'C:\\Program Files\\Sam’’s Tools\\agy.exe' acp --login"],
+    ["C:/Agent's Tools/agy.exe", "& 'C:/Agent''s Tools/agy.exe' acp --login"],
+    ['\\\\host\\share name\\agy.exe', "& '\\\\host\\share name\\agy.exe' acp --login"],
+  ])('signs in with the executable configured on the Host: %s', (command, expected) => {
+    const config = { command, args: ['acp', '--stdio'] }
+    expect(agentLoginHint('custom-id', config)).toBe(expected)
+    expect(agentLoginHint('custom-id', { ...config, loginHint: 'company-login' })).toBe('company-login')
+  })
+
+  it('preserves the sign-in executable and both arguments when parsed by the Host shell', () => {
+    const windows = process.platform === 'win32'
+    const command = windows ? "C:\\Sam's $AGENT_DIRECTORY\\agy.exe" : "/opt/Sam's $AGENT_DIRECTORY/agy"
+    const hint = agentLoginHint('custom-id', { command, args: ['acp'] })!
+    const tokens = windows
+      ? execFileSync(
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            [
+              '$tree = [System.Management.Automation.Language.Parser]::ParseInput($env:DSH_TEST_SIGN_IN, [ref]$null, [ref]$null)',
+              '$call = $tree.EndBlock.Statements[0].PipelineElements[0]',
+              'if ($call.InvocationOperator -ne "Ampersand") { exit 1 }',
+              '$call.CommandElements[0].Value',
+              '$call.CommandElements[1].Extent.Text',
+              '$call.CommandElements[2].Extent.Text',
+            ].join('\n'),
+          ],
+          { env: { ...process.env, DSH_TEST_SIGN_IN: hint }, encoding: 'utf8' },
+        )
+      : execFileSync('/bin/sh', ['-c', `set -- ${hint}; printf '%s\\n' "$@"`], { encoding: 'utf8' })
+    expect(tokens.trimEnd().split(/\r?\n/u)).toEqual([command, 'acp', '--login'])
+  })
+
+  it.each(['/opt/agy_acp_server.par', 'C:\\Tools\\agy_acp_server.exe', '/opt/refined-agy', '/opt/my-agy'])(
+    'keeps saved Antigravity launch and login settings for %s',
+    (command) => {
+      const id = 'company-agent'
+      const config: AcpAgentConfig = {
+        name: 'Company Agent',
+        command,
+        args: ['acp'],
+        env: { PROFILE: 'work' },
+        runtime: 'antigravity',
+        catalogId: 'antigravity-acp',
+      }
+      const draft = draftFromAgent(id, config)
+      expect(agentLoginHint(id, config)).toBeUndefined()
+      expect(agentLoginHint(id, { ...draft, args: parseArgsText(draft.argsText) })).toBeUndefined()
+      expect(validateAgentDraft(draft, { [id]: config }, id).config).toEqual(config)
+      expect(agentLoginHint(id, { ...config, loginHint: 'company-login' })).toBe('company-login')
+    },
+  )
 
   it('draftFromAgent：args/env 渲染成逐行文本，loginHint 缺席补空串', () => {
     expect(draftFromAgent('foo', fooConfig)).toEqual({

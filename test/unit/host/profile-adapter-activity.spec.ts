@@ -2911,7 +2911,7 @@ describe('provider activity bridge', () => {
     let retirementCount = 0
     let refreshed = false
     const runtimeFactory = vi.fn((options: AcpSessionRuntimeOptions): AcpProfileRuntime => {
-      expect(options.refreshSessionAfterCancelledPrompt).toBe(true)
+      expect(options.refreshSessionAfterCancelledPrompt?.(undefined)).toBe(true)
       return {
         acpSessionId: 'agent-codebuddy-refresh',
         agentInfo: { name: 'codebuddy-code', version: '2.161.2' },

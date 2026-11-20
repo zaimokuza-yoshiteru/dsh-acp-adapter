@@ -190,7 +190,7 @@ export interface AcpSessionRuntimeOptions {
   /** Best-effort notification when a terminal ACP response is waiting on Host settlement. */
   readonly onHostSettlementChanged?: () => void
   /** Reopen a confirmed-cancelled native session before its next bound prompt. */
-  readonly refreshSessionAfterCancelledPrompt?: boolean
+  readonly refreshSessionAfterCancelledPrompt?: (agentName: string | undefined) => boolean
   /** Grace period after `session/cancel` before the Agent process is closed. */
   readonly cancelGraceMs?: number
   /** Qwen `ask_user_question` bridge (permission request carrying questions + `answers`). */
@@ -226,12 +226,16 @@ export class AcpForkPreDispatchError extends Error {
   }
 }
 
-/** A stale connection was detected before this input could cross the RPC boundary. */
+/** The input did not cross the RPC boundary. */
 export class AcpPromptNotDispatchedError extends Error {
   readonly code = 'ACP_PROMPT_NOT_DISPATCHED'
 
-  constructor() {
-    super('The ACP connection changed before this request was sent. Retry to continue the original session.')
+  constructor(readonly cancelled = false) {
+    super(
+      cancelled
+        ? 'The ACP prompt was cancelled before it was sent.'
+        : 'The ACP connection changed before this request was sent. Retry to continue the original session.',
+    )
     this.name = 'AcpPromptNotDispatchedError'
   }
 }
@@ -527,12 +531,7 @@ export class AcpSessionRuntime {
    * complete, keeping the same-session refresh marker for the next user input.
    * This is deliberately not a prompt retry. */
   async retireCancelledSession(): Promise<void> {
-    if (
-      this.options.refreshSessionAfterCancelledPrompt !== true ||
-      !this.refreshBeforeRestore ||
-      this.refreshBindingSessionId === undefined
-    )
-      return
+    if (!this.refreshBeforeRestore || this.refreshBindingSessionId === undefined) return
     await this.close()
   }
   get agentCapabilities(): acp.AgentCapabilities | undefined {
@@ -959,17 +958,22 @@ export class AcpSessionRuntime {
     const promptAbort = new AbortController()
     this.promptAbort = promptAbort
     const setupSignal = signal === undefined ? promptAbort.signal : AbortSignal.any([signal, promptAbort.signal])
+    const cancelBeforeDispatch = (): acp.PromptResponse => {
+      // A Qwen wake can adopt a remote turn that already owns this input boundary.
+      if (promptOptions.adoptAgentTurn === true) return { stopReason: 'cancelled' }
+      throw new AcpPromptNotDispatchedError(true)
+    }
     try {
       this.throwPendingAgentTurnFailure(onUpdate)
       await this.flushHostFeedback()
       if (this.hasPendingHostCalls() || this.hasUncommittedHostFeedback())
         throw new AcpHostSettlementError('ACP_HOST_GENERATION_STILL_ACTIVE')
       // A turn cancelled before dispatch has no remote outcome to reconcile.
-      if (isAborted(signal)) return { stopReason: 'cancelled' }
+      if (isAborted(signal)) return cancelBeforeDispatch()
       // Claim the prompt first, preventing further UI writes, then finish any
       // already admitted setting changes before sending this turn.
       await this.configWrite
-      if (setupSignal.aborted) return { stopReason: 'cancelled' }
+      if (setupSignal.aborted) return cancelBeforeDispatch()
       this.throwPendingAgentTurnFailure(onUpdate)
       // The Host may already have restored a binding and written its WAL.
       // Let it retire this transport and retry that exact binding instead of
@@ -982,12 +986,12 @@ export class AcpSessionRuntime {
       const connection = this.connection
       const sessionId = this.sessionId
       if (connection === undefined || sessionId === undefined) throw new Error('ACP session is not started')
-      if (isAborted(signal)) return { stopReason: 'cancelled' }
+      if (isAborted(signal)) return cancelBeforeDispatch()
       // A turn woken by a Qwen background/cron notice runs the turn Qwen has
       // already started instead of dispatching a new session/prompt.
       const adoptedTurn = promptOptions.adoptAgentTurn === true ? await this.nextAgentTurn(setupSignal) : undefined
       this.throwPendingAgentTurnFailure(onUpdate)
-      if (isAborted(signal)) return { stopReason: 'cancelled' }
+      if (isAborted(signal)) return cancelBeforeDispatch()
       const promptToolSnapshots =
         adoptedTurn === undefined ? new Map<string, acp.ToolCallUpdate>() : (this.promptToolSnapshots ?? new Map())
       if (adoptedTurn === undefined) this.promptToolSnapshots?.clear()
@@ -1080,6 +1084,7 @@ export class AcpSessionRuntime {
               deliver(notification)
             },
             {
+              beforeDispatchSignal: setupSignal,
               beforeDispatch: () => {
                 promptOptions.beforeDispatch?.()
                 // Host work has drained. Resolve ownership and consume the pending reasons
@@ -1111,7 +1116,7 @@ export class AcpSessionRuntime {
           return response
         } catch (error) {
           this.modelProjection = undefined
-          if (!remoteTurnMayHaveStarted && isAborted(signal)) return { stopReason: 'cancelled' }
+          if (!remoteTurnMayHaveStarted && setupSignal.aborted) return cancelBeforeDispatch()
           throw error
         } finally {
           this.wirePromptActive = false
@@ -1153,7 +1158,7 @@ export class AcpSessionRuntime {
         },
       )
       const onAbort = (): void => {
-        if (settled) return
+        if (settled || !remoteTurnMayHaveStarted) return
         void connection.cancel(sessionId).catch(() => undefined)
         void waitWithin(prompting, this.cancelGraceMs).then(
           (response) => {
@@ -1204,7 +1209,11 @@ export class AcpSessionRuntime {
         )
         promptAbort.abort(new Error('ACP prompt lifetime ended'))
         let drainError: unknown
-        if (this.options.refreshSessionAfterCancelledPrompt === true && promptResponse?.stopReason === 'cancelled') {
+        if (
+          remoteTurnMayHaveStarted &&
+          promptResponse?.stopReason === 'cancelled' &&
+          this.options.refreshSessionAfterCancelledPrompt?.(connection.agentInfo?.name)
+        ) {
           this.refreshBeforeRestore = true
           this.refreshBindingSessionId = sessionId
         }

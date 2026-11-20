@@ -160,9 +160,10 @@ export interface AcpModeIntent {
 /** Most recent completed turn on one model within an exact ACP binding. */
 export interface AcpManagedModelTurn {
   readonly model: string
-  /** Zero for a model that has only produced a failed response. */
+  /** Zero until this model completes a successful response. */
   readonly ordinal: number
   readonly failureOrdinal?: number | null
+  readonly cancelledOrdinal?: number | null
   /** Occupancy from this exact successful prompt, or null when none was observed. */
   readonly used: number | null
   /** Most recent window observed on this model in this binding. */
@@ -517,7 +518,13 @@ export interface AcpSidecar {
   /** Clear a user-reviewed dispatch, or an exact key proven not to have crossed the RPC boundary. */
   clearDispatch(sessionId: SessionId, key?: string): Promise<void>
   recordManagedModelTurn(sessionId: SessionId, bindingKey: string, turn: AcpManagedModelTurn): Promise<void>
-  recordManagedModelFailure(sessionId: SessionId, bindingKey: string, model: string, ordinal: number): Promise<void>
+  recordManagedModelInterruption(
+    sessionId: SessionId,
+    bindingKey: string,
+    model: string,
+    ordinal: number,
+    outcome: 'failed' | 'cancelled',
+  ): Promise<void>
   clearManagedModelFailures(sessionId: SessionId, bindingKey: string, throughOrdinal: number): Promise<void>
   readManagedModelTurns(sessionId: SessionId, bindingKey: string): Promise<AcpManagedModelTurn[]>
   /** Upsert one external ACP activity, preserving its first-seen sequence. */
@@ -861,6 +868,7 @@ CREATE TABLE IF NOT EXISTS managed_model_turns (
   model TEXT NOT NULL,
   ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
   failure_ordinal INTEGER,
+  cancelled_ordinal INTEGER,
   used INTEGER,
   size INTEGER,
   cost_amount REAL,
@@ -997,10 +1005,23 @@ function tableColumns(db: DatabaseSync, table: string): Set<string> {
   )
 }
 
+/** Column names and definitions come from the adapter schema. Independent Hosts can upgrade the same database. */
+function ensureColumns(db: DatabaseSync, table: string, definitions: Readonly<Record<string, string>>): void {
+  const columns = tableColumns(db, table)
+  for (const [column, definition] of Object.entries(definitions)) {
+    if (columns.has(column)) continue
+    try {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
+    } catch (error) {
+      // SQLite has no ADD COLUMN IF NOT EXISTS. A competing migration can win after table_info.
+      if (!(error instanceof Error && 'errcode' in error && error.errcode === 1 && tableColumns(db, table).has(column)))
+        throw error
+    }
+  }
+}
+
 function ensureActivityJournalOptionalColumns(db: DatabaseSync): void {
-  const columns = tableColumns(db, 'activity_journal')
-  if (!columns.has('display_detail')) db.exec('ALTER TABLE activity_journal ADD COLUMN display_detail TEXT')
-  if (!columns.has('content_index')) db.exec('ALTER TABLE activity_journal ADD COLUMN content_index INTEGER')
+  ensureColumns(db, 'activity_journal', { display_detail: 'TEXT', content_index: 'INTEGER' })
 }
 
 function ensureActivityJournalIndexes(db: DatabaseSync): void {
@@ -1146,28 +1167,11 @@ class SidecarStore implements AcpSidecar {
       db.exec(SCHEMA_SQL)
       // v2 databases predate the recovery columns/table. Migrate by schema
       // inspection so an old sidecar remains readable without a reset.
-      const recoveryColumns = new Set(
-        (db.prepare('PRAGMA table_info(recovery_states)').all() as Array<{ name?: string }>).map((row) => row.name),
-      )
-      if (!recoveryColumns.has('last_attempt_at'))
-        db.exec('ALTER TABLE recovery_states ADD COLUMN last_attempt_at INTEGER')
-      if (!recoveryColumns.has('last_user_action'))
-        db.exec('ALTER TABLE recovery_states ADD COLUMN last_user_action TEXT')
-      const dispatchColumns = new Set(
-        (db.prepare('PRAGMA table_info(dispatch_ledger)').all() as Array<{ name?: string }>).map((row) => row.name),
-      )
-      if (!dispatchColumns.has('provenance')) db.exec('ALTER TABLE dispatch_ledger ADD COLUMN provenance TEXT')
-      if (!tableColumns(db, 'managed_model_intents').has('revision'))
-        db.exec('ALTER TABLE managed_model_intents ADD COLUMN revision INTEGER NOT NULL DEFAULT 1')
-      const memberModelColumns = new Set(
-        (db.prepare('PRAGMA table_info(member_model_selections)').all() as Array<{ name?: string }>).map(
-          (row) => row.name,
-        ),
-      )
-      if (!memberModelColumns.has('session_seq'))
-        db.exec('ALTER TABLE member_model_selections ADD COLUMN session_seq INTEGER')
-      if (!memberModelColumns.has('native_selection_key'))
-        db.exec('ALTER TABLE member_model_selections ADD COLUMN native_selection_key TEXT')
+      ensureColumns(db, 'recovery_states', { last_attempt_at: 'INTEGER', last_user_action: 'TEXT' })
+      ensureColumns(db, 'dispatch_ledger', { provenance: 'TEXT' })
+      ensureColumns(db, 'managed_model_intents', { revision: 'INTEGER NOT NULL DEFAULT 1' })
+      ensureColumns(db, 'managed_model_turns', { cancelled_ordinal: 'INTEGER' })
+      ensureColumns(db, 'member_model_selections', { session_seq: 'INTEGER', native_selection_key: 'TEXT' })
       let activityLegacyConflictCount = 0
       const activitySql = (
         db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'activity_journal'").get() as
@@ -2569,18 +2573,20 @@ class SidecarStore implements AcpSidecar {
     return (this.openIfExists()
       ?.prepare(
         `SELECT model, ordinal, used, size, cost_amount AS costAmount, cost_currency AS costCurrency,
-          CASE WHEN failure_ordinal > COALESCE(through_ordinal, 0) THEN failure_ordinal END AS failureOrdinal
+          CASE WHEN failure_ordinal > COALESCE(through_ordinal, 0) THEN failure_ordinal END AS failureOrdinal,
+          cancelled_ordinal AS cancelledOrdinal
         FROM managed_model_turns LEFT JOIN managed_model_failure_acknowledgements USING (dsh_session_id, binding_key)
         WHERE dsh_session_id = ? AND binding_key = ? ORDER BY ordinal DESC`,
       )
       .all(sessionId, bindingKey) ?? []) as unknown as AcpManagedModelTurn[]
   }
 
-  async recordManagedModelFailure(
+  async recordManagedModelInterruption(
     sessionId: SessionId,
     bindingKey: string,
     model: string,
     ordinal: number,
+    outcome: 'failed' | 'cancelled',
   ): Promise<void> {
     assertSafeSessionId(sessionId)
     if (
@@ -2591,14 +2597,15 @@ class SidecarStore implements AcpSidecar {
       !bindingKey ||
       bindingKey.length > ACP_MEMBER_BINDING_KEY_MAX
     )
-      throw new TypeError('Invalid ACP failed model turn')
+      throw new TypeError('Invalid ACP interrupted model turn')
+    const column = outcome === 'cancelled' ? 'cancelled_ordinal' : 'failure_ordinal'
     this.ensureDb()
       .prepare(
         `
-      INSERT INTO managed_model_turns (dsh_session_id, binding_key, model, ordinal, failure_ordinal)
+      INSERT INTO managed_model_turns (dsh_session_id, binding_key, model, ordinal, ${column})
       VALUES (?, ?, ?, 0, ?)
-      ON CONFLICT (dsh_session_id, binding_key, model) DO UPDATE SET failure_ordinal = excluded.failure_ordinal
-      WHERE excluded.failure_ordinal > COALESCE(managed_model_turns.failure_ordinal, 0)
+      ON CONFLICT (dsh_session_id, binding_key, model) DO UPDATE SET ${column} = excluded.${column}
+      WHERE excluded.${column} > COALESCE(managed_model_turns.${column}, 0)
     `,
       )
       .run(sessionId, bindingKey, model, ordinal)

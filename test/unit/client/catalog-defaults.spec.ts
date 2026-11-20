@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildCatalogEntries } from '../../../src/client/data/catalog.ts'
+import { buildCatalogEntries, catalogInstallUrl } from '../../../src/client/data/catalog.ts'
 
 describe('snapshot-owned launch defaults', () => {
   it('marks Qwen adapter coverage independently of registry version and generic runtime identity', () => {
@@ -125,6 +125,46 @@ describe('snapshot-owned launch defaults', () => {
       command: '',
       requiresCommand: true,
       installHint: 'linux-x86_64: https://example.com/agent.tar.gz\nwindows-x86_64: https://example.com/agent.zip',
+    })
+  })
+
+  it('opens only standalone HTTP(S) installation URLs and leaves other guidance as text', () => {
+    expect(catalogInstallUrl('https://example.com/install?tab=cli#auth')).toBe(
+      'https://example.com/install?tab=cli#auth',
+    )
+    expect(catalogInstallUrl('http://example.com/guide')).toBe('http://example.com/guide')
+    for (const hint of [
+      'npm install -g agent',
+      '/relative',
+      '//example.com',
+      'https://',
+      'https://example.com/a https://example.net/b',
+      'https://example.com/a\nhttps://example.com/b',
+      'file:///tmp/tool',
+      'javascript:alert(1)',
+      'https://user:password@example.com/',
+    ])
+      expect(catalogInstallUrl(hint), hint).toBeUndefined()
+  })
+
+  it('uses the official agy CLI independently of standalone ACP server releases', () => {
+    const id = 'antigravity-acp'
+    const standalone = {
+      kind: 'binary',
+      version: '99',
+      command: 'agy_acp_server.par',
+      args: ['--uid='],
+      env: { SERVER: '1' },
+    }
+    const [entry] = buildCatalogEntries([{ id, name: 'Google Antigravity' }], { [id]: standalone })
+    expect(entry).toMatchObject({
+      command: 'agy',
+      args: ['acp'],
+      env: {},
+      runtime: 'antigravity',
+      installHint: 'https://antigravity.google/docs/cli/acp',
+      version: undefined,
+      requiresCommand: false,
     })
   })
 

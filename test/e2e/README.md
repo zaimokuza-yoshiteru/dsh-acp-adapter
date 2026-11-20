@@ -113,6 +113,14 @@ CI 的产品命令以普通用户运行。Windows hosted runner 的管理员身�
 
 ## 真实 Agent 冒烟
 
+从插件目录添加到首轮回复的桌面用例每次只运行一个 Agent。先在宿主的 PATH 安装并登录对应 CLI，再运行：
+
+```sh
+DSH_E2E_LIVE_CATALOG=antigravity pnpm test:e2e test/e2e/live-catalog-onboarding.e2e.ts
+```
+
+可选 `antigravity`（`agy acp`，Gemini 3.8 Flash / Low）、`codebuddy`（`hy4flash-free`）或 `devin`（`swe-2-high`）。用例从目录保存默认配置，等待自动检查，在隔离工作区发一条算术题，核对 DSH 请求、同一会话中 Agent 确认的模型及答案，再刷新确认答案仍在。模型缺失时结束。Devin 使用本机现有登录的临时凭据副本。可设置 `DSH_E2E_EVIDENCE_DIR` 保存添加、检查通过和回复画面。
+
 `test/e2e/long-conversation.e2e.ts` 默认的 12 轮是确定性 scripted ACP/Native composer 负载与渲染回归，不代表真实模型长会话。100 轮 opt-in 分支会在同一会话重新加载后验证分页、历史渲染与续聊持久化。它们都不能替代下面的真实 Agent/Teams 验证。
 
 以下浏览器真实连接测试默认跳过，不在普通 CI 中运行；带凭据的 Devin 专项见独立 `Real Devin integration` 工作流。明确授权使用现有 Agent 登录和模型额度后，可执行：
@@ -163,7 +171,7 @@ Devin 真实浏览器共享任务验收使用 `live-agents.e2e.ts`，显式设�
 
 更新 Devin CLI 后，可先在以上设置中加 `DSH_E2E_LIVE_DEVIN_PERMISSIONS=inspect`，观察首张真实子会话审批卡。驱动逐项核对原始选项与原生界面后，在子会话点击 Stop，并检查请求取消、没有派发和文件未创建。
 
-设为 `DSH_E2E_LIVE_DEVIN_PERMISSIONS=1`，则单独验收真实子会话的 Allow、Reject、待审批时 Stop 和继续，避免重复执行共享任务。该专项明确使用隔离 Ask 配置，只有各阶段精确的临时 marker 写入属于授权范围；成员创建由测试调用公开原生接口控制，不能据此声称模型自己创建成员。它与旧 `DSH_E2E_LIVE_TEAMS_APPROVAL` 的 native bash sandbox escalation 是不同场景，不互相替代。两项入口均使用临时认证副本、HOME/XDG 和 profile，结束后清理，不修改用户日常配置。
+设为 `DSH_E2E_LIVE_DEVIN_PERMISSIONS=1`，则单独验收真实子会话的 Allow、刷新待审批页面后 Reject、待审批时 Stop 和继续。刷新前后核对原权限请求 ID 和完整选项顺序。该专项明确使用隔离 Ask 配置，只有各阶段精确的临时 marker 写入属于授权范围；成员创建由测试调用公开原生接口控制，不能据此声称模型自己创建成员。它与旧 `DSH_E2E_LIVE_TEAMS_APPROVAL` 的 native bash sandbox escalation 是不同场景，不互相替代。两项入口均使用临时认证副本、HOME/XDG 和 profile，结束后清理，不修改用户日常配置。
 
 Claude 使用 DeepSeek 等第三方服务时，应同时核对 `ANTHROPIC_BASE_URL`、认证变量及模型映射，并通过 `DSH_E2E_LIVE_CLAUDE_ENV_KEYS` 传入所需配置。模型目录可返回不代表生成已认证，模型别名也不能证明实际供应商。遇到意外 OAuth 报错时，先检查临时 profile 的有效路由和认证配置，再判断是否需要登录。
 
@@ -187,7 +195,7 @@ Qwen 的无密钥 Host 与界面回归独立于上述 live 检查：`pnpm test:e
 
 ## ACP live continuation opt-in
 
-以下两个浏览器夹具默认跳过。测试使用隔离的 Host、workspace 与 DSH profile，不读取或改写用户的 DSH 配置；ACP 子进程仍按正常方式使用已有登录和用户配置，测试不迁移 CLI 与 ACP 账号的认证状态。均须提供绝对命令路径；模型缺失时停止，不回退到其他模型。原生 Antigravity 夹具默认使用 `gemini-3.8-flash-low`，可显式指定其他可用模型；MCP continuation 夹具必须提供精确模型 ID。只通过 `*_ENV_KEYS` 继承显式列出的、当前进程中已存在的环境变量。Antigravity 使用显式 `antigravity` runtime 和官方 raw ACP server 1.3.0，应用认证与 ACP 账号独立；文档不提供未经证实的 CLI 登录命令。可选的 Antigravity harness 路径会以 `ANTIGRAVITY_HARNESS_PATH` 传给 ACP server，不作为命令参数。
+以下两个浏览器夹具默认跳过。测试使用隔离的 Host、workspace 与 DSH profile，不读取或改写用户的 DSH 配置；ACP 子进程仍按正常方式使用已有登录和用户配置，测试不迁移 CLI 与 ACP 账号的认证状态。均须提供绝对命令路径；模型缺失时停止，不回退到其他模型。原生 Antigravity 夹具默认使用 `gemini-3.8-flash-low`，可显式指定其他可用模型；MCP continuation 夹具必须提供精确模型 ID。只通过 `*_ENV_KEYS` 继承显式列出的、当前进程中已存在的环境变量。此专项覆盖旧配置使用的独立 ACP Server，保留它自己的登录方式。官方 CLI 的添加与首聊使用上方目录用例。可选的 Antigravity harness 路径会以 `ANTIGRAVITY_HARNESS_PATH` 传给 ACP server，不作为命令参数。
 
 ```sh
 DSH_E2E_LIVE_ANTIGRAVITY=1 \

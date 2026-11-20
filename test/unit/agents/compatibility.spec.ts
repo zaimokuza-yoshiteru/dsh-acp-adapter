@@ -23,11 +23,24 @@ describe('Agent compatibility boundaries', () => {
       expect(hasModelSpecificConfiguration(name)).toBe(false)
   })
 
-  it('keeps stateful cancel replacement and protocol opt-ins limited to explicit bindings', () => {
-    expect(sessionCompatibilityOptions('codebuddy')).toEqual({
-      enableClaudeDraftSubagents: false,
-      refreshSessionAfterCancelledPrompt: true,
-    })
+  it('scopes cancellation refresh to explicit CodeBuddy and verified direct launches', () => {
+    const profile = { command: '/opt/bin/codebuddy', args: ['--acp'] }
+    const explicit = sessionCompatibilityOptions('codebuddy').refreshSessionAfterCancelledPrompt
+    expect(explicit?.(undefined)).toBe(true)
+    const manual = sessionCompatibilityOptions(undefined, profile).refreshSessionAfterCancelledPrompt
+    expect(manual?.(undefined)).toBe(true)
+    expect(manual?.('codebuddy-code')).toBe(true)
+    expect(manual?.('OpenCode')).toBe(false)
+    expect(sessionCompatibilityOptions('codex', profile).refreshSessionAfterCancelledPrompt).toBeUndefined()
+    for (const launch of [
+      { ...profile, command: 'custom-wrapper' },
+      { ...profile, args: ['--acp', '--custom'] },
+      { command: 'npx', args: ['-y', '@tencent-ai/codebuddy-code', '--acp'] },
+    ])
+      expect(sessionCompatibilityOptions(undefined, launch).refreshSessionAfterCancelledPrompt).toBeUndefined()
+  })
+
+  it('keeps other runtime opt-ins on their explicit bindings', () => {
     expect(sessionCompatibilityOptions('claude')).toEqual({ enableClaudeDraftSubagents: true })
     expect(sessionCompatibilityOptions('codex')).toEqual({ enableClaudeDraftSubagents: false })
     expect(modelProbeOptions('devin').probeModelConfigConcurrency).toBe(8)

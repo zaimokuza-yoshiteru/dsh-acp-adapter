@@ -26,12 +26,17 @@ export function toolDiscoveryInstructions(runtime: string | undefined): string {
     : 'Use your MCP client’s supported discovery operations for this server to obtain the tool definitions you need. A truncated or partial catalog is not evidence that a tool is unavailable; retrieve the missing definitions before calling it.'
 }
 
-export function modelProbeOptions(runtime: AcpAgentId | undefined): {
-  probeModelConfigOptions: boolean
+export function modelProbeOptions(
+  runtime: AcpAgentId | undefined,
+  profile?: Pick<AcpStubAgentConfig, 'command' | 'args' | 'runtime'>,
+): {
+  probeModelConfigOptions: boolean | 'if-anonymous'
   probeModelConfigConcurrency: number
 } {
   if (runtime === 'devin') return devinModelProbeOptions
   if (runtime === 'codex') return codexModelProbeOptions
+  if ((runtime === undefined || runtime === 'codebuddy') && isAnonymousCodeBuddyLaunch(profile))
+    return { probeModelConfigOptions: 'if-anonymous', probeModelConfigConcurrency: 1 }
   return {
     probeModelConfigOptions: runtime === 'antigravity' && antigravityCompatibility.probeModelConfigOptions,
     probeModelConfigConcurrency: 1,
@@ -66,12 +71,12 @@ export function sameSwitchableAgent(
   )
 }
 
-export function sessionCompatibilityOptions(runtime: AcpAgentId | undefined): {
-  enableClaudeDraftSubagents: boolean
-  refreshSessionAfterCancelledPrompt?: true
-} {
+export function sessionCompatibilityOptions(
+  runtime: AcpAgentId | undefined,
+  profile?: Pick<AcpStubAgentConfig, 'command' | 'args' | 'runtime'>,
+) {
   return {
     enableClaudeDraftSubagents: runtime === 'claude' && claudeCompatibility.enableDraftSubagents,
-    ...(runtime === 'codebuddy' ? codebuddySessionOptions : {}),
+    ...codebuddySessionOptions(runtime, profile),
   }
 }

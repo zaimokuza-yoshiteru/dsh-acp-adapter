@@ -7,7 +7,7 @@
  * @module @zaimokuza/dsh-acp-adapter/client/logic
  */
 
-import { catalogEntryOf } from './catalog.ts'
+import { antigravityCliLoginHint, catalogEntryOf } from './catalog.ts'
 
 // Shared profile shape and runtime binding rules; no imports of host implementations.
 
@@ -79,9 +79,14 @@ export function emptyDraft(): AgentDraft {
 /** Display-only guidance: preserve saved hints and fall back to catalog metadata. */
 export function agentLoginHint(
   id: string,
-  config: Pick<AcpAgentConfig, 'runtime' | 'catalogId' | 'loginHint'>,
+  config: Pick<AcpAgentConfig, 'runtime' | 'catalogId' | 'loginHint'> &
+    Partial<Pick<AcpAgentConfig, 'command' | 'args'>>,
 ): string | undefined {
-  return config.loginHint?.trim() || catalogEntryOf(catalogIdOf(id, config))?.loginHint
+  return (
+    config.loginHint?.trim() ||
+    antigravityCliLoginHint(config.command, config.args) ||
+    catalogEntryOf(catalogIdOf(id, config))?.loginHint
+  )
 }
 
 /**

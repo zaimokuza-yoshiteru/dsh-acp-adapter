@@ -3708,17 +3708,24 @@ export class AcpProfileAdapter extends LlmAdapter {
             // DSH usage requires per-attempt, disjoint input/cache buckets. Keep
             // native accounting absent until that translation is provable;
             // Agent context occupancy remains available through usage_update.
-            if (managedTurn && committedBinding && response.stopReason === 'end_turn' && finalReason.kind === 'stop') {
+            const cancelledModel =
+              response.stopReason === 'cancelled' && runtime.cancelledSessionRefreshPending === true
+            if (
+              managedTurn &&
+              committedBinding &&
+              (cancelledModel || (response.stopReason === 'end_turn' && finalReason.kind === 'stop'))
+            ) {
               try {
                 await managedTurn.commit(
                   durableSidecar,
                   sessionKey,
                   committedBinding,
                   acpModelConfigOption(runtime.configOptions)?.currentValue,
+                  cancelledModel ? 'cancelled' : 'completed',
                 )
                 self.controlsChanged?.(sessionKey)
               } catch {
-                self.log?.('Failed to save the successful ACP model for this session')
+                self.log?.('Failed to save the confirmed ACP model for this session')
               }
             }
             pushChunk({
@@ -3906,8 +3913,16 @@ export class AcpProfileAdapter extends LlmAdapter {
                 self.settlementSink,
                 self.profileId,
               )
-              await recordUnsentModelInput()
-              failure = LlmError.fromFailure({ message: error.message, code: error.code }, { cause: error })
+              if (error.cancelled) {
+                pushChunk({
+                  type: 'finish',
+                  reason:
+                    interruptedForInput && !options.signal?.aborted ? { kind: 'stop' } : finishReason('cancelled'),
+                })
+              } else {
+                await recordUnsentModelInput()
+                failure = LlmError.fromFailure({ message: error.message, code: error.code }, { cause: error })
+              }
             } catch (settlementError) {
               failure = LlmError.fromFailure(
                 {
@@ -4854,7 +4869,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       diagnosticDshSessionId: sessionId,
       ...(diagnosticTrace === undefined ? {} : { diagnosticTrace }),
       onHostSettlementChanged: () => this.controlsChanged?.(sessionId),
-      ...sessionCompatibilityOptions(runtime),
+      ...sessionCompatibilityOptions(runtime, profile),
       ...(this.mcpKey === undefined
         ? {}
         : { mcpKey: () => this.mcpKey!(sessionId, this.admittedToolSchemas.get(sessionId)) }),

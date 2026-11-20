@@ -14,7 +14,7 @@ ACP `category` 是专用界面的增强信息，不是连接或首次 prompt 的
 
 “当前配置”使用插件自有的宿主路由标识，不作为模型值发送给 Agent，也不宣称已知其实际模型、容量或计费。Agent 声明的真实模型仍沿原生目录选择；与插件保留命名空间相撞的真实值先编码为不同路由，再在 ACP 配置 RPC 前解码。现有普通模型 ID 保持原样。
 
-CodeBuddy 的逐模型推理档位发现以实际 `initialize.agentInfo.name=codebuddy-code` 握手和有效的 `category=model` 选择器为依据，复用现有临时会话探测；只填写 runtime 名称不会让通用 Agent 被额外切模。某个模型探测失败时不借用默认模型的档位，探测不发送 prompt。
+CodeBuddy 提供 `category=model` 选择器时，适配器在临时会话里读取各模型的推理档位。握手报告 `codebuddy-code`，或 CLI 省略 `agentInfo` 且启动命令符合 [CodeBuddy 的识别规则](agent-compatibility.md)时，才启用这项探测。某个模型探测失败时不借用默认模型的档位，探测不发送 prompt。
 
 执行事实由 ACP 适配层归一化，交给 DSH `sessionProjections` 驱动和恢复；投影是可重建缓存。Sidecar 仍保存 ACP 绑定、派发状态和诊断事务，原生 Session 日志或通用 KV 没有等价的事务语义。历史记录不因切换投影而改写或清理。显式空白重绑定只补发当前宿主有效投影中的 AGENTS 指令，保留其顺序和替换、删除语义；正常续聊和已有会话恢复不重复发送。
 

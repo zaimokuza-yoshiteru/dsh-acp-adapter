@@ -98,6 +98,41 @@ it('restores only the last successful model at the exact binding head with settl
   expect(await lastConfirmedBindingModel(store, 's', binding, a)).toBe(false)
 })
 
+it('can reselect the cancelled CodeBuddy model on its original binding without reporting a successful answer or usage', async () => {
+  const cancelled = { ...binding, agent: {}, profileId: 'codebuddy', provider: 'acp-codebuddy' }
+  const observe = usage(a, 100, 32000)
+  await observe.commit(store, 's', cancelled, a, 'cancelled')
+  expect(await lastConfirmedBindingModel(store, 's', cancelled, a)).toBe(true)
+  expect(await readManagedModelFeedback(store, 's', cancelled)).toEqual({})
+  expect(await lastConfirmedBindingModel(store, 's', cancelled, b)).toBe(false)
+  expect(await lastConfirmedBindingModel(store, 's', { ...cancelled, bindingEpoch: 2 }, a)).toBe(false)
+
+  const later = { ...cancelled, committedPromptOrdinal: 2 }
+  await observe.commit(store, 's', later, b, 'cancelled')
+  expect(await lastConfirmedBindingModel(store, 's', later, a)).toBe(false)
+  await observe.commit(store, 's', later, a, 'cancelled')
+  expect(await lastConfirmedBindingModel(store, 's', cancelled, a)).toBe(false)
+  await store.beginDispatch({
+    dshSessionId: 's',
+    key: 'uncertain',
+    provider: cancelled.provider,
+    model: a,
+    state: 'dispatch-uncertain',
+    createdAt: 1,
+  })
+  expect(await lastConfirmedBindingModel(store, 's', later, a)).toBe(false)
+})
+
+it.each(['completed', 'cancelled'] as const)(
+  'rejects a %s receipt and another model’s cancellation at the same ordinal',
+  async (outcome) => {
+    await usage(a, 100, 32000).commit(store, 's', binding, a, outcome)
+    await usage(b, 80, 12000).commit(store, 's', binding, b, 'cancelled')
+    expect(await lastConfirmedBindingModel(store, 's', binding, a)).toBe(false)
+    expect(await lastConfirmedBindingModel(store, 's', binding, b)).toBe(false)
+  },
+)
+
 it('recovers a legacy picker label from the bound receipt and suppresses it for an uncertain dispatch or delivery', async () => {
   const id = SessionId('old-session')
   await store.append(id, { kind: 'binding', data: binding })

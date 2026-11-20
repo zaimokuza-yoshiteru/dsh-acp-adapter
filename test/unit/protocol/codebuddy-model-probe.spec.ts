@@ -22,15 +22,18 @@ interface Event {
   activeWrites?: number
 }
 
-async function probe(runtime: 'codebuddy' | undefined, env: Record<string, string> = {}) {
+async function probe(
+  runtime: 'codebuddy' | undefined,
+  env: Record<string, string> = {},
+  launch = { command: process.execPath, args: [fixture] },
+) {
   const root = mkdtempSync(join(tmpdir(), 'acp-codebuddy-model-probe-'))
   roots.push(root)
   const log = join(root, 'wire.jsonl')
   const provider = 'acp-custom-profile'
   const config = {
     name: 'Custom Agent',
-    command: process.execPath,
-    args: [fixture],
+    ...launch,
     env: {
       PROBE_LOG: log,
       PROBE_AGENT_NAME: 'codebuddy-code',
@@ -43,6 +46,12 @@ async function probe(runtime: 'codebuddy' | undefined, env: Record<string, strin
   const stub = new AcpStubAdapter({
     agents: () => new Map([[provider, config]]),
     subprocess: { ok: true, seam: (await sharedTestSubprocess()).seam },
+    // Exercise identification from the configured launch while the disposable
+    // process speaks the fixture protocol on every platform.
+    prepareProbe: async () => ({
+      plan: { argv: [process.execPath, fixture], env: config.env },
+      cleanup: () => {},
+    }),
     probeOptions: { timeoutMs: 5_000, eofGraceMs: 100, termGraceMs: 300 },
   })
   const models = await stub.listModels(provider)
@@ -97,10 +106,62 @@ describe('CodeBuddy model-directory discovery', () => {
     },
   )
 
+  it.each([
+    { name: 'direct', runtime: undefined, command: 'codebuddy', args: ['--acp'], anonymous: true, discover: true },
+    {
+      name: 'registry',
+      runtime: 'codebuddy' as const,
+      command: 'npx.cmd',
+      args: ['-y', '@tencent-ai/codebuddy-code@2.161.2', '--acp'],
+      anonymous: true,
+      discover: true,
+    },
+    {
+      name: 'conflicting identity',
+      runtime: undefined,
+      command: 'codebuddy',
+      args: ['--acp'],
+      anonymous: false,
+      discover: false,
+    },
+    {
+      name: 'unrecognized launch',
+      runtime: 'codebuddy' as const,
+      command: 'wrapper',
+      args: ['--acp'],
+      anonymous: true,
+      discover: false,
+    },
+  ])(
+    'resolves per-model options for a $name CodeBuddy launch',
+    async ({ runtime, command, args, anonymous, discover }) => {
+      const result = await probe(
+        runtime,
+        { PROBE_ANONYMOUS: anonymous ? '1' : '0', PROBE_AGENT_NAME: 'another-agent' },
+        { command, args },
+      )
+      expect(result.events.some((event) => event.method === 'session/set_config_option')).toBe(discover)
+      if (discover) {
+        expect(result.options('model-2')?.find((option) => option.id === 'thought_level')?.currentValue).toBe(
+          'effort-model-2',
+        )
+      }
+      expectSerialCleanup(result.events)
+    },
+  )
+
   it.each(['absent', 'vendor-choice'])('does not interpret category %s as a model selector', async (category) => {
     const result = await probe('codebuddy', { PROBE_MODEL_CATEGORY: category })
     expect(result.models.map((model) => model.id)).toEqual([ACP_CURRENT_CONFIG_MODEL_ID])
     expect(result.events.some((event) => event.method === 'session/set_config_option')).toBe(false)
+    expectSerialCleanup(result.events)
+  })
+
+  it('discovers the direct CLI controls when initialize explicitly returns a null identity', async () => {
+    const result = await probe(undefined, { PROBE_ANONYMOUS: 'null' }, { command: 'codebuddy', args: ['--acp'] })
+    expect(result.options('model-2')?.find((option) => option.id === 'thought_level')?.currentValue).toBe(
+      'effort-model-2',
+    )
     expectSerialCleanup(result.events)
   })
 

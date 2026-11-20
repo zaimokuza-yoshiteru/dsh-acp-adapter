@@ -269,9 +269,9 @@ export interface AcpProbeOptions extends AcpConnectionOptions {
   cwd?: string
   /** initialize 与 session/new 各自的超时预算（默认 15s，devin 冷启动实测约 3s）。 */
   timeoutMs?: number
-  /** Capture the confirmed config snapshot after selecting each advertised
-   * model. No prompt is sent and the disposable session is deleted normally. */
-  probeModelConfigOptions?: boolean
+  /** Capture each model's controls without a prompt. A recognized launch can
+   * opt in only when the peer omits its identity in initialize. */
+  probeModelConfigOptions?: boolean | 'if-anonymous'
   /** Maximum disposable probe sessions in one connection (1 by default, at
    * most 8). Extra sessions are created only after independent thought/model
    * controls are advertised; each session's configuration writes stay serial. */

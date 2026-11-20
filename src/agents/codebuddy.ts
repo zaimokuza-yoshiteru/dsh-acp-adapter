@@ -1,8 +1,18 @@
-import type { AcpStubAgentConfig } from '../contract/agent-config.ts'
+import type { AcpAgentId, AcpStubAgentConfig } from '../contract/agent-config.ts'
 
 /** CodeBuddy resets its remote session after cancelling a prompt. The shared
  * runtime still owns cancellation, replacement, and durable binding updates. */
-export const codebuddySessionOptions = { refreshSessionAfterCancelledPrompt: true } as const
+export function codebuddySessionOptions(
+  runtime: AcpAgentId | undefined,
+  profile?: Pick<AcpStubAgentConfig, 'command' | 'args' | 'runtime'>,
+): { refreshSessionAfterCancelledPrompt?: (agentName: string | undefined) => boolean } {
+  if (runtime === 'codebuddy') return { refreshSessionAfterCancelledPrompt: () => true }
+  if (runtime !== undefined || !isAnonymousCodeBuddyLaunch(profile)) return {}
+  return {
+    refreshSessionAfterCancelledPrompt: (agentName) =>
+      agentName === undefined || codebuddyHasModelSpecificConfiguration(agentName),
+  }
+}
 
 /** Handshake identity also covers manually configured generic profiles. */
 export function codebuddyHasModelSpecificConfiguration(agentName: string | undefined): boolean {

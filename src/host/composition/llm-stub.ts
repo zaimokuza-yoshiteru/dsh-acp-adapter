@@ -455,7 +455,7 @@ export class AcpStubAdapter extends LlmAdapter {
       // the confirmed options from the disposable probe session so DSH does not
       // offer a level (for example Codex Mini + Ultra) that the live session
       // would immediately reject.
-      const modelDiscovery = modelProbeOptions(runtimeId)
+      const modelDiscovery = modelProbeOptions(runtimeId, config)
       const onProcessWarn =
         this.probeOptions.onProcessWarn ??
         (this.options.onProcessWarn === undefined

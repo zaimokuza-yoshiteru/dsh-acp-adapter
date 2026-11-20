@@ -11,7 +11,11 @@ An ordinary ACP Agent needs no new runtime, dedicated client, or implementation 
 3. Compose the required facts explicitly in `src/agents/compatibility.ts` for the corresponding shared owner to consume. Do not add a universal driver, arbitrary before/after hooks, or a process-wide mutable registry.
 4. Add a positive case, a negative case with a mismatched identity, and a regression on the real consuming path. Tests of the template rules do not replace connection or lifecycle tests.
 
-CodeBuddy is an example of a small module: `codebuddy.ts` enables model-specific configuration discovery based on the actual handshake name; an explicit `runtime: codebuddy` also supplies the option to refresh the session after cancellation. The shared session runtime owns cancellation settlement, replacement sessions, and persistence; the module itself is stateless. Qwen's model configuration discovery also uses handshake identity. Devin/Codex model probe parameters, Claude's notification extension and executable override, and Antigravity's override key each have an explicit file.
+CodeBuddy’s handshake name is `codebuddy-code`. Some versions omit `agentInfo`. For those versions the adapter recognizes a direct `codebuddy --acp` or `codebuddy-code --acp` launch. It also recognizes the Registry’s `npx` launch of `@tencent-ai/codebuddy-code` when the profile declares `runtime: codebuddy`. This lets the adapter discover each model’s reasoning levels.
+
+After CodeBuddy confirms a cancellation, the next message reloads the original session. This applies to profiles with `runtime: codebuddy` and recognized direct launches. A manually configured command that identifies itself as another Agent keeps that Agent’s cancellation behavior. The shared session runtime owns cancellation and persistence.
+
+For other examples in `src/agents/`, see Qwen for handshake-based discovery, Devin and Codex for probe parameters, Claude for notifications, and Antigravity for executable overrides.
 
 ## Keep the four identities separate
 

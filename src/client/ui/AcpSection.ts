@@ -19,11 +19,12 @@ import {
   emptyDraft,
   errorMessageOf,
   healthRowOf,
+  parseArgsText,
   sortedAgentIds,
   validateAgentDraft,
 } from '../data/logic.ts'
 import { localizedDiagnostic } from '../data/diagnostics.ts'
-import { ACP_CATALOG_ENTRIES, catalogEntryOf, type AcpCatalogEntry } from '../data/catalog.ts'
+import { ACP_CATALOG_ENTRIES, catalogEntryOf, catalogInstallUrl, type AcpCatalogEntry } from '../data/catalog.ts'
 import type { AcpAgentConfig, AcpProviderHealth, AgentDraft, DraftError } from '../data/logic.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import type { AcpPanelSnapshot, HealthState } from '../data/stores/panel-store.ts'
@@ -723,7 +724,8 @@ function AgentForm(props: {
 
   // catalog 播种条目的安装指引（来自 registry 分发事实；纯展示，不自动安装）
   const seededEntry = props.editingId === undefined ? catalogEntryOf(draft.catalogId ?? draft.id) : undefined
-  const loginHint = agentLoginHint(draft.id, draft)
+  const installUrl = seededEntry && catalogInstallUrl(seededEntry.installHint)
+  const loginHint = agentLoginHint(draft.id, { ...draft, args: parseArgsText(draft.argsText) })
   const envCount =
     draft.envText.split('\n').filter((line) => line.trim()).length + Object.keys(draft.maskedEnv ?? {}).length
 
@@ -739,8 +741,18 @@ function AgentForm(props: {
         t(props.editingId === undefined ? 'editorTitleAdd' : 'editorTitleEdit'),
       ),
     ),
-    props.editingId === undefined && seededEntry !== undefined
-      ? h('p', { key: 'install-hint', className: css.hint }, t('catalogInstallHint', { hint: seededEntry.installHint }))
+    seededEntry !== undefined
+      ? h(
+          'p',
+          { className: css.hint },
+          installUrl
+            ? h(
+                'a',
+                { className: css.guideLink, href: installUrl, target: '_blank', rel: 'noopener noreferrer' },
+                t('catalogInstallGuide'),
+              )
+            : t('catalogInstallHint', { hint: seededEntry.installHint }),
+        )
       : null,
     seededEntry?.requiresCommand ? h('p', { className: css.hint }, t('catalogManualCommand')) : null,
     textField({

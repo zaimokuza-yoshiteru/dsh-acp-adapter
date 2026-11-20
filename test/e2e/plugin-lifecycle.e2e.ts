@@ -10,7 +10,9 @@ import type { AcpRemoteService } from '../../src/remote/service.js'
 import { root } from './scaffold.ts'
 
 it('unloads and remounts ACP through the native plugin manager without restarting DSH', async () => {
-  const host = await launchWebScaffold({ profile: { packages: [{ dir: root, enabled: true }] } })
+  const host = await launchWebScaffold({
+    profile: { packages: [{ dir: process.env.DSH_E2E_ADAPTER_DIRECTORY ?? root, enabled: true }] },
+  })
   let browser!: TestBrowser
   const errors: string[] = []
   try {
@@ -83,6 +85,7 @@ it('unloads and remounts ACP through the native plugin manager without restartin
       await conversation.getByRole('button', { name: 'Send message', exact: true }).click()
       const settledSessionId = await settled
       expect(settledSessionId).toBe(sessionId)
+      await conversation.getByText('E2E_DONE mock-model-a', { exact: true }).waitFor()
       const snapshot = await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(settledSessionId)
       expect(snapshot.freshness).toBe('live')
       const remountedControls = conversation.getByRole('button', { name: /^Session ·/ })
@@ -93,7 +96,10 @@ it('unloads and remounts ACP through the native plugin manager without restartin
     }
     expect(errors).toEqual([])
   } finally {
-    await browser?.close()
-    await host.close()
+    try {
+      await browser?.close()
+    } finally {
+      await host.close()
+    }
   }
 }, 120_000)

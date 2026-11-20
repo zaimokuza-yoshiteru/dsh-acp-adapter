@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
+import { sessionCompatibilityOptions } from '../../../src/agents/compatibility.ts'
 import {
   AcpSessionRefreshAbortedError,
   AcpSessionRefreshRetryError,
@@ -101,12 +102,24 @@ it('reuses a live session without restore capability but rejects restoring it af
 })
 
 it.each([
-  { refresh: true, verifyModel: false, expectedRestore: 'loaded', expectedProcesses: 2 },
-  { refresh: true, verifyModel: true, expectedRestore: 'loaded', expectedProcesses: 2 },
-  { refresh: false, verifyModel: false, expectedRestore: 'reused', expectedProcesses: 1 },
+  { runtime: 'codebuddy', command: 'wrapper', peer: undefined, refresh: true, verifyModel: false },
+  { runtime: 'codebuddy', command: 'wrapper', peer: undefined, refresh: true, verifyModel: true },
+  { runtime: undefined, command: 'wrapper', peer: undefined, refresh: false, verifyModel: false },
+  { runtime: undefined, command: '/opt/bin/codebuddy', peer: undefined, refresh: true, verifyModel: false },
+  {
+    runtime: undefined,
+    command: '/opt/bin/codebuddy',
+    peer: undefined,
+    refresh: false,
+    verifyModel: false,
+    unsent: true,
+  },
+  { runtime: undefined, command: '/opt/bin/codebuddy', peer: 'OpenCode', refresh: false, verifyModel: false },
 ] as const)(
-  'restores a confirmed-cancelled session (refresh=$refresh, verifyModel=$verifyModel)',
-  async ({ refresh, verifyModel, expectedRestore, expectedProcesses }) => {
+  'handles Stop with expected refresh=$refresh (runtime=$runtime, command=$command, peer=$peer, verifyModel=$verifyModel)',
+  async (scenario) => {
+    const { runtime: declaredRuntime, command, peer, refresh, verifyModel } = scenario
+    const unsent = 'unsent' in scenario
     const cwd = mkdtempSync(join(tmpdir(), 'acp-cancel-refresh-'))
     const callsFile = join(cwd, 'rpc-methods.jsonl')
     const source = `
@@ -117,7 +130,8 @@ it.each([
         const request = JSON.parse(line);
         fs.appendFileSync(process.env.CALLS_FILE, JSON.stringify({ pid: process.pid, method: request.method, params: request.params }) + '\\n');
         if (request.method === 'initialize') send({ jsonrpc: '2.0', id: request.id, result: {
-          protocolVersion: 1, agentCapabilities: { loadSession: true }
+          protocolVersion: 1, agentCapabilities: { loadSession: true },
+          agentInfo: ${JSON.stringify(peer === undefined ? undefined : { name: peer, version: '1' })}
         }});
         else if (request.method === 'session/new') send({ jsonrpc: '2.0', id: request.id, result: {
           sessionId: 'saved',
@@ -135,7 +149,7 @@ it.each([
     const argv = [process.execPath, '-e', source]
     const runtime = new AcpSessionRuntime({
       profileId: 'test',
-      ...(refresh ? { refreshSessionAfterCancelledPrompt: true } : {}),
+      ...sessionCompatibilityOptions(declaredRuntime, { command, args: ['--acp'] }),
       config: { command: process.execPath, args: argv.slice(1), env: { CALLS_FILE: callsFile } },
       cwd,
       subprocess: (await sharedTestSubprocess()).seam,
@@ -147,7 +161,12 @@ it.each([
     })
     try {
       await runtime.start()
-      await expect(runtime.prompt([], () => {})).resolves.toMatchObject({ stopReason: 'cancelled' })
+      const stop = new AbortController()
+      const pending = runtime.prompt([], () => {}, stop.signal, undefined, undefined, undefined, {
+        ...(unsent ? { beforeDispatch: () => stop.abort() } : {}),
+      })
+      if (unsent) await expect(pending).rejects.toMatchObject({ code: 'ACP_PROMPT_NOT_DISPATCHED', cancelled: true })
+      else await expect(pending).resolves.toMatchObject({ stopReason: 'cancelled' })
       await runtime.retireCancelledSession()
       expect(runtime.acpSessionId).toBe(refresh ? undefined : 'saved')
       if (refresh) {
@@ -163,7 +182,7 @@ it.each([
         agentSessionId: 'saved',
         ...(verifyModel ? { requireFreshConfig: true, protocolVersion: 1 } : {}),
       })
-      expect(restored).toBe(expectedRestore)
+      expect(restored).toBe(refresh ? 'loaded' : 'reused')
       expect(runtime.lastRestoreRefreshedCancelledSession).toBe(refresh)
       if (refresh) {
         expect(runtime.acpSessionId).toBe('saved')
@@ -175,8 +194,9 @@ it.each([
         .trim()
         .split('\n')
         .map((line) => JSON.parse(line) as { pid: number; method: string; params?: { sessionId?: string } })
-      expect(new Set(calls.map((call) => call.pid)).size).toBe(expectedProcesses)
-      expect(calls.filter((call) => call.method === 'session/prompt')).toHaveLength(1)
+      expect(new Set(calls.map((call) => call.pid)).size).toBe(refresh ? 2 : 1)
+      expect(calls.filter((call) => call.method === 'session/prompt')).toHaveLength(unsent ? 0 : 1)
+      expect(calls.some((call) => call.method === 'session/cancel')).toBe(false)
       expect(calls.filter((call) => call.method === 'session/new')).toHaveLength(1)
       expect(calls.filter((call) => call.method === 'session/load')).toHaveLength(refresh ? 1 : 0)
       if (refresh) expect(calls.find((call) => call.method === 'session/load')?.params?.sessionId).toBe('saved')
@@ -206,7 +226,7 @@ it('does not refresh after an unknown prompt outcome', async () => {
   const argv = [process.execPath, '-e', source]
   const runtime = new AcpSessionRuntime({
     profileId: 'test',
-    refreshSessionAfterCancelledPrompt: true,
+    refreshSessionAfterCancelledPrompt: () => true,
     config: { command: process.execPath, args: argv.slice(1), env: { CALLS_FILE: callsFile } },
     cwd,
     subprocess: (await sharedTestSubprocess()).seam,
@@ -248,7 +268,7 @@ it('retries one transient pre-dispatch setup crash and restores the same cancell
   const argv = [process.execPath, '-e', source]
   const runtime = new AcpSessionRuntime({
     profileId: 'test',
-    refreshSessionAfterCancelledPrompt: true,
+    refreshSessionAfterCancelledPrompt: () => true,
     config: { command: process.execPath, args: argv.slice(1), env: { CALLS_FILE: callsFile } },
     cwd,
     subprocess: (await sharedTestSubprocess()).seam,
@@ -303,7 +323,7 @@ it('keeps the cancelled-session refresh pending after bounded launch retries exh
   const argv = [process.execPath, '-e', source]
   const runtime = new AcpSessionRuntime({
     profileId: 'test',
-    refreshSessionAfterCancelledPrompt: true,
+    refreshSessionAfterCancelledPrompt: () => true,
     config: { command: process.execPath, args: argv.slice(1), env: { CALLS_FILE: callsFile } },
     cwd,
     subprocess: (await sharedTestSubprocess()).seam,
@@ -361,7 +381,7 @@ it('does not respawn after close cancels a cancelled-session refresh backoff', a
   const argv = [process.execPath, '-e', source]
   const runtime = new AcpSessionRuntime({
     profileId: 'test',
-    refreshSessionAfterCancelledPrompt: true,
+    refreshSessionAfterCancelledPrompt: () => true,
     config: { command: process.execPath, args: argv.slice(1), env: { CALLS_FILE: callsFile } },
     cwd,
     subprocess: (await sharedTestSubprocess()).seam,
