@@ -88,7 +88,6 @@ it('rejects unsupported teammate model changes without disturbing approvals, wak
   })
   try {
     await host.ctx.settings.replace('dsh-acp-adapter', {
-      toolApprovalDefault: 'auto',
       agents: {
         devin: {
           name: 'ACP model fixture',
@@ -137,7 +136,6 @@ it('rejects unsupported teammate model changes without disturbing approvals, wak
       { timeout: 30000 },
     )
     bootstrap.finish()
-    await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'ask' })
     writeFileSync(policyGate, 'ready')
     const child = required((await treeMembers(host.ctx, lead)).find((member) => member.role === 'teammate'))
     expect(lead).toBeDefined()
@@ -168,7 +166,6 @@ it('rejects unsupported teammate model changes without disturbing approvals, wak
       .toSatisfy((status) => status === 'idle' || status === 'inactive')
     capture('initial-member-settlement')
     await waitForTeamSettlement(events, { parentId: lead.id, childId: child.id, after: initialSettlementAfter })
-    await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'auto' })
     await expect(
       (host.ctx.get('dshAcp') as AcpRemoteService).setTeamMemberModel(lead.id, child.id, 'unknown-model'),
     ).rejects.toThrow()

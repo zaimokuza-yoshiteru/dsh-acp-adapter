@@ -247,7 +247,6 @@ it('keeps ACP child controls and approvals across Team mode changes and native c
   const errors: string[] = []
   try {
     await host.ctx.settings.replace('dsh-acp-adapter', {
-      toolApprovalDefault: 'auto',
       agents: {
         devin: {
           name: 'ACP Teams lifecycle',

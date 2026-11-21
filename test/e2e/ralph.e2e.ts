@@ -37,7 +37,6 @@ it('runs native Ralph with distinct fresh ACP children, bounded handoff, structu
     host = await launchAdapterWorld({ optionalBundles: ['ralph-bundle'], toolExecutor: 'native' })
     const owned = host
     await owned.ctx.settings.replace('dsh-acp-adapter', {
-      toolApprovalDefault: 'auto',
       agents: {
         'ralph-fixture': {
           name: 'Offline Ralph ACP',

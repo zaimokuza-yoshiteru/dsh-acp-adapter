@@ -13,6 +13,7 @@
  */
 
 import type { AcpProviderHealth, PanelSettingsState } from '../logic.ts'
+import { DEFAULT_DEVIN_REVIEW_MODEL } from '../../../contract/devin-review.ts'
 import { defineStore } from '@deepseek-ai/dsh-client-store'
 import type { ActionsDecl, BakedActions, StoreHandle } from '@deepseek-ai/dsh-client-store'
 
@@ -29,6 +30,7 @@ export interface HealthState {
   agentErrors: Record<string, string>
   /** The Host runs another DSH version than this adapter is built for. */
   hostVersion?: { required: string; running: string }
+  localReviewUnavailable?: true
 }
 
 /** The panel store's published snapshot. */
@@ -44,7 +46,8 @@ const initialPanelState = (): AcpPanelSnapshot => ({
     status: 'loading',
     writable: false,
     agents: {},
-    toolApprovalDefault: 'auto',
+    aiApproval: false,
+    devinReviewModel: DEFAULT_DEVIN_REVIEW_MODEL,
     revision: undefined,
   },
   health: {
@@ -67,21 +70,8 @@ const panelActions = {
     draft.health.agentErrors = {}
   },
   /** A refresh landed: rows replace wholesale, the error clears. */
-  healthReady(
-    draft: AcpPanelSnapshot,
-    rows: readonly AcpProviderHealth[],
-    fetchedAt: number,
-    hostVersion?: { required: string; running: string },
-  ): void {
-    draft.health = {
-      status: 'ready',
-      rows,
-      fetchedAt,
-      message: undefined,
-      checkingAgentIds: [],
-      agentErrors: {},
-      ...(hostVersion === undefined ? {} : { hostVersion }),
-    }
+  healthReady(draft: AcpPanelSnapshot, health: HealthState): void {
+    draft.health = health
   },
   /** A refresh failed (network/HTTP/malformed): keep the last good rows, surface the message. */
   healthUnreachable(draft: AcpPanelSnapshot, message: string): void {

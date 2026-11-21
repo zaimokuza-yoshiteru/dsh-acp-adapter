@@ -43,7 +43,6 @@ it.each(['devin', 'codex'].flatMap((profile) => ['allow', 'reject'].map((decisio
     host.ctx.on('session/event', (session, event) => events.push({ sessionId: session.id, ...event }))
     try {
       await host.ctx.settings.replace('dsh-acp-adapter', {
-        toolApprovalDefault: 'auto',
         agents: {
           [profile]: {
             name: `Fixture ${profile}`,
@@ -68,8 +67,7 @@ it.each(['devin', 'codex'].flatMap((profile) => ['allow', 'reject'].map((decisio
       page.on('pageerror', (error) => errors.push(error.message))
       await page.goto(host.authenticatedUrl)
       await connectFreshWorkspace(page, host.workspaceCwd)
-      // Devin Auto still requires a human decision for its independent ACP
-      // requests. This driver supplies explicit one-time setup answers through
+      // The driver supplies explicit one-time setup answers through
       // the native answerer, then removes itself before releasing the shell gate.
       let bootstrapRoot: Agent | undefined
       const bootstrapCounts = new Map<string, number>()
@@ -190,7 +188,6 @@ it.each(['devin', 'codex'].flatMap((profile) => ['allow', 'reject'].map((decisio
           return memberIds.has(event.sessionId) && ['member-shell', 'member-late-shell'].includes(callId)
         })
       const remote = host.ctx.get('dshAcp') as AcpRemoteService
-      await remote.setToolApprovalPolicy(lead.id, { policy: 'ask' })
       const readApprovalChildren = remote.approvalChildren.bind(remote)
       let childReads = 0
       let failNextChildRead = false

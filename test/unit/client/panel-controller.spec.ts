@@ -1,8 +1,40 @@
 import { describe, expect, it, vi } from 'vitest'
 import { AcpPanelController, type AcpPanelControllerDeps } from '../../../src/client/data/controller.ts'
 import { createAcpPanelStore } from '../../../src/client/data/stores/panel-store.ts'
-import { emptyDraft, type AcpAgentConfig, type AcpProviderHealth } from '../../../src/client/data/logic.ts'
+import {
+  draftFromAgent,
+  emptyDraft,
+  type AcpAgentConfig,
+  type AcpProviderHealth,
+} from '../../../src/client/data/logic.ts'
 import type { AcpHealthRequest, AcpHealthView } from '../../../src/contract/remote.ts'
+
+it('changes the shared approval switch without writing any model preference or rechecking an Agent', async () => {
+  const health = vi.fn()
+  const { controller, mutate } = panel(health)
+  await controller.setAiApproval(true)
+  await controller.setDevinReviewModel('model-2')
+  await controller.setAiApproval(false)
+  expect(mutate.mock.calls).toEqual([
+    [[{ op: 'set', path: ['aiApproval'], value: true }], 1],
+    [[{ op: 'set', path: ['devinReviewModel'], value: 'model-2' }], 1],
+    [[{ op: 'set', path: ['aiApproval'], value: false }], 1],
+  ])
+  expect(health).not.toHaveBeenCalled()
+  controller.dispose()
+})
+
+it('sets one OpenCode profile’s model and restores its session default independently of approval', async () => {
+  const { controller, mutate } = panel(vi.fn())
+  await controller.setOpenCodeReviewModel('generic', 'work/fast')
+  await controller.setOpenCodeReviewModel('generic', '')
+  await expect(controller.setOpenCodeReviewModel('removed', 'work/fast')).rejects.toThrow()
+  expect(mutate.mock.calls).toEqual([
+    [[{ op: 'set', path: ['agents', 'generic', 'openCodeReviewModel'], value: 'work/fast' }], 1],
+    [[{ op: 'unset', path: ['agents', 'generic', 'openCodeReviewModel'] }], 1],
+  ])
+  controller.dispose()
+})
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -11,6 +43,27 @@ function deferred<T>() {
   })
   return { promise, resolve }
 }
+
+it.each([
+  ['LANG', 'zh_CN.UTF-8'],
+  ['API_KEY', 'rotated'],
+])('retains the pinned OpenCode reviewer while rechecking an edited %s', async (key, value) => {
+  const health = vi.fn().mockResolvedValue({ ok: true, value: view([row('work', 'new')]) })
+  const { controller, publishAgent, mutate } = panel(health)
+  const profile = {
+    name: 'Work',
+    command: 'opencode',
+    args: ['acp'],
+    env: { LANG: 'en_US.UTF-8', API_KEY: 'previous' },
+    openCodeReviewModel: 'local/private-review',
+  }
+  publishAgent('work', profile)
+  const edited = { ...profile, env: { ...profile.env, [key]: value } }
+  expect(await controller.saveAgent('work', draftFromAgent('work', edited))).toBeUndefined()
+  expect(mutate).toHaveBeenCalledWith([{ op: 'set', path: ['agents', 'work'], value: edited }], 1)
+  expect(health.mock.calls).toEqual([[{ recheck: true, agentId: 'work' }]])
+  controller.dispose()
+})
 
 function row(id: string, version: string): AcpProviderHealth {
   return {
@@ -101,14 +154,16 @@ describe('AcpPanelController targeted health checks', () => {
 
   it('carries a Host version mismatch into the panel and clears it when the Host no longer reports one', async () => {
     const responses = [
-      { ...view([]), hostVersion: { required: '0.2.2-rc.1', running: '0.2.2-rc.2' } },
+      { ...view([]), localReviewUnavailable: true, hostVersion: { required: '0.2.2-rc.1', running: '0.2.2-rc.2' } },
       { ...view([]), hostVersion: { required: 1 } },
     ]
     const { controller, store } = panel(async () => ({ ok: true, value: responses.shift() }))
     await controller.refreshHealth()
     expect(store.getSnapshot().health.hostVersion).toEqual({ required: '0.2.2-rc.1', running: '0.2.2-rc.2' })
+    expect(store.getSnapshot().health.localReviewUnavailable).toBe(true)
     await controller.refreshHealth()
     expect(store.getSnapshot().health.hostVersion).toBeUndefined()
+    expect(store.getSnapshot().health.localReviewUnavailable).toBeUndefined()
     controller.dispose()
   })
 
@@ -216,8 +271,28 @@ describe('AcpPanelController targeted health checks', () => {
     if (action === 'dispose') controller.dispose()
     pending.resolve({ ok: true, value: view([]) })
     await initial
-    expect(health.mock.calls).toEqual([[undefined]])
+    expect(health.mock.calls).toEqual(
+      action === 'rename' ? [[undefined], [{ recheck: true, agentId: 'renamed' }]] : [[undefined]],
+    )
     if (action !== 'dispose') controller.dispose()
+  })
+
+  it('checks the new ID and launch, ignoring an old ID response after renaming', async () => {
+    const old = deferred<{ ok: true; value: AcpHealthView }>()
+    const health = vi
+      .fn()
+      .mockReturnValueOnce(old.promise)
+      .mockResolvedValueOnce({ ok: true, value: view([row('new-id', 'new')]) })
+    const { controller, store } = panel(health)
+    const obsolete = controller.refreshAgentHealth('generic')
+    expect(
+      await controller.saveAgent('generic', { ...emptyDraft(), id: 'new-id', name: 'Agent', command: 'new-cli' }),
+    ).toBeUndefined()
+    old.resolve({ ok: true, value: view([row('generic', 'stale')]) })
+    await obsolete
+    expect(health.mock.calls).toEqual([[{ recheck: true, agentId: 'generic' }], [{ recheck: true, agentId: 'new-id' }]])
+    expect(store.getSnapshot().health.rows.map(({ id }) => id)).toEqual(['new-id'])
+    controller.dispose()
   })
 
   it('does not start a check for a refused add or a display-name edit', async () => {

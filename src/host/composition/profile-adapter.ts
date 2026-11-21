@@ -10,6 +10,7 @@ import {
   type NormalizedActivity,
 } from './notification-activities.ts'
 import { ACP_ACTIVITY_RAW_MAX } from '../../persistence/sidecar.ts'
+import { createCodeBuddyReviewRecorder } from './codebuddy-review.ts'
 import { SessionControls, acpSelectValues } from './session-controls.ts'
 import type {
   AcpAgentSessionSnapshotView as AgentSessionSnapshotView,
@@ -119,6 +120,10 @@ import { createAcpNativeElicitationHandler } from '../../domain/policy/elicitati
 import { createQwenQuestionHandler } from '../../domain/policy/qwen-question.ts'
 import { QWEN_TASK_JOB_KIND, type QwenTaskJobStarter } from '../../runtime/session/qwen-background.ts'
 import type { AcpPromptOptions, AcpRuntimeBindingRef } from '../../runtime/session/session-runtime.ts'
+import type { AcpPermissionReviewContext } from '../../runtime/session/session-runtime.ts'
+import { verifyOpenCodeActorOrigin } from '../approval-review/opencode/review-config.ts'
+import { approvalReviewAgent } from '../../contract/approval-review.ts'
+import { ApprovalReviewScope, approvalReviewInput } from '../approval-review/scope.ts'
 import type { AcpNativeQuestionUnavailable, AcpNativeUserQuestionService } from '../../domain/policy/elicitation.ts'
 import { normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
 import {
@@ -448,6 +453,7 @@ export interface AcpNativeQuestionBinding {
 
 /** One independent adapter and runtime per configured ACP profile. */
 export class AcpProfileAdapter extends LlmAdapter {
+  private approvalReview: ApprovalReviewScope | undefined
   private probeGeneration: ProfileGeneration | undefined
   private readonly runtimes = new Map<string, AcpProfileRuntime>()
   private readonly terminalOutcomes = new WeakMap<AcpProfileRuntime, HostTerminalOutcomes>()
@@ -3193,12 +3199,15 @@ export class AcpProfileAdapter extends LlmAdapter {
           if (!remoteSettled && !promptSignal.aborted)
             directoryAbort.abort(new Error('ACP interrupted for a working-directory handoff'))
         })
+        const reviewModel = () => self.findSelectOption(runtime.configOptions ?? [], 'model')?.currentValue
+        let reviewInput = approvalReviewInput(messages, reviewModel)
         handoff.resume = async (nextOptions) => {
           let nextProof: CurrentStepProof | undefined
+          let nextMessages: readonly UserMessage[]
           let nextPrompt: Awaited<ReturnType<typeof prepareAcpPrompt>>
           let nextSystem: string | undefined
           try {
-            const nextMessages = admitCurrentStep(nextOptions, session, (proof) => {
+            nextMessages = admitCurrentStep(nextOptions, session, (proof) => {
               nextProof = proof
             })
             if (nextProof?.turn !== admissionProof?.turn) return false
@@ -3236,6 +3245,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             // The original prompt can still report completed tools while the
             // connection waits to dispatch steering. Save its facts here.
             const previousAnchor = currentAnchor
+            const previousReviewInput = reviewInput
             const previousOffset = activityIndexOffset
             const previousReportEligible = teammateReportEligible
             const previousReportConfirmed = teammateReportConfirmed
@@ -3252,6 +3262,7 @@ export class AcpProfileAdapter extends LlmAdapter {
               updateDeliveredHostInstructions()
               remoteCancellationHook = previousRemoteCancellationHook
               currentAnchor = previousAnchor
+              reviewInput = previousReviewInput
               activityIndexOffset = previousOffset
               teammateReportEligible = previousReportEligible
               teammateReportConfirmed = previousReportConfirmed
@@ -3271,6 +3282,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             self.deliveredHostInstructions.delete(runtime)
             remoteCancellationHook = captureRemoteCancellationHook(nextProof)
             currentAnchor = nextProof!.anchorMessageId
+            reviewInput = approvalReviewInput(nextMessages, reviewModel)
             // A pending pull may contain the old segment's final text. It will
             // occupy a block in the next native reply before injected output.
             activityIndexOffset = Math.min(
@@ -3350,6 +3362,7 @@ export class AcpProfileAdapter extends LlmAdapter {
           },
           {
             ...qwenPromptOptions,
+            ...(approvalReviewAgent(self.profileId, profile) !== undefined ? { reviewInput: () => reviewInput } : {}),
             projection: validatedPrompt.projection,
             hostBodySignal,
             ...(verifyDispatchModel ? { beforeDispatch: verifyDispatchModel } : {}),
@@ -4531,6 +4544,19 @@ export class AcpProfileAdapter extends LlmAdapter {
     }
   }
 
+  configureApprovalReview(enabled: boolean, devinModel: string): void {
+    const profile = this.readConfig()
+    if (this.closing || !this.subprocess.ok) return
+    const source = enabled && profile && approvalReviewAgent(this.profileId, profile)
+    const model =
+      source === 'devin' ? devinModel : source === 'opencode' ? (profile?.openCodeReviewModel ?? '') : undefined
+    if (model !== undefined)
+      this.approvalReview ??= ApprovalReviewScope.forProfile(this.profileId, this.subprocess.seam, (message) =>
+        this.log?.(message),
+      )
+    this.approvalReview?.configure(profile, model)
+  }
+
   close(): Promise<void> {
     if (this.closing !== undefined) return this.closing
     const completion = Promise.withResolvers<void>()
@@ -4543,6 +4569,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     const failures: unknown[] = []
     this.projectionAdmissionClosed = true
     this.settlementCloseController.abort(new DOMException('Adapter closed', 'AbortError'))
+    const reviewsClosed = this.approvalReview?.close()
     this.sessionOperationControllers.clear()
     const retireSettlement = this.settlementOwnerDisposer
     this.settlementOwnerDisposer = undefined
@@ -4613,6 +4640,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       if (retireSettlement !== undefined) recordFailures(await Promise.allSettled([retireSettlement()]))
     }
     if (this.ownsContinuity) recordFailures(await Promise.allSettled([this.continuity.close()]))
+    if (reviewsClosed) recordFailures(await Promise.allSettled([reviewsClosed]))
     if (failures.length > 0) throw new AggregateError(failures, 'ACP profile cleanup failed')
   }
 
@@ -4800,7 +4828,30 @@ export class AcpProfileAdapter extends LlmAdapter {
   /** Build one immutable native launch/capability surface for every lifecycle path. */
   private createRuntime(sessionId: string, profile: AcpStubAgentConfig, cwd: string): AcpProfileRuntime {
     const outcomes = new HostTerminalOutcomes(sessionId, this.profileId)
-    const runtime = this.runtimeFactory(this.runtimeOptionsFor(sessionId, profile, cwd, outcomes))
+    const sidecar = this.sidecar
+    const recordCodeBuddyReview =
+      sidecar &&
+      createCodeBuddyReviewRecorder(
+        profile,
+        (data) => sidecar.append(sessionId as never, { kind: 'permission', data }),
+        this.log,
+      )
+    let runtime: AcpProfileRuntime | undefined
+    runtime = this.runtimeFactory({
+      ...this.runtimeOptionsFor(sessionId, profile, cwd, outcomes),
+      onSessionUpdate: (notification): void => {
+        if (
+          !runtime ||
+          this.runtimeForSession(sessionId) !== runtime ||
+          runtime.acpSessionId !== notification.sessionId
+        )
+          return
+        const kind = notification.update.sessionUpdate
+        if (kind === 'config_option_update' || kind === 'current_mode_update' || kind === 'usage_update')
+          void this.persistRuntimeSnapshot(sessionId, runtime)
+        recordCodeBuddyReview?.(runtime.agentInfo?.name, notification)
+      },
+    })
     this.terminalOutcomes.set(runtime, outcomes)
     return runtime
   }
@@ -4843,6 +4894,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       params: acp.RequestPermissionRequest,
       signal?: AbortSignal,
       policy?: Pick<AcpNativePermissionBridgeDeps, 'onPolicyDenial' | 'syntheticApproval'>,
+      context?: AcpPermissionReviewContext,
     ): Promise<acp.RequestPermissionResponse> => {
       const binding = this.resolveQuestions?.(sessionId)
       if (binding === undefined) return { outcome: { outcome: 'cancelled' } }
@@ -4850,18 +4902,29 @@ export class AcpProfileAdapter extends LlmAdapter {
         this.sidecar === undefined
           ? undefined
           : { append: (record) => this.sidecar!.append(sessionId as never, record) }
-      return await createAcpNativePermissionHandler({
-        ...policy,
-        ...(binding.userQuestions === undefined ? {} : { userQuestions: binding.userQuestions }),
-        ...(binding.permissionQuestions === undefined ? {} : { permissionQuestions: binding.permissionQuestions }),
-        ...(binding.approval === undefined ? {} : { approval: binding.approval }),
-        ...(runtime === undefined ? {} : { permissionProfile: runtime }),
-        ...(runtime === 'antigravity' ? { nativeQuestionProfile: 'antigravity' as const } : {}),
-        getAgent: binding.getAgent,
-        ...(binding.locale === undefined ? {} : { locale: binding.locale }),
-        ...(audit === undefined ? {} : { audit }),
-        ...(binding.onUnavailable === undefined ? {} : { onUnavailable: binding.onUnavailable }),
-      })(params, signal)
+      const handle = (
+        review: Pick<AcpNativePermissionBridgeDeps, 'riskReviewer' | 'humanReviewOnly'>,
+        lifetime?: AbortSignal,
+      ) =>
+        createAcpNativePermissionHandler({
+          ...policy,
+          ...review,
+          ...(binding.userQuestions === undefined ? {} : { userQuestions: binding.userQuestions }),
+          ...(binding.permissionQuestions === undefined ? {} : { permissionQuestions: binding.permissionQuestions }),
+          ...(binding.approval === undefined ? {} : { approval: binding.approval }),
+          ...(runtime === undefined ? {} : { permissionProfile: runtime }),
+          ...(runtime === 'antigravity' ? { nativeQuestionProfile: 'antigravity' as const } : {}),
+          getAgent:
+            (review.riskReviewer || review.humanReviewOnly) && context
+              ? () => (context.current() ? binding.getAgent() : undefined)
+              : binding.getAgent,
+          ...(binding.locale === undefined ? {} : { locale: binding.locale }),
+          ...(audit === undefined ? {} : { audit }),
+          ...(binding.onUnavailable === undefined ? {} : { onUnavailable: binding.onUnavailable }),
+        })(params, lifetime)
+      if (context && signal && this.approvalReview)
+        return this.approvalReview.handle(profile, context, binding.locale, signal, handle)
+      return handle({}, signal)
     }
     const diagnosticTrace = this.hostRoot?.get('acpLiveDiagnostics', false)
     return {
@@ -4906,6 +4969,15 @@ export class AcpProfileAdapter extends LlmAdapter {
           )
         : {}),
       cwd,
+      ...(approvalReviewAgent(this.profileId, profile) === 'opencode' && processSeam?.localExecution === true
+        ? {
+            verifyReviewOrigin: async () => {
+              if (!this.approvalReview?.enabled) return false
+              await verifyOpenCodeActorOrigin(profile, cwd)
+              return true
+            },
+          }
+        : {}),
       prepareLaunch: (config, cwd, preToolUse) =>
         prepareAgentLaunch(
           runtime,
@@ -4934,8 +5006,8 @@ export class AcpProfileAdapter extends LlmAdapter {
           audit: appendTerminalAudit,
           onExit: (event) => terminalOutcomes.observe(event),
         }),
-      onPermissionRequest: (params, signal, onPolicyDenial) =>
-        handlePermission(params, signal, onPolicyDenial === undefined ? undefined : { onPolicyDenial }),
+      onPermissionRequest: (params, signal, onPolicyDenial, context) =>
+        handlePermission(params, signal, onPolicyDenial === undefined ? undefined : { onPolicyDenial }, context),
       onPermissionCheck: async (check, request) => {
         await this.sidecar?.append(sessionId as never, {
           kind: 'permission',
@@ -5001,17 +5073,6 @@ export class AcpProfileAdapter extends LlmAdapter {
                 },
               }),
         })(params, signal)
-      },
-      onSessionUpdate: (notification): void => {
-        const kind = notification.update.sessionUpdate
-        if (kind !== 'config_option_update' && kind !== 'current_mode_update' && kind !== 'usage_update') return
-        // Keep the sidecar's last-known controls close to the ACP event. This
-        // is a bounded write per protocol update (not a polling loop), so a
-        // crash between turns still renders the most recently reported Agent
-        // mode/context as stale instead of losing it entirely.
-        const runtime = this.runtimeForSession(sessionId)
-        if (runtime !== undefined && runtime.acpSessionId === notification.sessionId)
-          void this.persistRuntimeSnapshot(sessionId, runtime)
       },
     }
   }

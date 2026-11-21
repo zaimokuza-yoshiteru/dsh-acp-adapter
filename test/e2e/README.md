@@ -53,15 +53,10 @@ DSH_E2E_ADAPTER_DIRECTORY=/absolute/path/to/archived-plugin \
 pnpm test:e2e test/e2e/parent-permission-options.e2e.ts
 ```
 
-`live-parent-permission.e2e.ts` 默认跳过，显式启用后使用本机 Devin、精确模型 `swe-2-high` 与隔离 marker 文件。原生父使用脚本化控制，子会话是真实 Devin；验证 Ask／Auto 下完整选项、刷新与嵌套并发取消，并在临时项目配置中核验显式 Deny 不被转成批准或替代工具写入。项目 Deny 不是企业管理策略。旧包对照分别核对 Ask 子请求被取消、Auto 未经人工选择执行。测试不改变企业策略，也不能用非企业账号证明企业 Ask／Deny 已生效。
+`live-parent-permission.e2e.ts` 默认跳过，显式启用后使用本机 Devin、精确模型 `swe-2-high` 与隔离 marker 文件。原生父使用脚本化控制，子会话是真实 Devin；验证完整的人工审批选项、刷新与嵌套并发取消，并在临时项目配置中核验显式 Deny 不被转成批准或替代工具写入。项目 Deny 不是企业管理策略。测试不改变企业策略，也不能用非企业账号证明企业 Ask／Deny 已生效。
 
 ```sh
 DSH_E2E_LIVE_PARENT_PERMISSION=1 \
-pnpm test:e2e test/e2e/live-parent-permission.e2e.ts
-# 同输入旧包对照；成功表示已复现旧行为
-DSH_E2E_LIVE_PARENT_PERMISSION=1 \
-DSH_E2E_PARENT_PERMISSION_BASELINE=1 \
-DSH_E2E_ADAPTER_DIRECTORY=/absolute/path/to/archived-plugin \
 pnpm test:e2e test/e2e/live-parent-permission.e2e.ts
 ```
 
@@ -171,6 +166,12 @@ Devin 真实浏览器共享任务验收使用 `live-agents.e2e.ts`，显式设�
 
 更新 Devin CLI 后，可先在以上设置中加 `DSH_E2E_LIVE_DEVIN_PERMISSIONS=inspect`，观察首张真实子会话审批卡。驱动逐项核对原始选项与原生界面后，在子会话点击 Stop，并检查请求取消、没有派发和文件未创建。
 
+验证 Devin AI 审批可使用 [live-devin-ai-review.e2e.ts](live-devin-ai-review.e2e.ts)。设置 `DSH_E2E_LIVE_DEVIN_AI_APPROVAL=1` 和 `DSH_E2E_ADAPTER_DIRECTORY`（解包后的候选包目录），配合上述 Electron 和 RC.5 scaffold 运行该文件。它使用本机已有 Devin 登录，默认模型为 `swe-2-high`；可通过 `DSH_E2E_LIVE_DEVIN_MODEL` 指定当前 ACP 目录中的精确模型 ID。用例验证普通会话自动写入、Teams 成员高风险写入经刷新后人工拒绝，以及关闭 AI 审批后人工取消。最后停启整个插件，核对审计并在同一会话恢复写入。截图和审计保存在 `.local/devin-ai-review-desktop/`。
+
+仅验证中英文设置页时，使用 `DSH_E2E_LIVE_DEVIN_REVIEW_SETTINGS=1` 运行 [live-devin-review-settings.e2e.ts](live-devin-review-settings.e2e.ts)，同样指定已解包的候选包和 Electron。此用例读取本机 Devin 模型目录，在英文界面选择模型，重新打开中文界面确认设置仍然生效，最后关闭开关。截图保存在 `.local/devin-review-settings/`。
+
+OpenCode 的两项验收共用 RC.5 Electron、解包后的候选包，以及 `DSH_E2E_LIVE_OPENCODE_COMMAND` 指定的 OpenCode 2.3.2。用 `DSH_E2E_LIVE_OPENCODE_REVIEW_SETTINGS=1` 运行 [中英文设置页](live-opencode-review-settings.e2e.ts)，核对单一开关、两个配置的模型选择和重新打开后的状态。用 `DSH_E2E_LIVE_OPENCODE_AI_APPROVAL=1` 运行 [业务审批](live-opencode-ai-approval.e2e.ts)，从 DSH 输入框发起写入，核对一次放行、高风险人工拒绝、关闭开关后的人工确认与审计。测试使用隔离配置和本机固定模型应答，无需付费推理。
+
 设为 `DSH_E2E_LIVE_DEVIN_PERMISSIONS=1`，则单独验收真实子会话的 Allow、刷新待审批页面后 Reject、待审批时 Stop 和继续。刷新前后核对原权限请求 ID 和完整选项顺序。该专项明确使用隔离 Ask 配置，只有各阶段精确的临时 marker 写入属于授权范围；成员创建由测试调用公开原生接口控制，不能据此声称模型自己创建成员。它与旧 `DSH_E2E_LIVE_TEAMS_APPROVAL` 的 native bash sandbox escalation 是不同场景，不互相替代。两项入口均使用临时认证副本、HOME/XDG 和 profile，结束后清理，不修改用户日常配置。
 
 Claude 使用 DeepSeek 等第三方服务时，应同时核对 `ANTHROPIC_BASE_URL`、认证变量及模型映射，并通过 `DSH_E2E_LIVE_CLAUDE_ENV_KEYS` 传入所需配置。模型目录可返回不代表生成已认证，模型别名也不能证明实际供应商。遇到意外 OAuth 报错时，先检查临时 profile 的有效路由和认证配置，再判断是否需要登录。
@@ -233,6 +234,6 @@ pnpm test:e2e test/e2e/live-mcp-continuation.e2e.ts
 
 runner 保存场景截图、Session 事件摘要、脱敏后的结构化 ACP trace 和本地私有的模型回答审查文件。公开源码测试证据可保存在本机；分享截图或事件摘要前先检查并脱敏，因为它们可能显示正文或其他敏感信息。测试 workspace 只是测试数据隔离，不是 OS 沙箱；Host guard 只在 DSH 工具 body 前生效，不能限制 CLI 自有工具，provider 活动计数是事后软停止信号。CLI 工具可能在取消前已执行；测试不限制模型 token/费用或远端已开始的请求。
 
-测试 guard 对整个 run 限制 Host 工具准入最多 96 次、每场景最多 48 次、总时限 20 分钟；单场景最多 6 分钟，普通阶段最多 90 秒，B 初始化及成员结果等待最多 180 秒，最多两个成员。Ask 请求按 owner/request 单独计数，包含完整选项问答。除 B 外每场最多 16 次；B 的两成员流程和 Lead 复核至少需要 21 次独立工具操作，因此 B 单独允许最多 32 次审批，仍低于原有的 48 次分发上限。总审批基数仍为 24，只加上 B 实际超过旧 16 次的部分（最多增加 16 次），这部分额度不能供其他场景使用。B 只通过原生 UI 选择已核对 scope、完整选项和归属的 `allow_once`，不更改 Auto、Agent mode 或用户权限；这些数值是测试任务预算，不改变产品的执行限制。provider 工具活动最多 128 次是事后软停止。重复副作用限制仅作用于测试，不是生产限额或费用上限。
+测试 guard 对整个 run 限制 Host 工具准入最多 96 次、每场景最多 48 次、总时限 20 分钟；单场景最多 6 分钟，普通阶段最多 90 秒，B 初始化及成员结果等待最多 180 秒，最多两个成员。Ask 请求按 owner/request 单独计数，包含完整选项问答。除 B 外每场最多 16 次；B 的两成员流程和 Lead 复核至少需要 21 次独立工具操作，因此 B 单独允许最多 32 次审批，仍低于原有的 48 次分发上限。总审批基数仍为 24，只加上 B 实际超过旧 16 次的部分（最多增加 16 次），这部分额度不能供其他场景使用。B 只通过原生 UI 选择已核对 scope、完整选项和归属的 `allow_once`，不更改 Agent mode 或用户权限；这些数值是测试任务预算，不改变产品的执行限制。provider 工具活动最多 128 次是事后软停止。重复副作用限制仅作用于测试，不是生产限额或费用上限。
 
 C 的成员审批 prompt 明确要求 `wait_agent` 仅传 `{"timeout_ms":30000}`，不传目标或其他参数；测试协调守卫最多接受 60 秒等待。这是为了配合本测试的阶段预算，不是官方工具的最大等待时长。Lead 空参 `list_agents` 可在消息转交前发现成员；等待仍要求当前精确转交已成功。

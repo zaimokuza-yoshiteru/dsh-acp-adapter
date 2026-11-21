@@ -69,7 +69,6 @@ it.skipIf(process.env.DSH_E2E_LIVE_MANAGED_APPROVAL !== '1')(
         }),
       )
       await host.ctx.settings.replace('dsh-acp-adapter', {
-        toolApprovalDefault: 'ask',
         agents: {
           devin: { name: 'Devin live managed approval', command: 'devin', args: ['acp'], env },
         },
@@ -232,7 +231,6 @@ it.skipIf(process.env.DSH_E2E_LIVE_MANAGED_APPROVAL !== '1')(
         }),
       )
       await host.ctx.settings.replace('dsh-acp-adapter', {
-        toolApprovalDefault: 'ask',
         agents: {
           devin: { name: 'Devin live root approval', command: 'devin', args: ['acp'], env },
         },

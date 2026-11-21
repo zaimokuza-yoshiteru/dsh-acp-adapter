@@ -51,6 +51,9 @@ import {
   retiredAgentReason,
 } from '../domain/session/agent-config.ts'
 import { ACP_CONFIG_IDENTIFIER_MAX } from '../contract/config-options.ts'
+import { isDevinReviewModel } from '../contract/devin-review.ts'
+import { isOpenCodeReviewModel } from '../contract/opencode-review.ts'
+import { approvalReviewAgent, supportsLocalApprovalReview, verifiedReviewPeer } from '../contract/approval-review.ts'
 import { acpModelSelection, isAcpModelRouteWithinBounds } from '../contract/model-selection.ts'
 import { acpProbeConfigKey, acpVersionCompatibility, catalogIdOf } from '../domain/session/agent-config.ts'
 import { registryVersionOf } from '../domain/session/registry-versions.ts'
@@ -93,9 +96,6 @@ import type {
   AcpAgentSessionSnapshotView,
   AcpAgentSessionFrame,
   AcpAgentSessionOptionWrite,
-  AcpToolApprovalPolicySnapshot,
-  AcpToolApprovalPolicyFrame,
-  AcpToolApprovalPolicyWrite,
   AcpOwnedRoutesView,
   AcpProjectedSubagentsView,
 } from '../contract/remote.ts'
@@ -230,7 +230,7 @@ export interface AcpProbeSnapshotLike {
   readonly result:
     | {
         readonly kind: 'ok'
-        readonly models: readonly { readonly id: string }[]
+        readonly models: readonly { readonly id: string; readonly name?: string }[]
         readonly authMethods?: readonly acp.AuthMethod[]
         /** initialize 握手原值（现在随缓存保留；缺失时 health 行归 null）。 */
         readonly agentInfo?: acp.Implementation | null | undefined
@@ -370,14 +370,6 @@ export interface AcpRemoteServiceDeps {
   recoveryAdapter?: (provider: string) => AcpRecoveryAdapterLike | undefined
   /** Resolves only the new per-profile provider control surface. */
   agentSessionControl?: (provider: string) => AcpAgentSessionControlLike | undefined
-  toolApprovalPolicy?: {
-    readonly read: (sessionId: string) => Promise<AcpToolApprovalPolicySnapshot>
-    readonly write: (sessionId: string, policy: 'auto' | 'ask') => Promise<AcpToolApprovalPolicySnapshot>
-  }
-  toolApprovalPolicyChanges?: {
-    readonly subscribe: (changed: () => void) => () => void
-    readonly notify: () => void
-  }
   /** A real host session may subscribe before its first ACP binding exists. */
   agentSessionChanges?: {
     readonly canRead: (sessionId: string) => boolean | Promise<boolean>
@@ -531,14 +523,13 @@ interface ResolvedDeps {
   readonly recoveryAdapter: NonNullable<AcpRemoteServiceDeps['recoveryAdapter']> | null
   readonly agentSessionControl: NonNullable<AcpRemoteServiceDeps['agentSessionControl']> | null
   readonly agentSessionChanges: NonNullable<AcpRemoteServiceDeps['agentSessionChanges']> | null
-  readonly toolApprovalPolicy: NonNullable<AcpRemoteServiceDeps['toolApprovalPolicy']> | null
-  readonly toolApprovalPolicyChanges: NonNullable<AcpRemoteServiceDeps['toolApprovalPolicyChanges']> | null
   readonly auditTimeline: NonNullable<AcpRemoteServiceDeps['auditTimeline']> | null
   readonly activityTimeline: NonNullable<AcpRemoteServiceDeps['activityTimeline']> | null
   readonly ownedSessionReadGate: NonNullable<AcpRemoteServiceDeps['ownedSessionReadGate']> | null
   readonly activityReadStatus: NonNullable<AcpRemoteServiceDeps['activityReadStatus']> | null
   readonly projectedSubagentIds: NonNullable<AcpRemoteServiceDeps['projectedSubagentIds']> | null
   readonly imageInputAvailable: boolean
+  readonly localAiReview: boolean
 }
 
 /**
@@ -594,14 +585,14 @@ export class AcpRemoteService extends TypertRemoteService {
       recoveryAdapter: deps.recoveryAdapter ?? null,
       agentSessionControl: deps.agentSessionControl ?? null,
       agentSessionChanges: deps.agentSessionChanges ?? null,
-      toolApprovalPolicy: deps.toolApprovalPolicy ?? null,
-      toolApprovalPolicyChanges: deps.toolApprovalPolicyChanges ?? null,
       auditTimeline: deps.auditTimeline ?? null,
       activityTimeline: deps.activityTimeline ?? null,
       ownedSessionReadGate: deps.ownedSessionReadGate ?? deps.activityAccess ?? null,
       activityReadStatus: deps.activityReadStatus ?? null,
       projectedSubagentIds: deps.projectedSubagentIds ?? null,
       imageInputAvailable: deps.imageInputAvailable ?? false,
+      localAiReview:
+        subprocess.ok && subprocess.seam.localExecution === true && supportsLocalApprovalReview(process.platform),
     }
   }
 
@@ -1193,6 +1184,20 @@ export class AcpRemoteService extends TypertRemoteService {
         // 版本参考共用同一绑定事实：runtime 绑定 → catalogIdOf → 快照
         // version；普通 profile 按 agent id 直查。
         const referenceVersion = registryVersionOf(catalogIdOf(id, config))
+        const result = matchingSnapshot?.result
+        const candidate = approvalReviewAgent(id, config)
+        const reviewAgent =
+          candidate && result?.kind === 'ok' && verifiedReviewPeer(candidate, result.agentInfo) ? candidate : undefined
+        const reviewModels =
+          this.resolved.localAiReview && hostCompatible && executable && reviewAgent && result?.kind === 'ok'
+            ? result.models.flatMap((model) => {
+                const selected = acpModelSelection(model.id)
+                const validModel = reviewAgent === 'devin' ? isDevinReviewModel : isOpenCodeReviewModel
+                return selected.kind === 'declared-model' && validModel(selected.value)
+                  ? [{ id: selected.value, name: model.name || selected.value }]
+                  : []
+              })
+            : undefined
         return {
           id,
           name: config.name,
@@ -1202,6 +1207,8 @@ export class AcpRemoteService extends TypertRemoteService {
           executable,
           version,
           probe: probeRow(matchingSnapshot, referenceVersion, this.resolved.imageInputAvailable),
+          ...(reviewModels?.length && reviewAgent === 'devin' ? { devinReviewModels: reviewModels } : {}),
+          ...(reviewModels && reviewAgent === 'opencode' ? { openCodeReviewModels: reviewModels } : {}),
           state: deriveAcpAgentState(hostCompatible, matchingSnapshot?.result),
         }
       }),
@@ -1218,6 +1225,7 @@ export class AcpRemoteService extends TypertRemoteService {
     return {
       providers,
       liveSessions,
+      ...(this.resolved.localAiReview ? {} : { localReviewUnavailable: true as const }),
       ...(hostVersion === undefined
         ? {}
         : { hostVersion: { required: hostVersion.required, running: hostVersion.running } }),
@@ -1297,80 +1305,6 @@ export class AcpRemoteService extends TypertRemoteService {
     await this.requireOwnedSessionAccess(sessionId)
     const adapter = await this.agentSessionControlFor(sessionId)
     return await preserveAcpFailure(() => adapter.setAgentSessionOption(sessionId, request, canSelectModel, signal))
-  }
-
-  @Remote
-  async toolApprovalPolicy(sessionId: string): Promise<AcpToolApprovalPolicySnapshot> {
-    await this.requirePolicySessionAccess(sessionId)
-    const store = this.resolved.toolApprovalPolicy
-    if (store === null) throw acpRemoteFailure('config', 'DSH tool approval controls are unavailable')
-    return await store.read(sessionId)
-  }
-
-  @Remote
-  async setToolApprovalPolicy(
-    sessionId: string,
-    request: AcpToolApprovalPolicyWrite,
-  ): Promise<AcpToolApprovalPolicySnapshot> {
-    await this.requirePolicySessionAccess(sessionId)
-    if (request === null || typeof request !== 'object' || (request.policy !== 'auto' && request.policy !== 'ask'))
-      throw badRequest('Invalid DSH tool approval policy')
-    const store = this.resolved.toolApprovalPolicy
-    if (store === null) throw acpRemoteFailure('config', 'DSH tool approval controls are unavailable')
-    const snapshot = await store.write(sessionId, request.policy)
-    this.resolved.toolApprovalPolicyChanges?.notify()
-    return snapshot
-  }
-
-  @Remote({ mode: 'stream' })
-  async *toolApprovalPolicyFollow(sessionId: string, signal: AbortSignal): AsyncIterable<AcpToolApprovalPolicyFrame> {
-    await this.requirePolicySessionAccess(sessionId)
-    const store = this.resolved.toolApprovalPolicy
-    const changes = this.resolved.toolApprovalPolicyChanges
-    if (store === null || changes === null) throw acpRemoteFailure('config', 'DSH tool approval stream is unavailable')
-    let dirty = true
-    let wake: (() => void) | undefined
-    const notify = (): void => {
-      dirty = true
-      wake?.()
-    }
-    const unsubscribe = changes.subscribe(notify)
-    signal.addEventListener('abort', notify, { once: true })
-    let previous: string | undefined
-    try {
-      while (!signal.aborted) {
-        if (!dirty)
-          await new Promise<void>((resolve) => {
-            wake = resolve
-          })
-        wake = undefined
-        if (signal.aborted) break
-        dirty = false
-        await this.requirePolicySessionAccess(sessionId)
-        const snapshot = await store.read(sessionId)
-        if (signal.aborted) break
-        const key = JSON.stringify(snapshot)
-        if (key === previous) continue
-        yield { type: previous === undefined ? 'opened' : 'changed', snapshot }
-        previous = key
-      }
-    } finally {
-      unsubscribe()
-      signal.removeEventListener('abort', notify)
-    }
-  }
-
-  private async requirePolicySessionAccess(sessionId: string): Promise<void> {
-    const changes = this.resolved.agentSessionChanges
-    if (
-      typeof sessionId !== 'string' ||
-      sessionId.length === 0 ||
-      sessionId.length > 256 ||
-      changes === null ||
-      !(await changes.canRead(sessionId))
-    ) {
-      throw acpRemoteFailure('user-rejected', 'DSH tool approval access is not authorized')
-    }
   }
 
   private async agentSessionControlFor(sessionId: string): Promise<AcpAgentSessionControlLike> {

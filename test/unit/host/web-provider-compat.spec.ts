@@ -147,8 +147,6 @@ async function harness(
       id,
       { mcpCapabilities: { http: true } },
       undefined,
-      async () => 'auto',
-      undefined,
       assembly.tools,
       (caller) => (caller === agent ? admission : undefined),
     )

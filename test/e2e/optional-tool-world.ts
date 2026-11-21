@@ -1,7 +1,6 @@
 import type {} from '@deepseek-ai/dsh-plugin-manager'
 import type { SessionRequestId } from '@deepseek-ai/dsh-api-session-controller'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { AcpRemoteService } from '../../src/remote/service.ts'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, watch, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -27,7 +26,6 @@ export async function launchOptionalToolWorld(
     const agentLog = join(host.workspaceCwd, 'optional-agent.log')
     const profile = fixture.profile ?? 'devin'
     await host.ctx.settings.replace('dsh-acp-adapter', {
-      toolApprovalDefault: 'auto',
       agents: {
         [profile]: {
           name: 'Official optional tools fixture',
@@ -196,7 +194,6 @@ export async function launchOptionalToolWorld(
       waitForRecordedCalls,
       captureFailure,
       nativeCalls,
-      controls: host.ctx.get('dshAcp') as AcpRemoteService,
     }
   } catch (error) {
     await host.close()

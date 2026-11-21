@@ -71,6 +71,87 @@ async function drain(iterable: AsyncIterable<unknown>): Promise<void> {
 }
 
 describe('provider activity bridge', () => {
+  it('records owned CodeBuddy security notifications once across repeated broadcasts and discards late writes after close', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-codebuddy-review-'))
+    roots.push(root)
+    const sidecar = testSidecar(root)
+    const message = user('read a document')
+    let notify: NonNullable<AcpSessionRuntimeOptions['onSessionUpdate']> = () => {}
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => ({ ...profile(), command: 'codebuddy', args: ['--acp'] }),
+      seam(),
+      () => session(message),
+      ledgerFor(sidecar),
+      undefined,
+      (options) => {
+        notify = options.onSessionUpdate!
+        return {
+          acpSessionId: 'remote',
+          start: async () => {},
+          close: async () => {},
+          prompt: async (_content, onUpdate) => {
+            onUpdate({
+              sessionId: 'remote',
+              update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Done.' } },
+            })
+            return { stopReason: 'end_turn' }
+          },
+        }
+      },
+      sidecar,
+    )
+    const emit = (sessionId: string, toolCallId: string) => {
+      notify({ sessionId, update: { sessionUpdate: 'tool_call', toolCallId, title: 'Read' } })
+      notify({
+        sessionId,
+        update: {
+          sessionUpdate: 'tool_call_update',
+          toolCallId,
+          _meta: {
+            'codebuddy.ai': {
+              toolName: 'Read',
+              toolMetaData: {
+                securityConclusions: [
+                  {
+                    scope: 'tool_result',
+                    decision: 'deny',
+                    decidedBy: 'ai',
+                    contentPreview: 'private content',
+                    reason: 'private excerpt',
+                  },
+                ],
+              },
+            },
+          },
+        },
+      })
+    }
+    try {
+      await drain(adapter.stream(request('owned', message)))
+      emit('remote', 'first')
+      emit('remote', 'first')
+      emit('foreign', 'foreign-tool')
+      await adapter.close()
+      emit('remote', 'after-close')
+      const permissions = (await sidecar.list('owned' as never)).filter((row) => row.kind === 'permission')
+      expect(permissions.map((row) => row.data)).toEqual([
+        {
+          phase: 'codebuddy-review',
+          agentSessionId: 'remote',
+          toolCallId: 'first',
+          toolName: 'Read',
+          scope: 'tool_result',
+          decision: 'deny',
+          decidedBy: 'ai',
+        },
+      ])
+      expect(permissions[0]?.acpSessionId).toBe('remote')
+    } finally {
+      await adapter.close()
+    }
+  })
+
   it.each([
     { title: undefined, name: undefined, fallback: true },
     { title: 'Agent tool activity', name: undefined, fallback: false },

@@ -50,6 +50,8 @@ export interface AcpStubAgentConfig {
   runtime?: AcpConfiguredRuntime
   /** Registry identity for display metadata only; never grants runtime behavior. */
   catalogId?: string
+  /** Optional review model when AI approval is enabled. By default, use the confirmed session model. */
+  openCodeReviewModel?: string
 }
 
 /** One ACP agent's stored configuration (the `dsh-acp-adapter` settings per-id value). */

@@ -22,7 +22,6 @@ it('times out the native timed question and steers its late answer into the acti
     host.ctx.on('session/event', (session, event) => events.push({ sessionId: session.id, ...event }))
     const agentLog = join(host.workspaceCwd, 'timed-question-agent.log')
     await host.ctx.settings.replace('dsh-acp-adapter', {
-      toolApprovalDefault: 'auto',
       agents: {
         devin: {
           name: 'Timed question fixture',

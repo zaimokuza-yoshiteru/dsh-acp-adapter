@@ -307,32 +307,14 @@ describe('ACP activity conversation node', () => {
     expect(definition.match({ type: 'assistant/message', seq: 11, time: 11, data: {} } as never)).toBeNull()
   })
 
-  it('reads compact outer-data replay payloads without changing the rendered identity', () => {
-    const compact = {
-      type: 'assistant/message',
-      seq: 12,
-      data: { replayState: payload },
-    }
-    expect(acpReplayPayloadOf(compact)).toEqual(payload)
-    expect(createAcpActivityDefinition(() => false).match(compact as never)).toEqual({
-      id: 'answer:["dsh-1","codex",1,1,"acp-1",3]',
-      role: 'start',
-    })
-  })
-
-  it('reads message-level replay envelopes without changing the rendered identity', () => {
-    const compact = { type: 'assistant/message', data: { message: { replayState: { response: payload } } } }
-    expect(acpReplayPayloadOf(compact)).toEqual(payload)
-    expect(createAcpActivityDefinition(() => false).match(compact as never)).toEqual({
-      id: 'answer:["dsh-1","codex",1,1,"acp-1",3]',
-      role: 'start',
-    })
-  })
-
-  it('reaches the outer-data fallback with an explicit message object', () => {
-    const compact = { type: 'assistant/message', data: { message: {}, replayState: { response: payload } } }
-    expect(acpReplayPayloadOf(compact)).toEqual(payload)
-    expect(createAcpActivityDefinition(() => false).match(compact as never)).toEqual({
+  it.each([
+    ['compact outer data', { replayState: payload }],
+    ['message envelope', { message: { replayState: { response: payload } } }],
+    ['outer data with an empty message', { message: {}, replayState: { response: payload } }],
+  ] as const)('keeps the rendered identity for %s replay', (_name, data) => {
+    const event = { type: 'assistant/message', seq: 12, data }
+    expect(acpReplayPayloadOf(event)).toEqual(payload)
+    expect(createAcpActivityDefinition(() => false).match(event as never)).toEqual({
       id: 'answer:["dsh-1","codex",1,1,"acp-1",3]',
       role: 'start',
     })

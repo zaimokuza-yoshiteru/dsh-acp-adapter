@@ -41,6 +41,16 @@
   line-height: 20px;
   font-weight: 500;
 }
+.preferenceRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.reviewModelValue {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .notice {
   margin: 0;
   font-size: 12px;

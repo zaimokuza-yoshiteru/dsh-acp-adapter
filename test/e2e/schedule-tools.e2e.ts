@@ -26,7 +26,6 @@ async function setup() {
     const fixtureLog = join(ownedHost.workspaceCwd, 'schedule-agent.jsonl')
     const activeDueFile = join(ownedHost.workspaceCwd, 'schedule-active-due')
     await ownedHost.ctx.settings.replace('dsh-acp-adapter', {
-      toolApprovalDefault: 'auto',
       agents: {
         devin: {
           name: 'ACP Schedule fixture',
@@ -295,8 +294,6 @@ it('preserves a pending Schedule task when the native plugin is disabled and rem
         recoverySessionId,
         { mcpCapabilities: { http: true } },
         'devin',
-        undefined,
-        undefined,
         host.ctx.tools.schemas(lead),
       ),
     )

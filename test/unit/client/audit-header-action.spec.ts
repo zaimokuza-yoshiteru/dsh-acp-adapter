@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AcpAuditTimelineEntry } from '../../../src/contract/remote.ts'
+import { auditTimelineRowOf } from '../../../src/host/composition/audit-row.ts'
 import {
   auditEntryMatchesFilter,
   auditEntryMatchesQuery,
@@ -108,6 +109,85 @@ describe('ACP audit header utility behavior', () => {
     expect(zhText).toContain('/tmp/file · 成功')
     expect(enText).toContain('/tmp/file · Succeeded')
     expect(zhText).not.toContain('filesystem.operation')
+  })
+
+  it.each([en, zh])('shows the final answer source and option separately from the AI risk judgment', (locale) => {
+    const t = (key: keyof typeof en) => locale[key]
+    const base = {
+      schemaVersion: 2 as const,
+      time: 1,
+      seq: 1,
+      recordId: 'row',
+      dshSessionId: 'test',
+      kind: 'permission' as const,
+    }
+    const decision = {
+      phase: 'decided' as const,
+      requestId: 'request',
+      agentSessionId: 'agent',
+      toolCallId: 'write',
+      outcome: 'selected' as const,
+    }
+    const automatic = auditTimelineRowOf({
+      ...base,
+      data: { ...decision, decisionVia: 'devin-ai', selectedOptionKind: 'allow_once' },
+    })
+    const manual = auditTimelineRowOf({
+      ...base,
+      data: { ...decision, decisionVia: 'native-question', selectedOptionKind: 'reject_once' },
+    })
+    const high = auditTimelineRowOf({
+      ...base,
+      data: {
+        phase: 'ai-review-result',
+        requestId: 'request',
+        agentSessionId: 'agent',
+        toolCallId: 'write',
+        attemptId: 'attempt',
+        model: 'swe-2-high',
+        policyVersion: '1',
+        operationHash: 'digest',
+        durationMs: 5,
+        status: 'high',
+        reason: 'May expose private documents',
+      },
+    })
+    expect(auditSummaryOf(t, automatic)).toBe(
+      [locale.auditSummaryAiDecision, 'write', locale.auditAllowOnce].join(' · '),
+    )
+    expect(auditSummaryOf(t, manual)).toBe(
+      [locale.auditSummaryCardDecision, 'write', locale.auditRejectOnce].join(' · '),
+    )
+    expect(auditSummaryOf(t, high)).toBe(
+      [locale.auditSummaryReviewResult, 'swe-2-high', locale.auditRiskHigh].join(' · '),
+    )
+    expect(auditRecordedCause(high)).toBe('May expose private documents')
+  })
+
+  it('distinguishes a CodeBuddy result block from a data-protection observation in both locales', () => {
+    const base = {
+      schemaVersion: 2 as const,
+      time: 1,
+      seq: 1,
+      recordId: 'row',
+      dshSessionId: 's',
+      kind: 'permission' as const,
+    }
+    const source = {
+      phase: 'codebuddy-review' as const,
+      agentSessionId: 'agent',
+      toolCallId: 'call',
+      toolName: 'Read',
+      decidedBy: 'ai' as const,
+    }
+    const blocked = auditTimelineRowOf({ ...base, data: { ...source, scope: 'tool_result', decision: 'deny' } })
+    const protectedData = auditTimelineRowOf({ ...base, data: { ...source, scope: 'sensitive', decision: 'allow' } })
+    expect(blocked.severity).toBe('warning')
+    expect(protectedData.severity).toBe('info')
+    expect(auditSummaryOf((key) => en[key], blocked)).toBe('CodeBuddy security review · Read · Tool result blocked')
+    expect(auditSummaryOf((key) => zh[key], blocked)).toBe('CodeBuddy 安全审查 · Read · 工具结果已拦截')
+    expect(auditSummaryOf((key) => en[key], protectedData)).toContain('Sensitive data protected')
+    expect(auditSummaryOf((key) => zh[key], protectedData)).toContain('敏感数据已受保护')
   })
 
   it('does not translate Agent identifiers that happen to match status codes', () => {

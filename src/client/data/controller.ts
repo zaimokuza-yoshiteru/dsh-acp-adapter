@@ -148,8 +148,9 @@ export class AcpPanelController {
         checkingAgentIds: [],
         agentErrors: {},
         ...(hostVersion === undefined ? {} : { hostVersion }),
+        ...(result.value?.localReviewUnavailable === true ? { localReviewUnavailable: true } : {}),
       }
-      this.sink?.healthReady(rows, fetchedAt, hostVersion)
+      this.sink?.healthReady(this.health)
     } catch (error: unknown) {
       this.failHealth(errorMessageOf(error))
     } finally {
@@ -228,6 +229,11 @@ export class AcpPanelController {
       )
     }
     const id = draft.id.trim()
+    const previous = editingId === undefined ? undefined : agents[editingId]
+    // Only the model selector changes this preference. A fresh launch probe may
+    // invalidate the catalog, but must not silently select another reviewer.
+    if (previous?.openCodeReviewModel !== undefined)
+      validation.config.openCodeReviewModel = previous.openCodeReviewModel
     const ops: AcpSettingsOp[] =
       editingId !== undefined && editingId !== id
         ? [
@@ -237,16 +243,13 @@ export class AcpPanelController {
         : [{ op: 'set', path: ['agents', id], value: { ...validation.config, args: [...validation.config.args] } }]
     const failure = await this.mutate(ops)
     if (failure === undefined && !this.disposed) {
-      const previous = agents[id]
-      if (
-        editingId === undefined ||
-        (editingId === id && previous && acpProbeConfigKey(previous) !== acpProbeConfigKey(validation.config))
-      ) {
-        if (this.health.status === 'loading') this.pendingChecks.add(id)
-        else void this.refreshAgentHealth(id)
-      } else if (editingId !== id) {
+      if (editingId !== undefined && editingId !== id) {
         this.forgetAgentHealth(editingId)
         this.sink?.resync(this.project())
+      }
+      if (editingId !== id || !previous || acpProbeConfigKey(previous) !== acpProbeConfigKey(validation.config)) {
+        if (this.health.status === 'loading') this.pendingChecks.add(id)
+        else void this.refreshAgentHealth(id)
       }
     }
     return failure
@@ -267,10 +270,18 @@ export class AcpPanelController {
     return failure
   }
 
-  /** Persist the default approval behavior for DSH native tools in new sessions. */
-  async setToolApprovalDefault(policy: 'auto' | 'ask'): Promise<string | undefined> {
-    if (policy !== 'auto' && policy !== 'ask') throw new TypeError('Invalid DSH tool approval policy')
-    return this.mutate([{ op: 'set', path: ['toolApprovalDefault'], value: policy }])
+  async setAiApproval(enabled: boolean): Promise<string | undefined> {
+    return this.mutate([{ op: 'set', path: ['aiApproval'], value: enabled }])
+  }
+
+  async setDevinReviewModel(model: string): Promise<string | undefined> {
+    return this.mutate([{ op: 'set', path: ['devinReviewModel'], value: model }])
+  }
+
+  async setOpenCodeReviewModel(id: string, model: string): Promise<string | undefined> {
+    if (!Object.hasOwn(this.scopeSnapshot.value?.agents ?? {}, id)) throw new TypeError('Unknown OpenCode profile')
+    const path = ['agents', id, 'openCodeReviewModel']
+    return this.mutate([model === '' ? { op: 'unset', path } : { op: 'set', path, value: model }])
   }
 
   /**

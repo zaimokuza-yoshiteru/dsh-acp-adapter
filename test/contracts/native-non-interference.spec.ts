@@ -21,7 +21,11 @@ describe('native DSH non-interference contract', () => {
     expect(patch).not.toContain('agent-loop-acp')
     expect(patch).not.toContain('ui-model-selection')
     expect(client).not.toContain("register({ name: 'model'")
-    expect(acpSettingsSchema({ agents: {} })).toEqual({ agents: {}, toolApprovalDefault: 'auto' })
+    expect(acpSettingsSchema({ agents: {} })).toEqual({
+      agents: {},
+      aiApproval: false,
+      devinReviewModel: 'swe-2-high',
+    })
   })
 
   it('keeps native A→A and A→B dispatch independent after ACP composition is installed', async () => {

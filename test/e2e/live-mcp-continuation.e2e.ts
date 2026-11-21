@@ -289,7 +289,6 @@ it.skipIf(!optedIn)(
       const profileId = profile === 'codebuddy' ? 'codebuddy-code' : profile
       const provider = `acp-${profileId}`
       await host.ctx.settings.replace('dsh-acp-adapter', {
-        toolApprovalDefault: 'auto',
         agents: {
           [profileId]: {
             name: `Live ${profile} MCP continuation`,

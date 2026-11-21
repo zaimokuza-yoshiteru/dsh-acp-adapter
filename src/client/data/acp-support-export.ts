@@ -1,3 +1,4 @@
+import { publicAuditStatusLabels } from './audit-status.ts'
 import type { AcpAuditTimelineEntry, AcpRemoteLike } from './acp-remote.ts'
 import type { AcpActivityView, AcpRecoveryView } from '../../contract/remote.ts'
 
@@ -16,46 +17,6 @@ const stableSupportExportReadCodes = new Set([
   'gateway/bad-request',
 ])
 
-const safeStatuses = new Set([
-  'ok',
-  'error',
-  'aborted',
-  'timeout',
-  'concurrent-change',
-  'selected',
-  'cancelled',
-  'auto-approved',
-  'approval-required',
-  'policy-unavailable',
-  'bridge-unavailable',
-  'inactive-connection',
-  'inactive-prompt',
-  'identity-unmatched',
-  'invalid-tool-name',
-  'not-coordination',
-  'allow-once-unavailable',
-  'allow_once',
-  'allow_always',
-  'reject_once',
-  'reject_always',
-  'inherited',
-  'blank',
-  'agent-does-not-advertise-fork',
-  'parent-not-idle',
-  'parent-recovery-required',
-  'parent-binding-unavailable',
-  'parent-binding-mismatch',
-  'seed-not-latest-semantic-boundary',
-  'candidate-not-available',
-  'started',
-  'running',
-  'exited',
-  'killed',
-  'released',
-  'output-summary',
-  'stop-requested',
-  'exit-unverified',
-])
 const safeAuditKinds = new Set([
   'binding',
   'permission',
@@ -230,7 +191,7 @@ function safeAuditRow(entry: AcpAuditTimelineEntry): AcpSupportAuditRow {
     severity: entry.severity,
     category: entry.category,
     summaryCode: entry.summaryCode,
-    status: entry.status !== null && safeStatuses.has(entry.status) ? entry.status : null,
+    status: entry.status !== null && Object.hasOwn(publicAuditStatusLabels, entry.status) ? entry.status : null,
   }
 }
 

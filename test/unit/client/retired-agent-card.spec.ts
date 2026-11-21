@@ -4,6 +4,7 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
   Input: 'Input',
   Menu: 'Menu',
   Tag: 'Tag',
+  Switch: 'Switch',
   Tooltip: 'Tooltip',
   IconPlusOutlineMedium: 'Plus',
   IconChevronDownOutlineMedium: 'Chevron',
@@ -39,17 +40,107 @@ function renderPanel(snapshot: AcpPanelSnapshot, locale = en) {
     refreshAgentHealth: vi.fn(),
     saveAgent: vi.fn(),
     deleteAgent: vi.fn(),
-    setToolApprovalDefault: vi.fn(),
+    setAiApproval: vi.fn(),
+    setOpenCodeReviewModel: vi.fn(),
+    setDevinReviewModel: vi.fn(),
     countBoundSessions: vi.fn(),
   }
-  const tree = expand(AcpSection({ t: (key) => locale[key], useStore: (selector) => selector(snapshot), panel }))
+  const tree = expand(
+    AcpSection({
+      t: (key, params) => locale[key].replace('{name}', String(params?.name ?? '')),
+      useStore: (selector) => selector(snapshot),
+      panel,
+    }),
+  )
   return { panel, tree }
 }
+
+it.each([zh, en])(
+  'shows one global switch for multiple Agents and keeps per-profile review model choices',
+  (locale) => {
+    const config = {
+      name: 'Team Devin',
+      command: '/opt/tools/devin',
+      args: ['acp'],
+      env: {},
+      runtime: 'devin' as const,
+    }
+    const row = {
+      id: 'company',
+      ...config,
+      loginHint: null,
+      executable: true,
+      version: null,
+      state: 'saved-unverified' as const,
+      probe: { status: 'never' as const, at: null },
+      devinReviewModels: [{ id: 'review-2', name: 'Reviewer Two' }],
+    }
+    const work = { name: 'Work', command: 'opencode', args: ['acp'], env: {} }
+    const openCode = { ...row, ...work, id: 'work', openCodeReviewModels: [{ id: 'work/fast', name: 'Fast' }] }
+    const snapshot: AcpPanelSnapshot = {
+      settings: {
+        status: 'ready',
+        writable: true,
+        agents: { company: config, work, home: { ...work, name: 'Home', openCodeReviewModel: 'old/custom' } },
+        aiApproval: false,
+        devinReviewModel: 'review-2',
+        revision: 3,
+      },
+      health: {
+        status: 'ready',
+        rows: [row, openCode, { ...openCode, id: 'home', openCodeReviewModels: [] }],
+        fetchedAt: 1,
+        message: undefined,
+        checkingAgentIds: [],
+        agentErrors: {},
+      },
+    }
+    const off = renderPanel(snapshot, locale)
+    const switches = nodes(off.tree).filter((node) => node.type === 'Switch')
+    expect(switches).toHaveLength(1)
+    expect(switches[0]!.props).toMatchObject({ checked: false, label: locale.aiApproval })
+    expect(text(off.tree)).toContain(locale.aiApprovalHelp)
+    expect(nodes(off.tree).filter((node) => node.type === 'Menu' && node.props.selectedId !== undefined)).toHaveLength(
+      0,
+    )
+    ;(switches[0]!.props.onChange as (next: boolean) => void)(true)
+    expect(off.panel.setAiApproval).toHaveBeenCalledExactlyOnceWith(true)
+    const on = renderPanel({ ...snapshot, settings: { ...snapshot.settings, aiApproval: true } }, locale)
+    const menus = nodes(on.tree).filter((node) => node.type === 'Menu' && node.props.selectedId !== undefined)
+    expect(menus).toHaveLength(3)
+    const sessionModel = menus.find((node) => node.props.selectedId === '')!
+    expect(sessionModel.props.items).toEqual([
+      { id: '', label: locale.reviewSessionModel },
+      { id: 'work/fast', label: 'Fast' },
+    ])
+    ;(sessionModel.props.onSelect as (value: string) => void)('work/fast')
+    expect(on.panel.setOpenCodeReviewModel).toHaveBeenCalledExactlyOnceWith('work', 'work/fast')
+    expect(on.panel.setDevinReviewModel).not.toHaveBeenCalled()
+    expect(text(on.tree)).toContain(locale.reviewModelMissing)
+    const missing = renderPanel({ ...snapshot, health: { ...snapshot.health, rows: [] } }, locale)
+    expect(nodes(missing.tree).filter((node) => node.type === 'Switch')).toHaveLength(1)
+    expect(text(missing.tree)).toContain(locale.aiApprovalHelp)
+    const unsupported = { ...snapshot.health, rows: [], localReviewUnavailable: true as const }
+    expect(text(renderPanel({ ...snapshot, health: unsupported }, locale).tree)).not.toContain(
+      locale.aiApprovalUnavailable,
+    )
+    expect(
+      text(renderPanel({ health: unsupported, settings: { ...snapshot.settings, aiApproval: true } }, locale).tree),
+    ).toContain(locale.aiApprovalUnavailable)
+  },
+)
 
 it.each([zh, en])('shows a localized retired configuration and keeps explicit deletion available', (locale) => {
   const config = { name: 'Old saved profile', command: 'old-cli', args: [], env: {}, runtime: 'kimi' as const }
   const snapshot: AcpPanelSnapshot = {
-    settings: { status: 'ready', writable: true, agents: { old: config }, toolApprovalDefault: 'auto', revision: 1 },
+    settings: {
+      status: 'ready',
+      writable: true,
+      agents: { old: config },
+      aiApproval: false,
+      devinReviewModel: 'swe-2-high',
+      revision: 1,
+    },
     health: {
       status: 'ready',
       rows: [
@@ -87,7 +178,14 @@ it.each([zh, en])('shows a localized retired configuration and keeps explicit de
 
 it('recovers a failed Host health read even when the user has no configured Agent', () => {
   const { tree, panel } = renderPanel({
-    settings: { status: 'ready', writable: true, agents: {}, toolApprovalDefault: 'auto', revision: 1 },
+    settings: {
+      status: 'ready',
+      writable: true,
+      agents: {},
+      aiApproval: false,
+      devinReviewModel: 'swe-2-high',
+      revision: 1,
+    },
     health: {
       status: 'unreachable',
       rows: [],

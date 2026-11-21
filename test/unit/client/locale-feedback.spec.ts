@@ -224,7 +224,8 @@ it.each(['save', 'delete'] as const)(
         status: 'ready',
         writable: true,
         agents: { custom: { name: 'Private Agent', command: 'my-agent', args: [], env: {} } },
-        toolApprovalDefault: 'auto',
+        aiApproval: false,
+        devinReviewModel: 'swe-2-high',
         revision: 1,
       },
       health: { status: 'ready', rows: [], fetchedAt: 1, message: undefined, checkingAgentIds: [], agentErrors: {} },
@@ -235,7 +236,9 @@ it.each(['save', 'delete'] as const)(
       saveAgent: vi.fn(async () => 'PRIVATE_HOST_FAILURE ACP_SAVE_FAILED'),
       deleteAgent: vi.fn(async () => 'PRIVATE_HOST_FAILURE ACP_DELETE_FAILED'),
       countBoundSessions: vi.fn(async () => 0),
-      setToolApprovalDefault: vi.fn(),
+      setAiApproval: vi.fn(),
+      setOpenCodeReviewModel: vi.fn(),
+      setDevinReviewModel: vi.fn(),
     }
     const section = AcpSection({ t: copy.t, useStore: (select) => select(snapshot), panel }) as Element
     const loaded = () => (section.type as (props: unknown) => unknown)(section.props)

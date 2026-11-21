@@ -260,9 +260,6 @@ it('claims a prompt before awaiting local feedback flush so concurrent prompts c
       flushStarted.resolve()
       await releaseFlush.promise
     },
-    permission() {
-      return undefined
-    },
     async close() {},
   }
   const runtime = await fixture(false, undefined, mcpLease)
@@ -287,9 +284,6 @@ it('forwards successful Host-result evidence and separates bridge instructions i
       forwarded = onSuccessfulToolResult
     },
     endPrompt() {},
-    permission() {
-      return undefined
-    },
     async close() {},
   }
   const runtime = await fixture(false, undefined, mcpLease, true)
@@ -320,7 +314,6 @@ it('delivers the current projection and bridge once per confirmed connection, in
     servers: [],
     beginPrompt() {},
     endPrompt() {},
-    permission: () => undefined,
     close: async () => {},
   }
   const runtime = await fixture(false, undefined, lease, true)

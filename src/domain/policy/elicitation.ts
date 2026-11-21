@@ -4,6 +4,7 @@
  * 表单值会依据协商得到的基础 schema 校验，提交值不会持久化。SDK 目前仍将
  * 这部分协议标记为不稳定，因此未知或格式错误的变体会被拒绝，不做猜测性兼容。
  */
+import type { AcpQuestionItem } from '../../contract/permission-question.ts'
 import type * as acp from '@agentclientprotocol/sdk'
 import { permissionCopy } from './permission-copy.ts'
 import type { AcpPermissionPresentation } from './events.ts'
@@ -361,14 +362,7 @@ function validateValues(
 /** The narrow structural face of DSH's native user-question service. */
 export interface AcpNativeUserQuestionService {
   ask(request: {
-    readonly questions: readonly {
-      readonly id: string
-      readonly question: string
-      readonly detail?: string
-      readonly header?: string
-      readonly options?: readonly { readonly label: string; readonly description?: string }[]
-      readonly multiSelect?: boolean
-    }[]
+    readonly questions: readonly AcpQuestionItem[]
     readonly agent?: unknown
     readonly signal?: AbortSignal
   }): Promise<{

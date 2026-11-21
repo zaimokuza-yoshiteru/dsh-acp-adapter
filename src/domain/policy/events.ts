@@ -212,12 +212,13 @@ function boundedAuditText(value: string, max = ACP_PERMISSION_AUDIT_FIELD_MAX_CH
 }
 
 /** canonical JSON（对象键排序递归）：哈希与摘要的稳定输入（与生产者键序无关）。 */
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`
+function canonicalJson(value: unknown, omitUndefinedFields = false): string {
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item, omitUndefinedFields)).join(',')}]`
   if (isPlainObjectValue(value)) {
-    const body = Object.keys(value)
+    const keys = Object.keys(value)
+    const body = (omitUndefinedFields ? keys.filter((key) => value[key] !== undefined) : keys)
       .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key], omitUndefinedFields)}`)
       .join(',')
     return `{${body}}`
   }
@@ -237,6 +238,32 @@ export function summarizeRawInputForAudit(rawInput: unknown): { summary: string;
       ? `${redacted.slice(0, RAW_INPUT_AUDIT_SUMMARY_MAX_CHARS)}…(+${String(redacted.length - RAW_INPUT_AUDIT_SUMMARY_MAX_CHARS)} chars)`
       : redacted
   return { summary, hash }
+}
+
+/** The operation fields shared by the review prompt and its audit fingerprint. */
+export function permissionOperationEvidence(call: ToolCallUpdate) {
+  return {
+    name: call.name,
+    title: call.title,
+    kind: call.kind,
+    rawInput: call.rawInput,
+    locations: call.locations,
+    content: call.content?.map((item) => {
+      if (item.type === 'diff')
+        return { type: 'diff' as const, path: item.path, oldText: item.oldText, newText: item.newText }
+      if (item.type === 'content' && item.content.type === 'text')
+        return { type: 'text' as const, text: item.content.text }
+      // A reviewer cannot inspect unexpanded streams or non-text resources.
+      return { type: 'unavailable' as const }
+    }),
+    permissionRule: call._meta?.['cognition.ai/permissionRule'],
+  }
+}
+
+export function permissionOperationHash(call: ToolCallUpdate): string {
+  return createHash('sha256')
+    .update(canonicalJson(permissionOperationEvidence(call), true))
+    .digest('hex')
 }
 
 /** `asked` phase payload: the question exactly as the agent posed it. */
@@ -292,7 +319,14 @@ export interface AcpPermissionDecidedAuditData {
   /** Exact option kind selected, without collapsing allow_once/allow_always. */
   readonly selectedOptionKind?: PermissionOption['kind']
   /** Which answerer produced the decision; the first two values are legacy. */
-  readonly decisionVia?: 'acp-ui' | 'native-fallback' | 'native-question' | 'native-approval' | 'external-policy'
+  readonly decisionVia?:
+    | 'acp-ui'
+    | 'native-fallback'
+    | 'native-question'
+    | 'native-approval'
+    | 'external-policy'
+    | 'devin-ai'
+    | 'opencode-ai'
   readonly presentation?: AcpPermissionPresentation
   /**
    * Current vocabulary includes `cancelled`, `question-service-unavailable`,
@@ -305,7 +339,54 @@ export interface AcpPermissionDecidedAuditData {
 
 /** The permission audit payload union (discriminant: `phase`). */
 export type AcpPermissionAuditData =
-  AcpPermissionAskedAuditData | AcpPermissionDecidedAuditData | AcpPermissionCheckAuditData | AcpPreToolDenialAuditData
+  | AcpPermissionAskedAuditData
+  | AcpPermissionDecidedAuditData
+  | {
+      readonly phase: 'decision-withdrawn'
+      readonly requestId: string
+      readonly agentSessionId: string
+      readonly toolCallId: string
+      readonly outcome: 'cancelled'
+    }
+  | AcpPermissionCheckAuditData
+  | AcpPreToolDenialAuditData
+  | AcpCodeBuddyReviewAuditData
+  | AcpAiReviewAuditData
+
+/** Agent-reported security outcomes. These observations never answer a permission request. */
+export type AcpCodeBuddyReviewAuditData = {
+  readonly phase: 'codebuddy-review'
+  readonly agentSessionId: string
+  readonly toolCallId: string
+  readonly toolName?: string
+  readonly decidedBy: 'ai'
+} & (
+  | { readonly scope: 'sandbox' | 'tool_call' | 'tool_result'; readonly decision: 'deny' }
+  | { readonly scope: 'sensitive'; readonly decision: 'allow' }
+)
+
+export type AiReviewOutcome =
+  | { readonly status: 'high' | 'not_high'; readonly reason: string }
+  | { readonly status: 'cancelled' | 'error' | 'timeout' }
+
+/** All phases share the original asked record, which owns the operation summary and its hash. */
+export type AcpAiReviewAuditData = {
+  readonly requestId: string
+  readonly attemptId: string
+  /** Older review records were produced exclusively by Devin. */
+  readonly reviewAgent?: 'devin' | 'opencode'
+  readonly agentSessionId: string
+  readonly toolCallId: string
+  readonly model: string
+  readonly policyVersion: string
+  /** Digest of the reviewed operation, including file deltas received without rawInput. */
+  readonly operationHash: string
+  /** Absent in the original fingerprint, which included diffs but omitted tool content text. */
+  readonly operationHashVersion?: 2
+} & (
+  | { readonly phase: 'ai-review-started' }
+  | ({ readonly phase: 'ai-review-result'; readonly durationMs: number } & AiReviewOutcome)
+)
 
 export interface AcpPreToolDenialAuditData {
   readonly phase: 'pre-tool'
@@ -334,7 +415,14 @@ export function createPreToolDenialAudit(
   }
 }
 
-export interface AcpPermissionCheckAuditData extends AcpPermissionCheck {
+export interface AcpPermissionCheckAuditData extends Omit<AcpPermissionCheck, 'reason'> {
+  /** Earlier plugin versions also recorded bridge policy outcomes. */
+  readonly reason:
+    | AcpPermissionCheck['reason']
+    | 'auto-approved'
+    | 'policy-unavailable'
+    | 'not-coordination'
+    | 'allow-once-unavailable'
   readonly phase: 'bridge'
   readonly agentSessionId: string
   readonly toolCallId: string
@@ -381,7 +469,7 @@ export interface PermissionDecidedAuditInit {
   readonly optionId?: string
   readonly approvalOutcome?: AcpApprovalOutcome
   readonly selectedOptionKind?: PermissionOption['kind']
-  readonly decisionVia?: 'acp-ui' | 'native-fallback' | 'native-question' | 'native-approval' | 'external-policy'
+  readonly decisionVia?: AcpPermissionDecidedAuditData['decisionVia']
   readonly presentation?: AcpPermissionPresentation
   readonly note?: string
 }

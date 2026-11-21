@@ -206,7 +206,8 @@ async function fixture(repair = false, catalogBarrier = false) {
     async apply(scope: Context) {
       await installInstalledProfileRegistry(scope, {
         agents: { get: () => ({ claude: { name: 'Claude fixture', command: 'unused', args: [], env: {} } }) },
-        toolApprovalDefault: { get: () => 'auto' },
+        aiApproval: { get: () => false },
+        devinReviewModel: { get: () => 'swe-2-high' },
       })
     },
   })

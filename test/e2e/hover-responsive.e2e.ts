@@ -59,7 +59,11 @@ async function checkKeyboardFocus(page: Page, target: Locator): Promise<void> {
   expect(
     await target.evaluate((element) => element === document.activeElement && element.matches(':focus-visible')),
   ).toBe(true)
-  expect(await target.evaluate((element) => getComputedStyle(element).boxShadow)).not.toBe('none')
+  const visibleRing = await target.evaluate((element) => {
+    const style = getComputedStyle(element)
+    return style.boxShadow !== 'none' || (style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) > 0)
+  })
+  expect(visibleRing).toBe(true)
 }
 
 /** Every visible toolbar control must fit and own its hit target before tapping. */
@@ -120,7 +124,6 @@ it.skipIf(Boolean(process.env.DSH_E2E_ELECTRON))(
     let stage = 'setup'
     try {
       await host.ctx.settings.replace('dsh-acp-adapter', {
-        toolApprovalDefault: 'ask',
         agents: {
           codex: {
             name: 'Hover fixture',
@@ -252,24 +255,27 @@ it.skipIf(Boolean(process.env.DSH_E2E_ELECTRON))(
           const detail = await openAcpPluginDetail(page)
           const panel = detail.locator('[data-dsh-acp-panel]')
           const add = panel.getByRole('button', { name: 'Add Agent', exact: true })
-          const approval = panel.getByRole('button', { name: 'Default DSH tool approval', exact: true })
+          const approval = panel.getByRole('switch', { name: 'AI approval', exact: true })
           if (!hoverCapable)
             await page.screenshot({
               path: join(directory, `touch-390-settings-top-${theme}.png`),
               animations: 'disabled',
             })
-          for (const [target, label] of [
-            [add, 'add agent'],
-            [approval, 'default approval'],
-          ] as const) {
-            await checkHover(page, target, hoverCapable, 'backgroundColor', evidence, theme, label)
-            await checkKeyboardFocus(page, target)
-            const background = await style(target, 'backgroundColor')
-            await activate(target)
-            await page.getByRole('menu').waitFor({ state: 'visible' })
-            if (!hoverCapable) expect(await style(target, 'backgroundColor')).toBe(background)
-            await page.keyboard.press('Escape')
-          }
+          await checkHover(page, add, hoverCapable, 'backgroundColor', evidence, theme, 'add agent')
+          await checkKeyboardFocus(page, add)
+          const addBackground = await style(add, 'backgroundColor')
+          await activate(add)
+          await page.getByRole('menu').waitFor({ state: 'visible' })
+          if (!hoverCapable) expect(await style(add, 'backgroundColor')).toBe(addBackground)
+          await page.keyboard.press('Escape')
+          await checkKeyboardFocus(page, approval)
+          expect(await approval.getAttribute('aria-checked')).toBe('false')
+          const off = await style(approval, 'backgroundColor')
+          await activate(approval)
+          await expect.poll(() => approval.getAttribute('aria-checked')).toBe('true')
+          expect(await style(approval, 'backgroundColor')).not.toBe(off)
+          await activate(approval)
+          await expect.poll(() => approval.getAttribute('aria-checked')).toBe('false')
           const card = panel.locator('[data-dsh-acp-agent="codex"]')
           const remove = card.getByRole('button', { name: 'Delete', exact: true }).first()
           await checkHover(page, remove, hoverCapable, 'backgroundColor', evidence, theme, 'delete agent')
@@ -334,7 +340,7 @@ it.skipIf(Boolean(process.env.DSH_E2E_ELECTRON))(
             completed,
             stage,
             scope:
-              'Keyless Chromium: one local mock ACP prompt; desktop hover and 390px touch in light/dark; no Agent deletion or settings save; Electron touch not claimed.',
+              'Chromium with one local mock ACP prompt, desktop hover and 390px touch in light and dark themes. Each AI approval toggle is restored.',
             promptCount: promptCount(),
             errors,
             evidence,

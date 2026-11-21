@@ -4,7 +4,6 @@ export type AcpUiOutcome =
   | 'deleted'
   | 'delete-failed'
   | 'session-option-failed'
-  | 'tool-approval-failed'
   | 'fork-failed'
   | 'fork-workspace-attach-failed'
   | 'fork-storage-failed'

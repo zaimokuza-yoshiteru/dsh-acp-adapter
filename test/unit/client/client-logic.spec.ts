@@ -727,17 +727,20 @@ describe('panelSettingsOf', () => {
       status: 'ready',
       writable: true,
       agents: { devin: devinConfig },
-      toolApprovalDefault: 'auto',
+      aiApproval: false,
+      devinReviewModel: 'swe-2-high',
       revision: 3,
     })
     expect(
       panelSettingsOf({
         status: 'ready',
-        value: { agents: {}, toolApprovalDefault: 'ask' },
+        value: { agents: {}, aiApproval: true },
         revision: 4,
         writable: true,
-      }).toolApprovalDefault,
-    ).toBe('ask')
+      }).aiApproval,
+    ).toBe(true)
+    const legacy = { agents: {}, devinAiApproval: true, toolApprovalDefault: 'auto' }
+    expect(panelSettingsOf({ status: 'ready', value: legacy, revision: 4, writable: true }).aiApproval).toBe(false)
     expect(panelSettingsOf({ status: 'ready', value: undefined, revision: 3, writable: false }).agents).toEqual({})
   })
 
@@ -746,7 +749,8 @@ describe('panelSettingsOf', () => {
       status: 'unavailable',
       writable: false,
       agents: {},
-      toolApprovalDefault: 'auto',
+      aiApproval: false,
+      devinReviewModel: 'swe-2-high',
       revision: undefined,
     })
     expect(panelSettingsOf({ status: 'loading', value: undefined, revision: undefined, writable: true }).status).toBe(
@@ -757,7 +761,8 @@ describe('panelSettingsOf', () => {
       status: 'invalid',
       writable: false,
       agents: {},
-      toolApprovalDefault: 'auto',
+      aiApproval: false,
+      devinReviewModel: 'swe-2-high',
       revision: 7,
     })
   })

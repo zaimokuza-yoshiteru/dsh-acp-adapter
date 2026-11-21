@@ -1,5 +1,4 @@
 import type { AcpAgentSessionSnapshotView, AcpAgentSessionOptionWrite } from '../data/acp-remote.ts'
-import type { ToolApprovalPolicySnapshot } from '../data/tool-approval-policy-stream.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import { isAcpModelOrReasoningOption } from '../../contract/config-options.ts'
 import { teamModeLabel } from '../../contract/session-modes.ts'
@@ -20,12 +19,11 @@ export interface AgentControlChoice {
   readonly description?: string | null
   readonly group?: string
   readonly current: boolean
-  readonly write:
-    AcpAgentSessionOptionWrite | { readonly kind: 'tool-approval-policy'; readonly policy: 'auto' | 'ask' }
+  readonly write: AcpAgentSessionOptionWrite
   readonly disabled: boolean
 }
 export interface AgentControlGroup {
-  readonly kind: 'mode' | 'config' | 'policy'
+  readonly kind: 'mode' | 'config'
   readonly id: string
   readonly name: string
   readonly current: string
@@ -108,26 +106,6 @@ export function agentControlMenuGroups(snapshot: AcpAgentSessionSnapshotView, t:
     })
   }
   return groups
-}
-
-export function toolApprovalPolicyGroup(snapshot: ToolApprovalPolicySnapshot, t: Translate): AgentControlGroup {
-  const disabled = !snapshot.editable
-  const choices: AgentControlChoice[] = (['auto', 'ask'] as const).map((policy) => ({
-    id: `tool-approval:${policy}`,
-    label: t(policy === 'auto' ? 'toolApprovalAuto' : 'toolApprovalAsk'),
-    current: snapshot.policy === policy,
-    description: t(policy === 'auto' ? 'toolApprovalAutoDescription' : 'toolApprovalAskDescription'),
-    write: { kind: 'tool-approval-policy', policy },
-    disabled,
-  }))
-  return {
-    kind: 'policy',
-    id: 'tool-approval-policy',
-    name: t('toolApprovalSession'),
-    current: t(snapshot.policy === 'auto' ? 'toolApprovalAuto' : 'toolApprovalAsk'),
-    description: snapshot.source === 'lead' ? t('toolApprovalInherited') : t('toolApprovalScope'),
-    choices,
-  }
 }
 
 export function agentControlLabel(snapshot: AcpAgentSessionSnapshotView, t: Translate): string {

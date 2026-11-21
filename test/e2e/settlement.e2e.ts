@@ -86,7 +86,6 @@ async function runSettlementCase(mode: 'natural' | 'stop', storageFollowup?: 'co
       if (event.type === 'turn/end') turnEndReasons.push(event.data.reason)
     })
     await host.ctx.settings.replace('dsh-acp-adapter', {
-      toolApprovalDefault: 'ask',
       agents: {
         devin: {
           name: 'Settlement fixture',

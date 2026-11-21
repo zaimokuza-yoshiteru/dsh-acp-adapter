@@ -1,5 +1,4 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { Buffer } from 'node:buffer'
 import { createServer } from 'node:http'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
@@ -16,12 +15,17 @@ import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
 import { AcpHostSettlementError } from '../../runtime/session/mcp-lease.ts'
 import type { AcpMcpLease } from '../../runtime/session/mcp-lease.ts'
 import type { AcpPermissionCheck } from '../../domain/policy/permission-check.ts'
+import { rejectPermissionOnce, withDshTeamPermissionPresentation } from '../../domain/policy/permissions.ts'
 import {
-  ACP_PERMISSION_ID_MAX_BYTES,
-  ACP_PERMISSION_OPTIONS_MAX,
-  withDshTeamPermissionPresentation,
-} from '../../domain/policy/permissions.ts'
-import { isAntigravityInteractionCall } from '../../domain/policy/antigravity-question.ts'
+  isAntigravityInteractionCall,
+  antigravityToolIdentity,
+  antigravityTitledTool,
+  antigravityPresentationTool,
+} from '../../agents/antigravity.ts'
+import { codeBuddyDeferredInput } from '../../agents/codebuddy.ts'
+import { codexMcpInput, codexElicitationTool, codexConflictsWithTool } from '../../agents/codex.ts'
+import { devinTitledTool, devinToolTitleHint } from '../../agents/devin.ts'
+import { qualifiedMcpTool } from '../../agents/mcp-tool.ts'
 import { toolContent } from './tool-content.ts'
 import { generatedContextBlock } from '../../runtime/text-block-boundary.ts'
 import { ToolExecutionScheduler } from './tool-execution-scheduler.ts'
@@ -455,8 +459,6 @@ export async function createDshToolBridge(
   sessionId: string,
   capabilities: acp.AgentCapabilities | undefined,
   wireProfile?: string,
-  resolveApprovalPolicy?: () => Promise<'auto' | 'ask'>,
-  onPolicyContextChange?: () => void,
   schemas?: readonly ToolSchema[],
   readAdmission?: ReadStepToolAdmission,
 ): Promise<AcpMcpLease | undefined> {
@@ -587,123 +589,29 @@ export async function createDshToolBridge(
   const names = definitions
   const scopedInstructions = bridgeInstructions(names)
   const presented = new Map<string, string>()
-  const plainRecord = (value: unknown): Record<string, unknown> | undefined => {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
-    const prototype = Object.getPrototypeOf(value)
-    return prototype === Object.prototype || prototype === null ? (value as Record<string, unknown>) : undefined
-  }
-  const qualifiedTool = (value: unknown): string | undefined =>
-    typeof value === 'string' && value.startsWith(`mcp__${serverName}__`)
-      ? value.slice(`mcp__${serverName}__`.length)
-      : undefined
-  const codebuddyDeferredInput = (
-    call: acp.ToolCallUpdate,
-  ): { readonly tool?: string; readonly params?: Record<string, unknown> } | undefined => {
-    if (wireProfile !== 'codebuddy') return undefined
-    const input = plainRecord(call.rawInput)
-    const wrapper = call.name === 'DeferExecuteTool'
-    const hasTarget = input !== undefined && Object.hasOwn(input, 'toolName')
-    if (!wrapper && !hasTarget) return undefined
-    const qualifiedTarget = qualifiedTool(input?.['toolName'])
-    const params = plainRecord(input?.['params'])
-    return {
-      ...(qualifiedTarget === undefined || params === undefined ? {} : { tool: qualifiedTarget, params }),
-    }
-  }
   const identityOf = (call: acp.ToolCallUpdate): { tool?: string; source?: AcpPermissionCheck['identitySource'] } => {
-    if (wireProfile === 'antigravity') {
-      if (isAntigravityInteractionCall(call)) return {}
-      const metadata = plainRecord(call._meta)
-      const mcp = plainRecord(metadata?.mcp)
-      const hasMetadataIdentity =
-        metadata !== undefined &&
-        ['mcp', 'is_mcp_tool_call', 'server', 'serverName', 'tool', 'toolName'].some((key) =>
-          Object.hasOwn(metadata, key),
-        )
-      if (metadata === undefined || mcp === undefined) {
-        return {
-          ...(call.name == null ? {} : { source: 'name' }),
-          ...(hasMetadataIdentity ? { source: 'antigravity-meta' } : {}),
-        }
-      }
-
-      const server = mcp.server
-      const tool = mcp.tool
-      if (typeof server !== 'string' || server.length === 0 || server !== serverName)
-        return { source: 'antigravity-meta' }
-      if (typeof tool !== 'string' || tool.length === 0) return { source: 'antigravity-meta' }
-      const metaMatches = (record: Record<string, unknown>, key: string, expected: string): boolean =>
-        !Object.hasOwn(record, key) || record[key] === expected
-      const nameMatches =
-        call.name == null ||
-        call.name === tool ||
-        call.name === `mcp__${serverName}__${tool}` ||
-        call.name === `${serverName}_${tool}`
-      const claudeCode = plainRecord(metadata.claudeCode)
-      const claudeIdentityValid =
-        !Object.hasOwn(metadata, 'claudeCode') ||
-        (claudeCode !== undefined &&
-          Object.hasOwn(claudeCode, 'toolName') &&
-          qualifiedTool(claudeCode.toolName) === tool)
-      const devinIdentityValid =
-        !Object.hasOwn(metadata, 'cognition.ai/toolName') || qualifiedTool(metadata['cognition.ai/toolName']) === tool
-
-      if (
-        !nameMatches ||
-        (Object.hasOwn(metadata, 'is_mcp_tool_call') && metadata.is_mcp_tool_call !== true) ||
-        !metaMatches(metadata, 'server', server) ||
-        !metaMatches(metadata, 'serverName', server) ||
-        !metaMatches(metadata, 'tool', tool) ||
-        !metaMatches(metadata, 'toolName', tool) ||
-        !metaMatches(mcp, 'serverName', server) ||
-        !metaMatches(mcp, 'toolName', tool) ||
-        !claudeIdentityValid ||
-        !devinIdentityValid
-      )
-        return { source: 'antigravity-meta' }
-      return { tool, source: 'antigravity-meta' }
-    }
-    const qualified = qualifiedTool
-    const input = plainRecord(call.rawInput)
+    if (wireProfile === 'antigravity') return antigravityToolIdentity(call, serverName)
     const meta = call._meta?.claudeCode as { toolName?: unknown } | undefined
     const candidates: Array<{ tool: string | undefined; source: AcpPermissionCheck['identitySource'] }> = []
-    const deferred = codebuddyDeferredInput(call)
-    if (deferred !== undefined) {
-      const target = qualifiedTool(input?.['toolName'])
-      candidates.push({
-        tool: deferred.tool,
-        source: 'codebuddy-deferred-input',
-      })
-      // A wrapper may omit name or use its documented wrapper label. A
-      // complete MCP name is also accepted only when it agrees with the
-      // nested target; every other nonempty name is conflicting evidence.
-      if (
-        call.name != null &&
-        call.name !== 'DeferExecuteTool' &&
-        (target === undefined || qualified(call.name) !== target)
-      )
-        candidates.push({ tool: undefined, source: 'codebuddy-deferred-input' })
+    const deferred = wireProfile === 'codebuddy' ? codeBuddyDeferredInput(call, serverName) : undefined
+    if (deferred) candidates.push({ tool: deferred.tool, source: 'codebuddy-deferred-input' })
+    if (wireProfile === 'codex' || wireProfile === 'codebuddy') {
+      const input = codexMcpInput(call, serverName)
+      if (input) candidates.push({ tool: input.tool, source: 'codex-input' })
     }
-    if ((wireProfile === 'codex' || wireProfile === 'codebuddy') && call._meta?.is_mcp_tool_call === true)
-      candidates.push({
-        tool: input?.server === serverName && typeof input.tool === 'string' ? input.tool : undefined,
-        source: 'codex-input',
-      })
-    if (meta?.toolName != null) candidates.push({ tool: qualified(meta.toolName), source: 'claude-meta' })
+    if (meta?.toolName != null)
+      candidates.push({ tool: qualifiedMcpTool(serverName, meta.toolName), source: 'claude-meta' })
     if (call._meta?.['cognition.ai/toolName'] != null)
-      candidates.push({ tool: qualified(call._meta['cognition.ai/toolName']), source: 'devin-meta' })
+      candidates.push({ tool: qualifiedMcpTool(serverName, call._meta['cognition.ai/toolName']), source: 'devin-meta' })
     if (typeof call.name === 'string' && call.name.startsWith('mcp__'))
-      candidates.push({ tool: qualified(call.name), source: 'name' })
+      candidates.push({ tool: qualifiedMcpTool(serverName, call.name), source: 'name' })
     // Only runtime-specific, complete labels identify a server. A bare native
     // name alone never grants approval; Devin may also repeat the exact native
     // name alongside its complete server label, which must agree byte-for-byte.
-    if (candidates.length === 0 && (call.name == null || wireProfile === 'devin' || wireProfile === 'antigravity')) {
-      if (wireProfile === 'devin' && typeof call.title === 'string') {
-        const match = /^(?:Calling|Called) (.+) from dsh$/.exec(call.title)
-        if (match?.[0] === call.title && (call.name == null || call.name === match[1])) {
-          candidates.push({ tool: match[1], source: 'devin-title' })
-        }
-      }
+    if (candidates.length === 0 && wireProfile === 'devin') {
+      const title = devinTitledTool(call.title)
+      if (title !== undefined && (call.name == null || call.name === title))
+        candidates.push({ tool: title, source: 'devin-title' })
     }
     const first = candidates[0]
     if (first === undefined) return call.name == null ? {} : { source: 'name' }
@@ -721,7 +629,7 @@ export async function createDshToolBridge(
       candidates.some((candidate) => candidate.tool !== first.tool) ||
       (call.name != null &&
         call.name !== first.tool &&
-        qualified(call.name) !== first.tool &&
+        qualifiedMcpTool(serverName, call.name) !== first.tool &&
         !(wireProfile === 'codebuddy' && deferred !== undefined && call.name === 'DeferExecuteTool'))
     )
       return { source: first.source }
@@ -731,38 +639,9 @@ export async function createDshToolBridge(
     const tool = identityOf(call).tool
     return tool === undefined ? undefined : names.get(tool)
   }
-  const antigravityPresentationTool = (call: acp.ToolCallUpdate): string | undefined => {
-    if (wireProfile !== 'antigravity' || typeof call.title !== 'string') return undefined
-    const prefix = `${serverName}_`
-    if (!call.title.startsWith(prefix)) return undefined
-    const name = call.title.slice(prefix.length)
-    if (!names.has(name)) return undefined
-    if (
-      call.name != null &&
-      call.name !== name &&
-      call.name !== `mcp__${serverName}__${name}` &&
-      call.name !== `${serverName}_${name}`
-    )
-      return undefined
-    return name
-  }
-  // Freeze a durable session default before the first prompt. Failure stays
-  // fail-closed in each permission resolver below.
-  if (resolveApprovalPolicy !== undefined) await resolveApprovalPolicy().catch(() => undefined)
-  const elicitationTarget = (request: acp.CreateElicitationRequest, toolCall: acp.ToolCallUpdate | undefined) => {
-    const form = request as { toolCallId?: unknown }
-    if (
-      wireProfile !== 'codex' ||
-      request.mode !== 'form' ||
-      request._meta?.codex_approval_kind !== 'mcp_tool_call' ||
-      form.toolCallId === undefined ||
-      toolCall === undefined ||
-      toolCall.toolCallId !== form.toolCallId ||
-      toolCall._meta?.is_mcp_tool_call !== true
-    )
-      return undefined
-    const input = toolCall.rawInput as { server?: unknown; tool?: unknown } | undefined
-    return input?.server === serverName && typeof input.tool === 'string' ? names.get(input.tool) : undefined
+  const elicitationTarget = (request: acp.CreateElicitationRequest, call: acp.ToolCallUpdate | undefined) => {
+    const tool = wireProfile === 'codex' ? codexElicitationTool(request, call, serverName) : undefined
+    return tool === undefined ? undefined : names.get(tool)
   }
   const inspectPermission: NonNullable<AcpMcpLease['inspectPermission']> = async (request) => {
     directory.clearPermission(request)
@@ -773,10 +652,10 @@ export async function createDshToolBridge(
     const meta = call._meta?.claudeCode as { toolName?: unknown } | undefined
     const source = identity.source
     const titleName =
-      wireProfile === 'devin' && typeof call.title === 'string'
-        ? /^(?:Calling|Called) ([a-zA-Z0-9_]+) from dsh$/.exec(call.title)?.[1]
-        : wireProfile === 'antigravity' && typeof call.title === 'string' && call.title.startsWith(`${serverName}_`)
-          ? call.title.slice(serverName.length + 1)
+      wireProfile === 'devin'
+        ? devinToolTitleHint(call.title)
+        : wireProfile === 'antigravity'
+          ? antigravityTitledTool(call.title, serverName)
           : undefined
     const facts: Omit<AcpPermissionCheck, 'reason'> = {
       ...(source === undefined ? {} : { identitySource: source }),
@@ -798,23 +677,14 @@ export async function createDshToolBridge(
     if (capturedPrompt === undefined || capturedPrompt.aborted) return { ...facts, reason: 'inactive-prompt' }
     const captureFence = (definition: ToolSchema, revocationOnly = false): AbortSignal =>
       directory.capturePermission(request, captured, definition, revocationOnly)
-    const definition = definitionOf(call)
+    const definition = identity.tool === undefined ? undefined : names.get(identity.tool)
     if (definition === undefined) {
       // An identified call to our own server with an unknown name cannot
       // execute, even after approval. Do not ask a user to repair a protocol
       // error, and never strip markup or guess arguments to make it runnable.
-      if (identity.tool !== undefined) {
-        const reject = request.options.find((option) => option.kind === 'reject_once')
-        return {
-          ...facts,
-          reason: 'invalid-tool-name',
-          response: {
-            outcome:
-              reject === undefined ? { outcome: 'cancelled' } : { outcome: 'selected', optionId: reject.optionId },
-          },
-        }
-      }
-      // A matching title is not authority for Auto or execution. It only
+      if (identity.tool !== undefined)
+        return { ...facts, reason: 'invalid-tool-name', response: rejectPermissionOnce(request) }
+      // A matching title alone cannot authorize execution. It only
       // keeps this ambiguous manual question revocable with its advertised target.
       const titleTarget = titleName === undefined ? undefined : names.get(titleName)
       if (titleTarget !== undefined) captureFence(titleTarget, true)
@@ -823,53 +693,15 @@ export async function createDshToolBridge(
     // The tool was replaced or revoked after this connection advertised it.
     // Approval could not make it executable, so refuse this one request and
     // leave the connection's remaining tools usable.
-    if (!directory.isDefinitionLive(definition.name, definition)) {
-      const reject = request.options.find((option) => option.kind === 'reject_once')
+    if (!directory.isDefinitionLive(definition.name, definition))
       return {
         ...facts,
         toolName: definition.name,
         reason: 'invalid-tool-name',
-        response: {
-          outcome: reject === undefined ? { outcome: 'cancelled' } : { outcome: 'selected', optionId: reject.optionId },
-        },
+        response: rejectPermissionOnce(request),
       }
-    }
-    const toolName = definition.name
-    const identified = {
-      ...facts,
-      toolName,
-    }
-    const targetSignal = captureFence(definition)
-    const policy = resolveApprovalPolicy === undefined ? 'ask' : await resolveApprovalPolicy().catch(() => undefined)
-    if (!directory.isCurrent(captured)) return { ...identified, reason: 'inactive-prompt' }
-    if (targetSignal.aborted || !directory.isDefinitionLive(definition.name, definition))
-      return { ...identified, reason: 'invalid-tool-name', response: { outcome: { outcome: 'cancelled' } } }
-    // Policy reads fail closed. A cancelled response prevents the Agent from
-    // treating an unavailable host policy as permission to proceed.
-    if (policy === undefined) {
-      return { ...identified, reason: 'policy-unavailable', response: { outcome: { outcome: 'cancelled' } } }
-    }
-    // Devin does not identify whether its request is required by enterprise
-    // policy. Recognizing a DSH tool proves its target, not that Auto may answer
-    // the independent Agent's permission request on the user's behalf.
-    if (policy !== 'auto' || wireProfile === 'devin') return { ...identified, reason: 'approval-required' }
-    if (!directory.isCurrent(captured)) return { ...identified, reason: 'inactive-prompt' }
-    const allows = request.options.filter((option) => option.kind === 'allow_once')
-    const ids = request.options.map((option) => option.optionId)
-    const boundedOptions =
-      request.options.length <= ACP_PERMISSION_OPTIONS_MAX &&
-      Buffer.byteLength(request.toolCall.toolCallId, 'utf8') <= ACP_PERMISSION_ID_MAX_BYTES &&
-      ids.every(
-        (id) => typeof id === 'string' && id.length > 0 && Buffer.byteLength(id, 'utf8') <= ACP_PERMISSION_ID_MAX_BYTES,
-      )
-    const allow = boundedOptions && allows.length === 1 && new Set(ids).size === ids.length ? allows[0] : undefined
-    return allow === undefined
-      ? { ...identified, reason: 'allow-once-unavailable' }
-      : {
-          ...identified,
-          reason: 'auto-approved',
-          response: { outcome: { outcome: 'selected', optionId: allow.optionId } },
-        }
+    captureFence(definition)
+    return { ...facts, toolName: definition.name, reason: 'approval-required' }
   }
   const sessions = new Set<Server>()
   const calls = new Set<Promise<unknown>>()
@@ -1297,11 +1129,6 @@ export async function createDshToolBridge(
             throw new AcpHostSettlementError('ACP_HOST_FEEDBACK_COMMIT_FAILED', {
               remoteOutcomeKnown: callPrompt.remoteOutcomeKnown,
             })
-          try {
-            onPolicyContextChange?.()
-          } catch {
-            // A UI/control subscriber cannot prevent tool feedback from entering the native inbox.
-          }
           const content = await toolContent(
             result.content,
             bodySignal,
@@ -1647,27 +1474,21 @@ export async function createDshToolBridge(
     presentTool(call) {
       if (wireProfile === 'antigravity' && isAntigravityInteractionCall(call)) return call
       const identity = identityOf(call)
-      const deferred = codebuddyDeferredInput(call)
+      const deferred = wireProfile === 'codebuddy' ? codeBuddyDeferredInput(call, serverName) : undefined
       const acceptedDeferred =
         deferred?.tool !== undefined &&
         identity.source === 'codebuddy-deferred-input' &&
         identity.tool === deferred.tool
       const wrapperCall = deferred !== undefined
-      const definition = definitionOf(call)
+      const definition = identity.tool === undefined ? undefined : names.get(identity.tool)
       if (wireProfile === 'codex') {
-        const input = plainRecord(call.rawInput)
-        const conflictingInput =
-          (input !== undefined &&
-            ((Object.hasOwn(input, 'server') && input.server !== serverName) ||
-              (Object.hasOwn(input, 'tool') && input.tool !== 'wait_agent'))) ||
-          (call._meta != null && Object.hasOwn(call._meta, 'is_mcp_tool_call') && call._meta.is_mcp_tool_call !== true)
         // Nonempty ACP content may contain new diagnostics independent of the
         // prior rawOutput. Never hide it behind a remembered control receipt.
         if (call.content != null) {
           if (call.content.length > 0) waitCallsWithOtherContent.add(call.toolCallId)
           else waitCallsWithOtherContent.delete(call.toolCallId)
         }
-        if (conflictingInput) {
+        if (codexConflictsWithTool(call, serverName, 'wait_agent')) {
           identifiedWaitCalls.delete(call.toolCallId)
           deferredWaitReceipts.revoke(call.toolCallId)
         } else if (
@@ -1695,7 +1516,8 @@ export async function createDshToolBridge(
       }
       let name = definition?.name ?? (wrapperCall ? undefined : presented.get(call.toolCallId))
       if (name === undefined && wireProfile === 'antigravity') {
-        name = antigravityPresentationTool(call) ?? resolveAntigravityNativeTool(call)
+        const tool = antigravityPresentationTool(call, serverName)
+        name = (tool !== undefined && names.has(tool) ? tool : undefined) ?? resolveAntigravityNativeTool(call)
       }
       if (name === undefined) return call
       presented.set(call.toolCallId, name)
@@ -1726,20 +1548,12 @@ export async function createDshToolBridge(
         })
       }
 
-      let rawInput = acceptedDeferred && deferred.params !== undefined ? deferred.params : call.rawInput
-      let rawOutput = call.rawOutput
-      let content = call.content
-
-      let title = name
-      if (wireProfile === 'antigravity') {
-        const normalized = normalizeAntigravityPresentation(rawInput, rawOutput, content, name)
-        rawInput = normalized.rawInput
-        rawOutput = normalized.rawOutput
-        content = normalized.content
-        if (typeof normalized.title === 'string' && normalized.title.trim().length > 0) {
-          title = normalized.title
-        }
-      }
+      const { rawInput, rawOutput, content, title } = normalizeAntigravityPresentation(
+        call.rawInput,
+        call.rawOutput,
+        call.content,
+        name,
+      )
 
       // Same tool title as the native host. Transport capability names stay out of the conversation row.
       return presentTeam({
@@ -1747,7 +1561,7 @@ export async function createDshToolBridge(
         rawInput,
         rawOutput,
         ...(content !== undefined ? { content } : {}),
-        title,
+        title: typeof title === 'string' && title.trim() ? title : name,
         name,
         ...(name === 'bash' || name === 'pwsh' || name.startsWith('terminal_') ? { kind: 'execute' as const } : {}),
         ...(name === 'read' || name === 'read_image' ? { kind: 'read' as const } : {}),
@@ -1768,9 +1582,6 @@ export async function createDshToolBridge(
     validatePermissionDecision(request) {
       return directory.validatePermission(request, () => definitionOf(request.toolCall))
     },
-    async permission(request) {
-      return (await inspectPermission(request)).response
-    },
     elicitationSignal(request, toolCall) {
       const existing = directory.permissionSignal(request)
       if (existing !== undefined) return existing
@@ -1785,63 +1596,13 @@ export async function createDshToolBridge(
       return directory.validatePermission(request, () => elicitationTarget(request, toolCall))
     },
     elicitationToolName(request, toolCall) {
-      const form = request as { toolCallId?: unknown }
-      if (
-        wireProfile !== 'codex' ||
-        !directory.isLive() ||
-        directory.prompt === undefined ||
-        directory.prompt.aborted ||
-        request.mode !== 'form' ||
-        toolCall === undefined ||
-        form.toolCallId !== toolCall.toolCallId
-      )
-        return undefined
-      if (request._meta?.codex_approval_kind !== 'mcp_tool_call' || toolCall._meta?.is_mcp_tool_call !== true)
-        return undefined
-      const input = toolCall.rawInput as { server?: unknown; tool?: unknown } | undefined
-      if (input?.server !== serverName || typeof input.tool !== 'string') return undefined
-      // Presentation only: don't rewrite arbitrary messages or infer authority
-      // by stripping a prefix. Preserve additional context from other requests.
-      if (request.message !== `Allow the ${serverName} MCP server to run tool "${input.tool}"?`) return undefined
-      const definition = names.get(input.tool)
-      return definition !== undefined && directory.isDefinitionLive(definition.name, definition)
+      if (!directory.isLive() || directory.prompt === undefined || directory.prompt.aborted) return undefined
+      const definition = elicitationTarget(request, toolCall)
+      if (definition === undefined || !directory.isDefinitionLive(definition.name, definition)) return undefined
+      // Only the plain, exact Agent question can be relabelled without losing extra context.
+      return request.message === `Allow the ${serverName} MCP server to run tool "${definition.name}"?`
         ? definition.name
         : undefined
-    },
-    async elicitation(request, toolCall) {
-      const form = request as {
-        toolCallId?: unknown
-        requestedSchema?: { properties?: Record<string, unknown>; required?: unknown[] }
-      }
-      if (!directory.isLive() || directory.prompt === undefined || directory.prompt.aborted) return undefined
-      const target = elicitationTarget(request, toolCall)
-      if (target === undefined || !directory.isDefinitionLive(target.name, target)) return undefined
-      const captured = directory.capturePrompt()
-      const policy = resolveApprovalPolicy === undefined ? 'ask' : await resolveApprovalPolicy().catch(() => undefined)
-      if (policy !== 'auto' || !directory.isCurrent(captured) || !directory.isDefinitionLive(target.name, target))
-        return undefined
-      // Codex may add the persistence selector to an otherwise empty tool-approval form.
-      // Never answer unrelated fields or grant persistent permission.
-      const properties = form.requestedSchema?.properties
-      const required = form.requestedSchema?.required
-      if (
-        properties === null ||
-        typeof properties !== 'object' ||
-        Array.isArray(properties) ||
-        Object.keys(properties).some((key) => key !== 'persist') ||
-        (required !== undefined && (!Array.isArray(required) || required.some((key) => key !== 'persist')))
-      )
-        return undefined
-      if (properties.persist === undefined) return { action: 'accept', content: {} }
-      const persist = properties.persist as { oneOf?: Array<{ const?: unknown }>; enum?: unknown[] }
-      if (
-        persist === null ||
-        typeof persist !== 'object' ||
-        (!(Array.isArray(persist.oneOf) && persist.oneOf.some((option) => option?.const === 'once')) &&
-          !(Array.isArray(persist.enum) && persist.enum.includes('once')))
-      )
-        return undefined
-      return { action: 'accept', content: { persist: 'once' } }
     },
     close(graceMs = 5_000) {
       closing ??= (async () => {

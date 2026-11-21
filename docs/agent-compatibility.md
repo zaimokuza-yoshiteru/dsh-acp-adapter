@@ -8,7 +8,7 @@
 
 1. 先用通用路径复现，记录实际 `initialize.agentInfo`、能力广告与造成差异的请求/通知。确认这是标准协议不能表达的行为。
 2. 在 `src/agents/<agent>.ts` 添加窄函数或不可变参数。一个文件足够时不建目录；存在独立协议解析器时再用目录组织。新增一个 Agent 不需要复制连接、会话或审批实现，也不要求声明一个空模块。
-3. 由 `src/agents/compatibility.ts` 显式组合所需事实，让对应共享 owner 消费。不要添加万能 driver、任意前后置 hook 或进程级可变注册表。
+3. 跨 Agent 共用的发现和连接选项由 `src/agents/compatibility.ts` 组合。工具桥直接读取各 Agent 解析出的工具身份，例如 CodeBuddy 的 `DeferExecuteTool` 目标。是否仍可执行由工具桥结合当前会话和目录判断。
 4. 增加正例和身份不匹配的负例，并在真实消费路径加一条回归。模板规则的测试不能代替连接/生命周期测试。
 
 CodeBuddy 的握手名称是 `codebuddy-code`。部分版本省略 `agentInfo`，此时适配器可以识别直接启动的 `codebuddy --acp` 或 `codebuddy-code --acp`。如果配置声明了 `runtime: codebuddy`，也可以识别目录中通过 `npx` 启动的 `@tencent-ai/codebuddy-code`。识别后，适配器会读取各模型的思考档位。
@@ -30,6 +30,8 @@ CodeBuddy 确认取消后，下一条消息会重新加载原会话。这适用�
 
 ## 不移动的共享 owner
 
+可选 AI 审批的后端位于 `src/host/approval-review/`。Devin 管理自己的进程池，OpenCode 管理独立文本生成进程。两者复用相同的判断与隔离接口，只有共享审批流程可以在审计写入成功后回复一次性允许。
+
 进程所有权、超时取消、会话连续性、fork/recovery、pending settlement、DSH 工具目录代次、审批目标和持久化边界继续由现有 runtime/host/persistence owner 管理。Agent 模块不能直接注册 DSH 工具、改变审批策略、提交存储、重写历史绑定或持有 Host 服务。
 
 Qwen 的主动轮次和心跳由协议层管理，Devin 和 Claude 的委派解析由领域层管理。迁移这些行为时，应一起迁移事件的生产者和消费者，并保留取消、停用、迟到通知和跨会话负例。
@@ -44,6 +46,6 @@ Qwen 的主动轮次和心跳由协议层管理，Devin 和 Claude 的委派解�
 
 本分支支持 Devin CLI `3000.14.30821` 起的版本，CI 固定该版本检查会话工具桥。使用旧版时，请先升级到[最新稳定版](https://docs.devin.ai/cli/changelog/stable)，用 `devin --version` 确认。工具桥经标准 ACP 会话级 `mcpServers` 传入。HTTP 回环地址沿用现有代理排除项，只追加 `127.0.0.1`。
 
-此前安装留下的用户 MCP 配置和启动器不会被自动删除。新版会话直接提供自己的工具桥；通用 stdio 传输仍为不支持 HTTP 的 Agent 保留。Devin 的原生授权请求仍需用户确认，这与旧版 MCP 配置无关。
+此前安装留下的用户 MCP 配置和启动器不会被自动删除。新版会话直接提供自己的工具桥；通用 stdio 传输仍为不支持 HTTP 的 Agent 保留。Devin 默认由用户审批。本地官方 CLI 可使用插件详情的 [AI 审批](permission-policy.md#ai-审批)。
 
 工具目录较长时，Devin 会将完整内容保存到临时文件，再用自身的读取或搜索工具查看所需定义。这是正常的目录发现流程；DSH 任务操作仍使用当前会话的 MCP 工具，原生权限规则保持不变。

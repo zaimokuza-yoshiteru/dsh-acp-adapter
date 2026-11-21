@@ -16,11 +16,8 @@ import { required } from './required.ts'
 import { acpPermissionAudit } from './acp-permission-audit.ts'
 
 const enabled = process.env.DSH_E2E_LIVE_PARENT_PERMISSION === '1'
-const before = process.env.DSH_E2E_PARENT_PERMISSION_BASELINE === '1'
 const adapterDirectory = process.env.DSH_E2E_ADAPTER_DIRECTORY ?? root
-const reportRoot =
-  process.env.DSH_E2E_LIVE_PARENT_PERMISSION_DIRECTORY ??
-  join(root, '.local/parent-approval-20261021', before ? 'live-before' : 'live-after')
+const reportRoot = process.env.DSH_E2E_LIVE_PARENT_PERMISSION_DIRECTORY ?? join(root, '.local/parent-permission')
 
 class NativeOwner extends LlmAdapter {
   constructor(private readonly hold?: Promise<void>) {
@@ -49,7 +46,7 @@ function permissionEvents(host: AdapterWorld, child: Agent) {
   }
 }
 
-async function configure(host: AdapterWorld, policy: 'ask' | 'auto') {
+async function configure(host: AdapterWorld) {
   const keys = (process.env.DSH_E2E_LIVE_DEVIN_ENV_KEYS ?? '').split(',').filter(Boolean)
   const env = Object.fromEntries(
     keys.map((key) => {
@@ -60,7 +57,6 @@ async function configure(host: AdapterWorld, policy: 'ask' | 'auto') {
   )
   host.ctx.effect(() => host.ctx.llm.registerAdapter(['parent-permission-native'], new NativeOwner()))
   await host.ctx.settings.replace('dsh-acp-adapter', {
-    toolApprovalDefault: policy,
     agents: { devin: { name: 'Devin approval regression', command: 'devin', args: ['acp'], env } },
   })
   await vi.waitFor(() => expect(host.ctx.llm.listProviders().some((p) => p.id === 'acp-devin')).toBe(true))
@@ -113,18 +109,16 @@ async function settled(run: Awaited<ReturnType<typeof startChild>>) {
   return required(run.result.value)
 }
 
-it.skipIf(!enabled).each(['ask', 'auto'] as const)(
-  'real Devin %s keeps child identity and full parent choices across refresh',
-  async (policy) => {
+it.skipIf(!enabled)(
+  'real Devin keeps child identity and full parent choices across refresh',
+  async () => {
     const host = await launchAdapterWorld({ adapterDirectory, toolExecutor: 'native' })
     let browser: TestBrowser | undefined
     let run: Awaited<ReturnType<typeof startChild>> | undefined
-    const directory = join(reportRoot, `${policy}-${randomUUID()}`)
+    const directory = join(reportRoot, randomUUID())
     mkdirSync(directory, { recursive: true })
     const evidence: Record<string, unknown> = {
       platform: process.platform,
-      baseline: before,
-      policy,
       model: 'swe-2-high',
       parent: 'scripted native LlmAdapter',
       child: 'real Devin',
@@ -132,7 +126,7 @@ it.skipIf(!enabled).each(['ask', 'auto'] as const)(
     }
     try {
       evidence.cliVersion = execFileSync('devin', ['--version'], { encoding: 'utf8', timeout: 15_000 }).trim()
-      await configure(host, policy)
+      await configure(host)
       browser = await launchBrowser({ headless: true })
       const page = await newEnglishPage(browser)
       await page.setViewportSize({ width: 1680, height: 1000 })
@@ -150,30 +144,9 @@ it.skipIf(!enabled).each(['ask', 'auto'] as const)(
       host.ctx.permissionPresets.set(parent.session, 'workspace-write')
       const marker = `PARENT_PERMISSION_${randomUUID()}`
       const path = join(host.workspaceCwd, 'workspace', 'parent-permission.txt')
-      run = await startChild(host, parent, `Devin ${policy} approval`, marker, path)
+      run = await startChild(host, parent, 'Devin approval', marker, path)
       evidence.parentSessionId = parent.id
       evidence.childSessionId = run.child.id
-      if (before) {
-        evidence.result = await settled(run)
-        const audit = permissionEvents(host, run.child)
-        evidence.audit = audit
-        evidence.markerWritten = existsSync(path)
-        if (policy === 'ask') {
-          expect(audit.asked[0]?.data.optionCount).toBeGreaterThan(2)
-          expect(audit.decided).toContainEqual(
-            expect.objectContaining({
-              data: expect.objectContaining({ note: 'delegated-question-unavailable', outcome: 'cancelled' }),
-            }),
-          )
-          expect(existsSync(path)).toBe(false)
-        } else {
-          expect(readFileSync(path, 'utf8')).toBe(marker)
-          evidence.observation = 'Devin ACP confirmation was answered without a human choice'
-        }
-        await page.screenshot({ path: join(directory, 'before.png') })
-        evidence.status = 'reproduced'
-        return
-      }
       const card = page.locator('section[data-question-key]')
       await card.getByRole('radio', { name: 'Allow', exact: true }).waitFor({ state: 'visible', timeout: 120_000 })
       const audit = permissionEvents(host, run.child)
@@ -251,7 +224,7 @@ it.skipIf(!enabled).each(['ask', 'auto'] as const)(
   300_000,
 )
 
-it.skipIf(!enabled || before)(
+it.skipIf(!enabled)(
   'real concurrent nested Devin approvals cancel only their original child',
   async () => {
     const host = await launchAdapterWorld({ adapterDirectory, toolExecutor: 'native' })
@@ -270,7 +243,7 @@ it.skipIf(!enabled || before)(
     }
     try {
       evidence.cliVersion = execFileSync('devin', ['--version'], { encoding: 'utf8', timeout: 15_000 }).trim()
-      await configure(host, 'auto')
+      await configure(host)
       host.ctx.effect(() => host.ctx.llm.registerAdapter(['parent-permission-holding'], new NativeOwner(hold.promise)))
       browser = await launchBrowser({ headless: true })
       const page = await newEnglishPage(browser)
@@ -369,7 +342,7 @@ it.skipIf(!enabled || before)(
   360_000,
 )
 
-it.skipIf(!enabled || before)(
+it.skipIf(!enabled)(
   'real Devin project Deny preserves the native boundary and reports a missing summary truthfully',
   async () => {
     const host = await launchAdapterWorld({ adapterDirectory, toolExecutor: 'native' })
@@ -382,7 +355,6 @@ it.skipIf(!enabled || before)(
     const evidence: Record<string, unknown> = {
       platform: process.platform,
       model: 'swe-2-high',
-      policy: 'auto',
       policySource: 'isolated project permission rule; not enterprise administration',
       enterprisePolicyVerified: false,
       scope: 'denied side effects and truthful adapter outcome; provider summary availability is recorded separately',
@@ -391,7 +363,7 @@ it.skipIf(!enabled || before)(
     }
     try {
       evidence.cliVersion = execFileSync('devin', ['--version'], { encoding: 'utf8', timeout: 15_000 }).trim()
-      await configure(host, 'auto')
+      await configure(host)
       browser = await launchBrowser({ headless: true })
       const page = await newEnglishPage(browser)
       await page.setViewportSize({ width: 1680, height: 1000 })

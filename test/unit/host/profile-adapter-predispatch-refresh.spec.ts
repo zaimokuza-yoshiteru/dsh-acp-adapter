@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -24,6 +24,7 @@ async function harness(refresh: Refresh | 'pending-read' = 'directory') {
   const releaseRead = Promise.withResolvers<void>()
   const promptEntered = Promise.withResolvers<void>()
   const wirePath = join(root, 'wire.jsonl')
+  const admittedPath = join(root, 'session-admitted')
   const sidecar = createAcpSidecar({ root: join(root, 'sidecar') })
   let stale = false
   let promptsEntered = 0
@@ -39,7 +40,13 @@ async function harness(refresh: Refresh | 'pending-read' = 'directory') {
       if (request.method === 'session/new') {
         session = 'original-' + process.pid;
         reply({ sessionId: session });
-        if (${refresh === 'pending-read'}) setImmediate(() => send({ jsonrpc: '2.0', id: 71, method: 'fs/read_text_file', params: { sessionId: session, path: '/file' } }));
+        if (${refresh === 'pending-read'}) {
+          const admission = setInterval(() => {
+            if (!require('node:fs').existsSync(${JSON.stringify(admittedPath)})) return;
+            clearInterval(admission);
+            send({ jsonrpc: '2.0', id: 71, method: 'fs/read_text_file', params: { sessionId: session, path: '/file' } });
+          }, 10);
+        }
       }
       if (request.method === 'session/resume') { session = request.params.sessionId; reply({}); }
       if (request.method === 'session/prompt') {
@@ -108,7 +115,6 @@ async function harness(refresh: Refresh | 'pending-read' = 'directory') {
                 promptEntered.resolve()
               },
               endPrompt() {},
-              permission: () => undefined,
               async close() {},
             }
           },
@@ -120,7 +126,12 @@ async function harness(refresh: Refresh | 'pending-read' = 'directory') {
             stale = true
             if (refresh === 'lease') invalidateLease()
           }
-          if (refresh === 'pending-read') return readStarted.promise.then(() => prompt(...args))
+          if (refresh === 'pending-read') {
+            // Wait for the Host to accept session/new before requesting the prior read.
+            // A child-process tick can arrive in the same pipe batch as the new-session reply.
+            if (promptsEntered === 1) writeFileSync(admittedPath, '')
+            return readStarted.promise.then(() => prompt(...args))
+          }
           return prompt(...args)
         }
         return runtime

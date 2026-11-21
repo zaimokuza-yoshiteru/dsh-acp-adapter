@@ -72,7 +72,8 @@ Choose the optional **ACP** mode to let the Agent manage conversation context. T
 
 ## Working in a session
 
-- **Approvals.** Choose **Ask** to review each request the Agent makes for DSH tool access. Choose **Auto approve** to allow requests within existing DSH permissions. Devin requests still need your approval. Agents manage their own tools. Support for experimental Auto Review is limited.
+- **AI approval.** If your organization restricts an Agent’s automatic modes, turn on AI approval in plugin details to reduce manual prompts. It is off by default. Eligible Devin and OpenCode requests can be allowed once after review. You decide when the model flags a request as high risk or cannot assess it. Each assessment appears in the session audit. [Supported configurations](docs/permission-policy.en.md#ai-approval)
+- **CodeBuddy security review.** The session audit shows security outcomes CodeBuddy reports for tools in this session, including blocked calls, results, and sandbox requests, and sensitive data protection. CodeBuddy handles routine automatic approvals internally.
 - **Queue and stop.** Press Enter during a turn to queue the next message. Agents that support continuation handle it in the same session. **Stop** cancels the current turn. Agents are responsible for stopping their own tools. Tools without a reported result stay unfinished.
 - **Members and tasks.** View subagent progress and handle member approvals in the main session. To share tasks, enable DSH’s experimental Agent Teams in the session.
 

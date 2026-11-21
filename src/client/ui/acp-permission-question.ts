@@ -4,20 +4,8 @@ import { Button, DisclosureRow, IconInfoOutlineMedium, MarkdownText } from '@dee
 import { defineStore, type EngineStoreHandle } from '@deepseek-ai/dsh-client-store'
 import type { PropsLocale, PropsRuntime, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionPendingInteractionBase } from '@deepseek-ai/dsh-client-ui-session/client'
+import { questionTextIn, type AcpQuestionItem, type AcpQuestionLanguage } from '../../contract/permission-question.ts'
 import css from './AcpPermissionQuestion.module.css'
-
-interface AcpPermissionQuestionOption {
-  readonly label: string
-}
-
-interface AcpPermissionQuestionItem {
-  readonly id: string
-  readonly question: string
-  readonly header?: string
-  readonly detail?: string
-  readonly options?: readonly AcpPermissionQuestionOption[]
-  readonly multiSelect?: boolean
-}
 
 interface AcpPermissionAnswer {
   answers: { id: string; selected: string[]; custom?: string }[]
@@ -31,7 +19,7 @@ interface AcpPermissionSnapshot {
 /** Public capability surface used here; no PendingQuestion class dependency. */
 interface AcpPermissionPendingQuestion extends SessionPendingInteractionBase {
   readonly kind: 'question'
-  readonly questions: readonly AcpPermissionQuestionItem[]
+  readonly questions: readonly AcpQuestionItem[]
   readonly callId: unknown
   readonly review: unknown
   subscribe(listener: () => void): () => void
@@ -111,7 +99,7 @@ export function isAcpPermissionQuestion(value: unknown): value is AcpPermissionP
 
 type Props = PropsRuntime<'conversation.composer'> &
   PropsStore<ReturnType<typeof createAcpPermissionQuestionStore>> &
-  PropsLocale<'acpActivity'> & { matched: AcpPermissionPendingQuestion }
+  PropsLocale<'acpActivity'> & { matched: AcpPermissionPendingQuestion; language: AcpQuestionLanguage }
 
 function answerable(pending: AcpPermissionPendingQuestion): boolean {
   const snapshot = pending.snapshot()
@@ -132,6 +120,7 @@ export function AcpPermissionQuestion(props: Props) {
 function PermissionQuestionSurface(props: Props) {
   const pending = props.matched
   const question = pending.questions[0]!
+  const display = questionTextIn(question, props.language)
   const snapshot = useSyncExternalStore(pending.subscribe, pending.snapshot, pending.snapshot)
   const draft = props.useStore((state) => state.byRequest[question.id])
   const [busy, setBusy] = useState(false)
@@ -220,16 +209,16 @@ function PermissionQuestionSurface(props: Props) {
     'section',
     {
       className: css.card,
-      'aria-label': question.header ?? question.question,
+      'aria-label': display.header ?? display.question,
       'data-question-key': pending.key,
     },
     h(
       'header',
       { className: css.header },
-      question.header === undefined
+      display.header === undefined
         ? null
-        : h('h2', { className: css.source, 'data-question-source': '' }, question.header),
-      h('div', { className: css.heading, 'data-question-operation': '' }, question.question),
+        : h('h2', { className: css.source, 'data-question-source': '' }, display.header),
+      h('div', { className: css.heading, 'data-question-operation': '' }, display.question),
     ),
     h(
       'div',
@@ -238,7 +227,7 @@ function PermissionQuestionSurface(props: Props) {
         h(
           'div',
           { className: css.question, key: question.id },
-          question.detail
+          display.detail
             ? h(
                 DisclosureRow,
                 {
@@ -254,7 +243,7 @@ function PermissionQuestionSurface(props: Props) {
                   'div',
                   { 'data-question-detail': '' },
                   h(MarkdownText, {
-                    text: question.detail,
+                    text: display.detail,
                     variant: 'compact',
                     labels: {
                       code: {
@@ -271,6 +260,7 @@ function PermissionQuestionSurface(props: Props) {
             'div',
             { className: css.options, role: 'radiogroup', 'aria-label': props.t('acpQuestionChoices') },
             ...(question.options ?? []).map((option, optionIndex) => {
+              const label = display.options?.[optionIndex]?.label ?? option.label
               const checked = selected[question.id] === option.label
               return h(
                 'button',
@@ -280,7 +270,7 @@ function PermissionQuestionSurface(props: Props) {
                   className: css.option,
                   role: 'radio',
                   'aria-checked': checked,
-                  'aria-label': option.label,
+                  'aria-label': label,
                   tabIndex: optionIndex === focusedIndex ? 0 : -1,
                   ref: (element: HTMLButtonElement | null) => {
                     optionRefs.current[optionIndex] = element
@@ -295,7 +285,7 @@ function PermissionQuestionSurface(props: Props) {
                   onKeyDown: (event: { key: string; preventDefault(): void }) => onOptionKeyDown(optionIndex, event),
                 },
                 h('span', { className: css.number, 'aria-hidden': true }, String(optionIndex + 1)),
-                h('span', { className: css.optionLabel }, option.label),
+                h('span', { className: css.optionLabel }, label),
               )
             }),
           ),

@@ -1,18 +1,15 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { PassThrough } from 'node:stream'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
-import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
-import type { SessionHeader } from '@deepseek-ai/dsh-session'
 import { apply, inject } from '../../../src/host/composition/index.ts'
 import { acpSettingsSchema } from '../../../src/host/composition/installed-profile-registry.ts'
 import type { AcpSettings } from '../../../src/host/composition/installed-profile-registry.ts'
 import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts'
 import { createAcpSidecar } from '../../../src/persistence/sidecar.ts'
-import type { AcpBindingData, AcpSidecar } from '../../../src/persistence/sidecar.ts'
 
 type Watcher = (next: AcpSettings, previous: AcpSettings) => void | Promise<void>
 
@@ -23,7 +20,8 @@ class SettingsDocument {
   onChange: () => void = () => {}
   readonly config = {
     agents: { get: () => acpSettingsSchema(this.value).agents },
-    toolApprovalDefault: { get: () => acpSettingsSchema(this.value).toolApprovalDefault },
+    aiApproval: { get: () => acpSettingsSchema(this.value).aiApproval },
+    devinReviewModel: { get: () => acpSettingsSchema(this.value).devinReviewModel },
   }
   configure() {
     return () => {}
@@ -58,218 +56,7 @@ function agent(name: string, command: string): AcpAgentConfig {
   return { name, command, args: ['acp'], env: {} }
 }
 
-async function seedCodexBinding(persisted: AcpSidecar, sessionId: string): Promise<void> {
-  const binding: AcpBindingData = {
-    provider: 'acp-codex',
-    agentSessionId: `agent-${sessionId}`,
-    profileId: 'codex',
-    canonicalCwd: '/tmp/work',
-    launchFingerprint: { command: 'codex-acp', args: ['acp'], envKeys: [] },
-    agent: { name: 'Codex', version: '1.6.2' },
-    protocolVersion: 1,
-    capabilityHash: 'a1b2c3d4e5f60708',
-    configHash: '0817f6e5d4c3b2a1',
-    generation: 1,
-    bindingEpoch: 1,
-    committedPromptOrdinal: 0,
-    historyBaseSeq: 0,
-    establishedAt: Date.now(),
-    dshCommittedSeq: 0,
-  }
-  await persisted.append(SessionId(sessionId), { kind: 'binding', data: binding })
-}
-
 describe('real Cordis ACP composition settings lifecycle', () => {
-  it('reads an evicted teammate policy through durable metadata without activating its Agent', async () => {
-    const ctx = new Context()
-    const home = mkdtempSync(path.join(tmpdir(), 'dsh-acp-cold-policy-'))
-    const persisted = createAcpSidecar({ root: path.join(home, 'dsh-acp') })
-    try {
-      await ctx.plugin(SessionStore)
-      await ctx.plugin(SessionProjectionRegistry)
-      const settings = new SettingsDocument({ agents: { codex: agent('Codex', 'codex-acp') } })
-      ctx.provide('settings', settings)
-      ctx.provide('agentDefaultModel', {
-        currentSelection: () => ({ provider: 'acp-codex', model: 'test-model' }),
-      })
-      ctx.provide('permissionPresets', {})
-      ctx.provide('llm', {
-        registerAdapter: () => Object.assign(() => {}, { replace: () => {} }),
-      })
-      ctx.provide('dshHomePath', (...segments: string[]) => path.join(home, ...segments))
-      const spawn = vi.fn(() => {
-        throw new Error('Policy reads must not spawn an Agent process')
-      })
-      ctx.provide('subprocess', { resolveExecutable: async (command: string) => command, spawn })
-      ctx.provide('attachments', {
-        imageLimits: {
-          maxImageBytes: 1024,
-          maxImagesPerMessage: 4,
-          maxMessageImageBytes: 4096,
-          maxImagePixels: 1_000_000,
-          maxImageDimension: 4096,
-          mediaTypes: ['image/png'],
-        },
-        readImage: async () => {
-          throw new Error('not used by this policy test')
-        },
-      })
-      // Persistence and live SessionStore are independent: a detached Session
-      // remains observable through the official metadata-only stat contract.
-      const headers = new Map<string, SessionHeader>()
-      let statFailure: Error | undefined
-      const stat = vi.fn(async (id: string) => {
-        if (statFailure !== undefined) throw statFailure
-        const header = headers.get(id)
-        return header === undefined ? undefined : { header, revision: 'test-revision' }
-      })
-      ctx.provide('sessionPersistence', { stat })
-      const leadSession = ctx.sessions.prepare(SessionId('evicted-policy-lead'))
-      const detachLead = ctx.sessions.enter(leadSession)
-      ctx.sessions.announce(leadSession)
-      // This fixture's sole live Agent shares the test's real owner scope.
-      const lead = { id: leadSession.id, ctx, session: leadSession, options: { provider: 'acp-codex' } }
-      const liveAgents = new Map([[lead.id, lead]])
-      const create = vi.fn(() => {
-        throw new Error('Policy reads must not create an Agent')
-      })
-      const resolveAgent = vi.fn(() => {
-        throw new Error('Policy reads must not activate an Agent')
-      })
-      ctx.provide('agents', {
-        get: (id: typeof lead.id) => liveAgents.get(id),
-        list: () => [...liveAgents.values()],
-        create,
-      })
-      ctx.provide('sessionController', { resolveAgent })
-      const childId = SessionId('evicted-policy-member')
-      let rosterPresent = true
-      ctx.provide('subagents', {
-        rootOf: (candidate: object) => (candidate === lead ? lead : undefined),
-        namesOf: () => ({ self: 'lead' }),
-        listDescendants: async () =>
-          rosterPresent ? [{ kind: 'child', id: childId, parentId: lead.id, mode: 'continuable' }] : [],
-      })
-      const fiber = ctx.plugin({
-        name: 'composition-cold-policy-test',
-        inject: [...inject],
-        apply: (scope: Context) => apply(scope, settings.config),
-      })
-      await fiber.await()
-      const remote = ctx.get('dshAcp' as never) as unknown as {
-        toolApprovalPolicy(sessionId: string): Promise<{ policy: 'auto' | 'ask'; source: string; editable: boolean }>
-        setToolApprovalPolicy(sessionId: string, request: { policy: 'auto' | 'ask' }): Promise<unknown>
-      }
-      await seedCodexBinding(persisted, lead.id)
-      await seedCodexBinding(persisted, childId)
-      await remote.setToolApprovalPolicy(lead.id, { policy: 'ask' })
-
-      const child = ctx.sessions.prepare(childId, { meta: { origin: 'subagent', parentSession: lead.id } })
-      headers.set(childId, child.header)
-      const detachChild = ctx.sessions.enter(child)
-      ctx.sessions.announce(child)
-      expect(ctx.sessions.get(childId)).toBe(child)
-      detachChild()
-      expect(ctx.sessions.get(childId)).toBeUndefined()
-      expect(liveAgents.has(childId)).toBe(false)
-      const expectNoChildPolicy = async (): Promise<void> => {
-        await expect(persisted.readToolApprovalPolicy(childId)).resolves.toBeUndefined()
-        expect(create).not.toHaveBeenCalled()
-        expect(resolveAgent).not.toHaveBeenCalled()
-        expect(spawn).not.toHaveBeenCalled()
-        expect(ctx.sessions.get(childId)).toBeUndefined()
-      }
-
-      await expect(remote.toolApprovalPolicy(childId)).resolves.toMatchObject({
-        policy: 'ask',
-        source: 'lead',
-        editable: false,
-      })
-      expect(stat).toHaveBeenCalledWith(childId)
-      await expect(remote.setToolApprovalPolicy(childId, { policy: 'auto' })).rejects.toThrow(
-        'ACP_TOOL_APPROVAL_POLICY_INHERITED',
-      )
-      await expectNoChildPolicy()
-      // An ordinary fork copies the dormant parent's effective Lead policy;
-      // it never grants that parent a separate writable session policy.
-      const forkId = SessionId('evicted-policy-ordinary-fork')
-      const fork = ctx.sessions.prepare(forkId, { meta: { parentSession: childId } })
-      headers.set(forkId, fork.header)
-      const detachFork = ctx.sessions.enter(fork)
-      ctx.sessions.announce(fork)
-      detachFork()
-      await seedCodexBinding(persisted, forkId)
-      await expect(remote.toolApprovalPolicy(forkId)).resolves.toMatchObject({
-        policy: 'ask',
-        source: 'session',
-        editable: true,
-      })
-      expect(ctx.sessions.get(forkId)).toBeUndefined()
-      await expectNoChildPolicy()
-      await remote.setToolApprovalPolicy(lead.id, { policy: 'auto' })
-      await expect(remote.toolApprovalPolicy(childId)).resolves.toMatchObject({
-        policy: 'auto',
-        source: 'lead',
-        editable: false,
-      })
-      await expect(remote.toolApprovalPolicy(forkId)).resolves.toMatchObject({
-        policy: 'ask',
-        source: 'session',
-        editable: true,
-      })
-
-      // Activity ownership permits the Remote read, but the current default
-      // model cannot turn unrelated durable native metadata into an ACP route.
-      const nativeId = SessionId('evicted-policy-native')
-      const native = ctx.sessions.prepare(nativeId)
-      headers.set(nativeId, native.header)
-      const detachNative = ctx.sessions.enter(native)
-      ctx.sessions.announce(native)
-      detachNative()
-      await persisted.upsertActivity({
-        dshSessionId: nativeId,
-        ownerDshSessionId: nativeId,
-        promptAnchorMessageId: 'native-policy-user',
-        activityId: 'native-policy-tool',
-        time: 1,
-        kind: 'tool',
-        status: 'completed',
-        presentation: 'Completed tool',
-      })
-      await expect(remote.toolApprovalPolicy(nativeId)).rejects.toThrow('ACP_TOOL_APPROVAL_SESSION_NOT_ACP')
-      await expect(persisted.readToolApprovalPolicy(nativeId)).resolves.toBeUndefined()
-      expect(ctx.sessions.get(nativeId)).toBeUndefined()
-      await expectNoChildPolicy()
-
-      await seedCodexBinding(persisted, 'evicted-policy-binding-only')
-      await expect(remote.toolApprovalPolicy('evicted-policy-binding-only')).rejects.toThrow(
-        'ACP_TOOL_APPROVAL_SESSION_UNAVAILABLE',
-      )
-      await expect(remote.toolApprovalPolicy('evicted-policy-unknown')).rejects.toThrow(
-        'DSH tool approval access is not authorized',
-      )
-      await expect(persisted.readToolApprovalPolicy(SessionId('evicted-policy-binding-only'))).resolves.toBeUndefined()
-      rosterPresent = false
-      await expect(remote.toolApprovalPolicy(childId)).rejects.toThrow('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
-      await expectNoChildPolicy()
-      rosterPresent = true
-      liveAgents.delete(lead.id)
-      // The Lead is fully unavailable; this is not the separate native path
-      // that can resume an attached ordinary parent on explicit access.
-      detachLead()
-      await expect(remote.toolApprovalPolicy(childId)).rejects.toThrow('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
-      await expectNoChildPolicy()
-      liveAgents.set(lead.id, lead)
-      statFailure = new Error('durable metadata unavailable')
-      await expect(remote.toolApprovalPolicy(childId)).rejects.toBe(statFailure)
-      await expectNoChildPolicy()
-    } finally {
-      await ctx.fiber.dispose()
-      await persisted.dispose()
-      rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
-    }
-  })
-
   it('registers initial settings and follows later mutations through the real injected plugin', async () => {
     expect(inject).not.toContain('settings')
     const ctx = new Context()
@@ -294,68 +81,8 @@ describe('real Cordis ACP composition settings lifecycle', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'dsh-acp-composition-'))
     ctx.provide('settings', settings)
     ctx.provide('llm', llm)
-    const liveSessions = new Map<
-      string,
-      {
-        id?: string
-        isOwnSeq?: (seq: number) => boolean
-        header: { id?: string; origin?: string; parentSession?: string }
-        facts: unknown
-        permissions: unknown
-        requestHeader?: () => { config: { provider: string } }
-      }
-    >()
-    ctx.provide('sessions', { get: (id: string) => liveSessions.get(id) })
-    const liveAgents = new Map<
-      string,
-      { id: string; options: { provider: string }; model: { current(): { provider: string; model: string } } }
-    >()
-    const memberships = new Map<object, { id: string; role: 'lead' | 'teammate'; root: object }>()
-    const agentResolutionCalls: string[] = []
-    ctx.provide('agents', {
-      get: (id: string) => {
-        const agent = liveAgents.get(id)
-        if (agent !== undefined && !Object.hasOwn(agent, 'session'))
-          Object.defineProperty(agent, 'session', { get: () => liveSessions.get(id) })
-        return agent
-      },
-      list: () => [...liveAgents.values()],
-    })
-    ctx.provide('sessionController', {
-      resolveAgent: async (id: string) => {
-        agentResolutionCalls.push(id)
-        return liveSessions.get(id)?.header.origin === 'subagent'
-          ? { error: new Error('subagent sessions are not activatable') }
-          : { agent: liveAgents.get(id) }
-      },
-    })
-    let rosterFailure: Error | undefined
-    ctx.provide('subagents', {
-      rootOf: (agent: object) => memberships.get(agent)?.root ?? agent,
-      namesOf: (agent: { id: string }) => ({ self: agent.id }),
-      listDescendants: async (rootId: string) => {
-        if (rosterFailure !== undefined) throw rosterFailure
-        return [...memberships.entries()]
-          .filter(([, membership]) => membership.role === 'teammate' && membership.root === liveAgents.get(rootId))
-          .map(([agent]) => ({
-            kind: 'child',
-            id: (agent as { id: string }).id,
-            parentId: rootId,
-            mode: 'continuable',
-          }))
-      },
-    })
-    const nativeSnapshot = ctx.sessionProjections.snapshot.bind(ctx.sessionProjections)
-    vi.spyOn(ctx.sessionProjections, 'snapshot').mockImplementation(((session: any, keys?: any) =>
-      session.facts === undefined
-        ? nativeSnapshot(session, keys)
-        : {
-            values: {
-              subagent:
-                session.header.origin === 'subagent' ? { seq: 0, mode: 'continuable', label: session.id } : null,
-              acpExecution: { externalSubagent: false },
-            },
-          }) as never)
+    ctx.provide('sessions', { get: () => undefined })
+    ctx.provide('agents', { get: () => undefined, list: () => [] })
     // Use the actual host subprocess seam shape.  The health service and the
     // ACP probe must share this seam; otherwise a successful probe can still
     // be reported as executable=false/version=null by the Remote constructor.
@@ -421,8 +148,6 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       ownedProviderRoutes(): Promise<{ generations: Record<string, string> }>
       health(request?: unknown): Promise<{ providers: Array<{ id: string }> }>
       activitySnapshot(sessionId: string, request?: unknown): Promise<unknown>
-      toolApprovalPolicy(sessionId: string): Promise<{ policy: 'auto' | 'ask'; source: string; editable: boolean }>
-      setToolApprovalPolicy(sessionId: string, request: { policy: 'auto' | 'ask' }): Promise<unknown>
     }
     const initialRegistration = (await remote.ownedProviderRoutes()).generations['acp-codex']
     expect(initialRegistration).toEqual(expect.any(String))
@@ -469,135 +194,6 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       activities: [{ activityId: 'cold-tool', presentation: 'Ran pwd' }],
     })
     await expect(remote.activitySnapshot('unrelated-session')).rejects.toThrow('not authorized')
-    await seedCodexBinding(persisted, 'policy-no-session')
-    await expect(remote.toolApprovalPolicy('policy-no-session')).rejects.toThrow(
-      'ACP_TOOL_APPROVAL_SESSION_UNAVAILABLE',
-    )
-    await expect(persisted.readToolApprovalPolicy('policy-no-session' as never)).resolves.toBeUndefined()
-
-    // Exercise the production composition resolver against real sidecar rows,
-    // session ownership, and live Team membership (not a bridge callback stub).
-    const addSession = (id: string, parentSession?: string): void => {
-      liveSessions.set(id, {
-        id,
-        isOwnSeq: () => true,
-        header: { id, ...(parentSession === undefined ? { origin: 'native' } : { parentSession }) },
-        facts: {},
-        permissions: {},
-        requestHeader: () => ({ config: { provider: 'acp-codex' } }),
-      })
-      liveAgents.set(id, {
-        id,
-        options: { provider: 'acp-codex' },
-        model: { current: () => ({ provider: 'acp-codex', model: 'test-model' }) },
-      })
-    }
-    addSession('policy-root')
-    await seedCodexBinding(persisted, 'policy-root')
-    await expect(remote.toolApprovalPolicy('policy-root')).resolves.toMatchObject({
-      policy: 'auto',
-      source: 'session',
-      editable: true,
-    })
-    expect(agentResolutionCalls).not.toContain('policy-root')
-    await settings.replace({ agents: { codex: agent('Codex', 'codex-acp') }, toolApprovalDefault: 'ask' })
-    // First ACP admission snapshots the default; a later global change cannot
-    // rewrite an already initialized session.
-    await expect(remote.toolApprovalPolicy('policy-root')).resolves.toMatchObject({ policy: 'auto' })
-    addSession('policy-new-root')
-    await expect(remote.toolApprovalPolicy('policy-new-root')).resolves.toMatchObject({ policy: 'ask' })
-    await remote.setToolApprovalPolicy('policy-root', { policy: 'ask' })
-
-    const lead = liveAgents.get('policy-root')!
-    const teammate = liveAgents.get('policy-member') ?? {
-      id: 'policy-member',
-      options: { provider: 'acp-codex' },
-      model: { current: () => ({ provider: 'acp-codex', model: 'test-model' }) },
-    }
-    liveAgents.set(teammate.id, teammate)
-    liveSessions.set(teammate.id, {
-      id: teammate.id,
-      isOwnSeq: () => true,
-      header: { id: teammate.id, origin: 'subagent', parentSession: lead.id },
-      facts: {},
-      permissions: {},
-      requestHeader: () => ({ config: { provider: 'acp-codex' } }),
-    })
-    await seedCodexBinding(persisted, teammate.id)
-    const teamId = 'policy-team'
-    memberships.set(lead, { id: teamId, role: 'lead', root: lead })
-    memberships.set(teammate, { id: teamId, role: 'teammate', root: lead })
-    await expect(remote.toolApprovalPolicy(teammate.id)).resolves.toMatchObject({
-      policy: 'ask',
-      source: 'lead',
-      editable: false,
-    })
-
-    // An ordinary fork of that teammate is independent, initialized from the
-    // parent's effective Lead policy rather than the plugin default.
-    addSession('policy-fork', teammate.id)
-    await expect(remote.toolApprovalPolicy('policy-fork')).resolves.toMatchObject({
-      policy: 'ask',
-      source: 'session',
-      editable: true,
-    })
-    // A cold ordinary fork can initialize through its dormant teammate parent,
-    // whose current Lead roster remains authoritative.
-    liveAgents.delete(teammate.id)
-    await expect(remote.toolApprovalPolicy(teammate.id)).resolves.toMatchObject({
-      policy: 'ask',
-      source: 'lead',
-      editable: false,
-    })
-    addSession('policy-fork-dormant-parent', teammate.id)
-    await expect(remote.toolApprovalPolicy('policy-fork-dormant-parent')).resolves.toMatchObject({
-      policy: 'ask',
-      source: 'session',
-      editable: true,
-    })
-    // An unreadable authoritative roster cannot be treated as an empty one
-    // and initialize an independent child preference.
-    rosterFailure = new Error('Team roster unavailable')
-    await expect(remote.toolApprovalPolicy(teammate.id)).rejects.toBe(rosterFailure)
-    rosterFailure = undefined
-    await expect(persisted.readToolApprovalPolicy(teammate.id as never)).resolves.toBeUndefined()
-    memberships.set(teammate, { id: teamId, role: 'teammate', root: lead })
-    memberships.set(lead, { id: teamId, role: 'lead', root: lead })
-    // The teammate follows the Lead; the ordinary fork keeps its copied value.
-    await remote.setToolApprovalPolicy('policy-root', { policy: 'auto' })
-    await expect(remote.toolApprovalPolicy(teammate.id)).resolves.toMatchObject({
-      policy: 'auto',
-      source: 'lead',
-      editable: false,
-    })
-    await expect(remote.toolApprovalPolicy('policy-fork')).resolves.toMatchObject({
-      policy: 'ask',
-      source: 'session',
-      editable: true,
-    })
-    await expect(remote.toolApprovalPolicy('policy-fork-dormant-parent')).resolves.toMatchObject({
-      policy: 'ask',
-      source: 'session',
-      editable: true,
-    })
-    await expect(remote.toolApprovalPolicy(teammate.id)).resolves.toMatchObject({
-      policy: 'auto',
-      source: 'lead',
-      editable: false,
-    })
-    liveSessions.delete(teammate.id)
-    liveAgents.delete('policy-fork')
-    await expect(remote.toolApprovalPolicy('policy-fork')).resolves.toMatchObject({
-      policy: 'ask',
-      source: 'session',
-      editable: true,
-    })
-    await expect(remote.toolApprovalPolicy('policy-fork-dormant-parent')).resolves.toMatchObject({
-      policy: 'ask',
-      source: 'session',
-      editable: true,
-    })
-
     await settings.replace({ agents: { codex: agent('Codex', 'replacement-acp') } })
     const replacement = (await remote.ownedProviderRoutes()).generations['acp-codex']
     expect(replacement).toEqual(expect.any(String))

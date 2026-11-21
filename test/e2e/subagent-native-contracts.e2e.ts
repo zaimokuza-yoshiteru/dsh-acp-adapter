@@ -44,7 +44,6 @@ async function fixture(teams: boolean) {
     const log = join(host.workspaceCwd, 'subagent-protocol.log')
     const recordsPath = join(host.workspaceCwd, 'subagent-mcp.jsonl')
     await host.ctx.settings.replace('dsh-acp-adapter', {
-      toolApprovalDefault: 'ask',
       agents: {
         'subagent-fixture': {
           name: 'Native subagent contract fixture',

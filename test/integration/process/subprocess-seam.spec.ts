@@ -10,13 +10,14 @@ import type { AcpSubprocessHandle } from '../../../src/runtime/process/subproces
 //     credential 仍作为用户 opt-in 穿透
 //   - fail closed：spec.subprocess 缺席构造即抛 spawn-failure；seam 同步抛错 →
 //     initialize 分类 spawn-failure 且文案同格
-//   - 依赖面守卫：两包仅在 devDependencies（精确且同版），src/** 零值级 import
-//     （宿主模块实例一致性 纪律：值级 import dsh 包会让产物解析到第二实例）
+//   - 可选本地运行时由宿主提供，仅用于服务身份核验；两个包的开发版本均与宿主一致。
 
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { Context } from '@deepseek-ai/cordis'
+import { resolveSubprocessSeam } from '../../../src/host/composition/subprocess.ts'
 import { beforeAll, describe, expect, expectTypeOf, it, vi } from 'vitest'
 import { ACP_SUBPROCESS_UNAVAILABLE_MESSAGE, narrowSubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
 import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
@@ -81,9 +82,64 @@ describe('narrowSubprocessSeam 结构化窄化', () => {
     })
   })
 
-  it('真实服务（LocalSubprocessRuntime 实例）通过窄化', () => {
-    // sharedTestSubprocess 挂载时已窄化一次；此处对原始实例再窄化证明形态吻合
-    expect(narrowSubprocessSeam(subprocess)).toBeDefined()
+  it('retains confirmed local execution when the Host provides its actual mounted subprocess runtime', async () => {
+    const ctx = new Context()
+    try {
+      ctx.provide('subprocess', (await sharedTestSubprocess()).raw)
+      expect(resolveSubprocessSeam(ctx)).toMatchObject({ ok: true, seam: { localExecution: true } })
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('keeps ordinary subprocess support but never certifies an unknown or same-named provider as local', async () => {
+    class SshSubprocessRuntime {
+      readonly localExecution = true
+      spawn = vi.fn()
+      resolveExecutable = vi.fn()
+    }
+    class LocalSubprocessRuntime extends SshSubprocessRuntime {}
+    for (const provider of [new SshSubprocessRuntime(), new LocalSubprocessRuntime()]) {
+      const ctx = new Context()
+      try {
+        ctx.provide('subprocess', provider)
+        expect(resolveSubprocessSeam(ctx)).toEqual({
+          ok: true,
+          seam: { spawn: expect.any(Function), resolveExecutable: expect.any(Function) },
+        })
+        expect(provider.spawn).not.toHaveBeenCalled()
+        expect(provider.resolveExecutable).not.toHaveBeenCalled()
+      } finally {
+        await ctx.fiber.dispose()
+      }
+    }
+  })
+  it('compares the live Loader module export against the providing class after replacement', async () => {
+    class LocalSubprocessRuntime {
+      spawn = vi.fn()
+      resolveExecutable = vi.fn()
+    }
+    const ctx = new Context()
+    const loaderEntry = {
+      options: { name: '@deepseek-ai/dsh-subprocess-local' },
+      moduleNamespace: { LocalSubprocessRuntime },
+    }
+    Object.defineProperty(ctx.fiber, 'entry', { value: loaderEntry, configurable: true })
+    try {
+      ctx.provide('subprocess', new LocalSubprocessRuntime())
+      expect(resolveSubprocessSeam(ctx)).toMatchObject({ ok: true, seam: { localExecution: true } })
+      // The new module can export a different class with exactly the same name.
+      loaderEntry.moduleNamespace.LocalSubprocessRuntime = class LocalSubprocessRuntime {
+        spawn = vi.fn()
+        resolveExecutable = vi.fn()
+      }
+      expect(resolveSubprocessSeam(ctx)).toEqual({
+        ok: true,
+        seam: { spawn: expect.any(Function), resolveExecutable: expect.any(Function) },
+      })
+    } finally {
+      await ctx.fiber.dispose()
+    }
   })
 })
 
@@ -232,20 +288,23 @@ describe('fail closed（spawn-failure 分类）', () => {
 })
 
 describe('依赖面守卫（宿主模块实例一致性 纪律）', () => {
-  it('package.json：两包只作为精确 npm 开发依赖，不进入运行时依赖面', () => {
+  it('keeps the Host subprocess service external and declares optional local-provider identity lookup', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')) as {
       engines: { dsh: string }
       dependencies?: Record<string, string>
       peerDependencies?: Record<string, string>
       devDependencies?: Record<string, string>
+      peerDependenciesMeta?: Record<string, { optional?: boolean }>
     }
     const names = ['@deepseek-ai/dsh-subprocess', '@deepseek-ai/dsh-subprocess-local']
     for (const name of names) {
       expect(pkg.dependencies?.[name]).toBeUndefined()
-      expect(pkg.peerDependencies?.[name]).toBeUndefined()
       const version = pkg.devDependencies?.[name]
       expect(version).toBe(pkg.engines.dsh)
     }
+    expect(pkg.peerDependencies?.['@deepseek-ai/dsh-subprocess']).toBeUndefined()
+    expect(pkg.peerDependencies?.['@deepseek-ai/dsh-subprocess-local']).toBe(pkg.engines.dsh)
+    expect(pkg.peerDependenciesMeta?.['@deepseek-ai/dsh-subprocess-local']?.optional).toBe(true)
     expect(
       JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')).scripts['verify:dev-install'],
     ).toBeDefined()

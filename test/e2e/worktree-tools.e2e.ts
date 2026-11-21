@@ -5,6 +5,9 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
+import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
+import type { Page } from 'playwright'
+import { launchBrowser, newEnglishPage, type TestBrowser } from './browser.ts'
 import { OPTIONAL_TOOL_PLAN } from '../mock-agent/optional-tools-turn.ts'
 import type { WorktreePlan } from './fixtures/worktree/agent.ts'
 import { callResult, launchOptionalToolWorld } from './optional-tool-world.ts'
@@ -55,15 +58,43 @@ function launch(fork: boolean) {
   })
 }
 
+async function seedConversation(world: Awaited<ReturnType<typeof launch>>, browser: TestBrowser, plan: WorktreePlan) {
+  const page = await newEnglishPage(browser)
+  await page.goto(world.authenticatedUrl)
+  await connectFreshWorkspace(page, world.workspaceCwd, '.')
+  const settled = world.whenTurnSettled()
+  void settled.catch(() => undefined)
+  await writeComposerDraft(
+    page,
+    page.locator('[data-composer-input]').first(),
+    `${OPTIONAL_TOOL_PLAN}${JSON.stringify(plan)}`,
+  )
+  await page.getByRole('button', { name: 'Send message', exact: true }).click()
+  const owner = required(world.ctx.agents.get(await settled))
+  return { page, owner }
+}
+
+async function allowOnce(page: Page, tool: string) {
+  const request = page.locator('[data-approval-key]').filter({ hasText: tool })
+  await request.getByRole('button', { name: 'Allow once', exact: true }).click()
+}
+
 it('forks ACP private history across processes and resumes the native cwd notice in the real Git checkout', async () => {
   const world = await launch(true)
+  let browser: TestBrowser | undefined
   try {
     const originalCwd = realpathSync(world.workspaceCwd)
     const baseCommit = initializeRepository(originalCwd)
-    const owner = await world.create(originalCwd)
     const marker = 'PRIVATE_ACP_HISTORY_MUST_SURVIVE_FORK'
-    const seeded = await world.run(owner, { label: 'worktree-seed', calls: [], remember: marker } as WorktreePlan)
-    const originalSessionId = required(seeded.find((record) => record.kind === 'complete')).acpSessionId
+    browser = await launchBrowser({ headless: true })
+    const { page, owner } = await seedConversation(world, browser, {
+      label: 'worktree-seed',
+      calls: [],
+      remember: marker,
+    })
+    const originalSessionId = required(
+      world.records('worktree-seed').find((record) => record.kind === 'complete'),
+    ).acpSessionId
     const oldProcess = required(
       lifecycle(originalCwd).find((record) => record.kind === 'session/new' && record.sessionId === originalSessionId),
     ).pid
@@ -86,6 +117,7 @@ it('forks ACP private history across processes and resumes the native cwd notice
       },
       new AbortController().signal,
     )
+    await allowOnce(page, 'create_worktree')
     // The original ACP prompt is cancelled by the cwd change. Success is the
     // automatic next step's write, after a fresh process forks private history.
     await vi.waitFor(() => expect(existsSync(join(checkout, file))).toBe(true), { timeout: 45_000 })
@@ -141,26 +173,37 @@ it('forks ACP private history across processes and resumes the native cwd notice
     ).toBe(true)
     expect(world.nativeCalls.some((call) => call.owner === owner.id && call.name === 'create_worktree')).toBe(true)
   } finally {
-    await world.close()
+    try {
+      await browser?.close()
+    } finally {
+      await world.close()
+    }
   }
 }, 90_000)
 
 it('rejects native worktree and cd before side effects when the ACP Agent cannot fork its conversation', async () => {
   const world = await launch(false)
+  let browser: TestBrowser | undefined
   try {
     const originalCwd = realpathSync(world.workspaceCwd)
     initializeRepository(originalCwd)
     const alternate = join(originalCwd, 'existing-directory')
     mkdirSync(alternate)
-    const owner = await world.create(originalCwd)
-    await world.run(owner, { label: 'unsupported-worktree-seed', calls: [] })
-    const result = await world.run(owner, {
-      label: 'unsupported-worktree-guard',
-      calls: [
-        { name: 'create_worktree', arguments: { name: 'must-not-create', from: 'HEAD' } },
-        { name: 'working_directory', arguments: { cd: alternate } },
-      ],
-    })
+    browser = await launchBrowser({ headless: true })
+    const { page, owner } = await seedConversation(world, browser, { label: 'unsupported-worktree-seed', calls: [] })
+    const [result] = await Promise.all([
+      world.run(owner, {
+        label: 'unsupported-worktree-guard',
+        calls: [
+          { name: 'create_worktree', arguments: { name: 'must-not-create', from: 'HEAD' } },
+          { name: 'working_directory', arguments: { cd: alternate } },
+        ],
+      }),
+      (async () => {
+        await allowOnce(page, 'create_worktree')
+        await allowOnce(page, 'working_directory')
+      })(),
+    ])
     expect(required(result.find((record) => record.kind === 'directory')).names).toEqual(
       expect.arrayContaining(['create_worktree', 'working_directory']),
     )
@@ -172,14 +215,21 @@ it('rejects native worktree and cd before side effects when the ACP Agent cannot
     expect(git(originalCwd, 'branch', '--list', 'must-not-create')).toBe('')
     expect(existsSync(join(originalCwd, '.agents/worktrees'))).toBe(false)
     expect(lifecycle(originalCwd).filter((event) => event.kind === 'session/fork')).toEqual([])
-    const read = await world.run(owner, {
-      label: 'unsupported-readonly-directory',
-      calls: [{ name: 'working_directory', arguments: {} }],
-    })
+    const [read] = await Promise.all([
+      world.run(owner, {
+        label: 'unsupported-readonly-directory',
+        calls: [{ name: 'working_directory', arguments: {} }],
+      }),
+      allowOnce(page, 'working_directory'),
+    ])
     expect(callResult(read, 'working_directory')).toMatchObject({ isError: false })
     expect(callResult(read, 'working_directory').text).toContain(originalCwd)
     expect(lifecycle(originalCwd).filter((event) => event.kind === 'error')).toEqual([])
   } finally {
-    await world.close()
+    try {
+      await browser?.close()
+    } finally {
+      await world.close()
+    }
   }
 }, 90_000)

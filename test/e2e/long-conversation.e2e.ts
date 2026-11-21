@@ -301,7 +301,6 @@ describe('long conversation native renderer comparison', () => {
     )
     await startupPhase('ACP settings', () =>
       host.ctx.settings.replace('dsh-acp-adapter', {
-        toolApprovalDefault: 'auto',
         agents: {
           devin: {
             name: 'Long flow Devin protocol fixture',

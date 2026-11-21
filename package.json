@@ -144,6 +144,7 @@
     "@deepseek-ai/dsh-session-query": "0.2.2-rc.5",
     "@deepseek-ai/dsh-skill-filesystem": "0.2.2-rc.5",
     "@deepseek-ai/dsh-subagent": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-subprocess-local": "0.2.2-rc.5",
     "@deepseek-ai/dsh-system-prompt": "0.2.2-rc.5",
     "@deepseek-ai/dsh-time-context": "0.2.2-rc.5",
     "@deepseek-ai/dsh-timeout": "0.2.2-rc.5",
@@ -277,6 +278,9 @@
       "optional": true
     },
     "@deepseek-ai/dsh-subagent": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-subprocess-local": {
       "optional": true
     },
     "@deepseek-ai/dsh-system-prompt": {

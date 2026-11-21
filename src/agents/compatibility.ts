@@ -3,11 +3,7 @@
 import type { AcpAgentId, AcpStubAgentConfig } from '../contract/agent-config.ts'
 import { antigravityCompatibility } from './antigravity.ts'
 import { claudeCompatibility } from './claude.ts'
-import {
-  codebuddyHasModelSpecificConfiguration,
-  codebuddySessionOptions,
-  isAnonymousCodeBuddyLaunch,
-} from './codebuddy.ts'
+import { isCodeBuddyPeer, codebuddySessionOptions, isAnonymousCodeBuddyLaunch } from './codebuddy.ts'
 import { codexModelProbeOptions } from './codex.ts'
 import { devinModelProbeOptions, devinToolDiscoveryInstructions } from './devin.ts'
 import { qwenHasModelSpecificConfiguration } from './qwen.ts'
@@ -45,7 +41,7 @@ export function modelProbeOptions(
 
 /** These are observed protocol identities, not catalog names or profile ids. */
 export function hasModelSpecificConfiguration(agentName: string | undefined): boolean {
-  return codebuddyHasModelSpecificConfiguration(agentName) || qwenHasModelSpecificConfiguration(agentName)
+  return isCodeBuddyPeer(agentName) || qwenHasModelSpecificConfiguration(agentName)
 }
 
 /** Peers verified to report their selected model on both session creation and restoration. */
@@ -55,7 +51,7 @@ export function supportsAgentManagedModels(
 ): boolean {
   return agentName === undefined
     ? isAnonymousCodeBuddyLaunch(profile)
-    : codebuddyHasModelSpecificConfiguration(agentName) || agentName === 'OpenCode'
+    : isCodeBuddyPeer(agentName) || agentName === 'OpenCode'
 }
 
 /** An anonymous CodeBuddy handshake can become named across versions; it cannot become OpenCode. */

@@ -94,11 +94,26 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
 
   beforeAll(async () => {
     host = await launchAdapterWorld()
+    // The old release persisted a raw profile field which is no longer
+    // writable through settings. Remount from that same on-disk shape.
+    const manager = host.ctx.pluginManager
+    const installed = required(
+      (await manager.listPlugins()).find((row) => row.moduleName === '@zaimokuza/dsh-acp-adapter'),
+    )
+    const editor = host.ctx.configEditor
+    const entry = required(editor.entries().find((row) => row.options.id === 'dsh-acp-adapter'))
+    await editor.edit(entry, (raw) => ({ ...raw, toolApprovalDefault: 'auto' }))
+    expect(readFileSync(editor.documentPath, 'utf8')).toContain('toolApprovalDefault: auto')
+    expect(await manager.setPluginEnabled(installed.entryId, false)).toMatchObject({ application: 'applied' })
+    expect(await manager.setPluginEnabled(installed.entryId, true)).toMatchObject({ application: 'applied' })
     agentLog = join(host.workspaceCwd, 'fixture-agent.log')
-    await host.ctx.settings.replace('dsh-acp-adapter', {
-      toolApprovalDefault: 'ask',
-      agents: {
-        [profile]: {
+    const settings = () => host.ctx.settings.describe().find((entry) => entry.ns === 'dsh-acp-adapter')?.value
+    expect((settings() as { aiApproval?: boolean })?.aiApproval ?? false).toBe(false)
+    await host.ctx.settings.mutate('dsh-acp-adapter', [
+      {
+        op: 'set',
+        path: ['agents', profile],
+        value: {
           name: `Fixture ${profile}`,
           command: process.execPath,
           args: [join(root, 'test/mock-agent/mock-agent.ts')],
@@ -111,7 +126,10 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
           },
         },
       },
-    })
+      { op: 'set', path: ['aiApproval'], value: true },
+    ])
+    expect(settings()).toMatchObject({ aiApproval: true, agents: { [profile]: { name: `Fixture ${profile}` } } })
+    await host.ctx.settings.mutate('dsh-acp-adapter', [{ op: 'set', path: ['aiApproval'], value: false }])
     await vi.waitFor(() => expect(host.ctx.llm.listProviders().some((item) => item.id === provider)).toBe(true))
     host.ctx.effect(() => host.ctx.llm.registerAdapter(['native-control'], new NativeControl(() => nativeQuestionMode)))
     host.ctx.effect(() =>

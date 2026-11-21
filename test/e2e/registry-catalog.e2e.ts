@@ -78,7 +78,7 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     await page.keyboard.press('Tab')
     expect(
       await detail
-        .getByRole('button', { name: 'Default DSH tool approval', exact: true })
+        .getByRole('switch', { name: 'AI approval', exact: true })
         .evaluate((node) => node === document.activeElement),
     ).toBe(true)
     expect(await detail.getByRole('textbox').count()).toBe(0)
@@ -114,15 +114,22 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
       await menu.waitFor({ state: 'hidden' })
       expect(await addButton.evaluate((node) => node === document.activeElement)).toBe(true)
     }
-    await addButton.click()
-    await menu.waitFor({ state: 'visible' })
-    // Scrolling the settings panel can move the CSS-anchored card beyond the window.
-    // The trigger stays visible and can immediately reopen it at its new position.
-    const beforeScroll = required(await addButton.boundingBox(), 'catalog trigger before panel scroll')
-    await addButton.evaluate((button) => button.scrollIntoView({ block: 'center' }))
+    // Deliver a real scroll and click in one task so the panel's scroll event is still queued on open.
+    const opening = await addButton.evaluate((button: HTMLButtonElement) => {
+      button.scrollIntoView({ block: 'start', behavior: 'instant' })
+      const before = button.getBoundingClientRect().top
+      button.scrollIntoView({ block: 'center', behavior: 'instant' })
+      const atClick = button.getBoundingClientRect().top
+      button.click()
+      return { before, atClick }
+    })
+    expect(opening.atClick).not.toBe(opening.before)
+    await expectCatalogMenuFits(menu)
+    // Moving the anchor again after the menu opened must dismiss it and restore focus.
+    await addButton.evaluate((button) => button.scrollIntoView({ block: 'end', behavior: 'instant' }))
     await menu.waitFor({ state: 'detached' })
     const afterScroll = required(await addButton.boundingBox(), 'catalog trigger after panel scroll')
-    expect(afterScroll.y).not.toBe(beforeScroll.y)
+    expect(afterScroll.y).not.toBe(opening.atClick)
     expect(afterScroll.y).toBeGreaterThanOrEqual(0)
     expect(afterScroll.y + afterScroll.height).toBeLessThanOrEqual(500)
     expect(await addButton.evaluate((button) => button === document.activeElement)).toBe(true)

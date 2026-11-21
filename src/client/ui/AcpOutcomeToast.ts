@@ -12,7 +12,6 @@ const copy: Record<AcpUiOutcome, AcpLocaleKey> = {
   deleted: 'toastProfileDeleted',
   'delete-failed': 'toastProfileDeleteFailed',
   'session-option-failed': 'actionSaveFailed',
-  'tool-approval-failed': 'toolApprovalChangeFailed',
   'fork-failed': 'nativeForkFailed',
   'fork-workspace-attach-failed': 'nativeForkWorkspaceAttachFailed',
   'fork-storage-failed': 'nativeForkStorageFailed',

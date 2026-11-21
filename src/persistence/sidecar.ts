@@ -621,10 +621,6 @@ export interface AcpSidecar {
   readMemberModelSelection(sessionId: SessionId): Promise<AcpMemberModelSelection | undefined>
   writeMemberModelSelection(sessionId: SessionId, selection: AcpMemberModelSelection): Promise<void>
   clearMemberModelSelection(sessionId: SessionId, selection: AcpMemberModelSelection): Promise<void>
-  /** Read or durably initialize the session's host-owned DSH tool approval policy. */
-  readToolApprovalPolicy(sessionId: SessionId, initialize?: 'auto' | 'ask'): Promise<'auto' | 'ask' | undefined>
-  /** Persist a session-scoped override. */
-  writeToolApprovalPolicy(sessionId: SessionId, policy: 'auto' | 'ask'): Promise<void>
   /** 读该会话的 last-known option 快照；无行/畸形 → `undefined`（畸形行 warn 一次）。 */
   readOptionSnapshot(sessionId: SessionId): Promise<AcpOptionsSnapshotRecord | undefined>
   /**
@@ -777,22 +773,25 @@ export function acpCanonicalHash16(value: unknown): string {
   return createHash('sha256').update(stableStringify(value)).digest('hex').slice(0, 16)
 }
 
-/**
- * permission decided 载荷的去重/correlation 键：
- * `decided:<agentSessionId>:<toolCallId>:<requestId>`——ACP session + tool call +
- * request occurrence（requestId 为 randomUUID）三元组成；DSH session 分量即行键
- * （去重唯一索引按 `(dsh_session_id, dedupe_key)` 计）。非 decided 或任一分量
- * 缺失 → `undefined`（不去重，recordId 退化为内容哈希）。
- */
-function decidedDedupeKeyOf(kind: string, data: unknown): string | undefined {
+/** Keep historical decision keys; review retries are independently identified by attempt and phase. */
+function permissionDedupeKeyOf(kind: string, data: unknown): string | undefined {
   if (kind !== 'permission' || !isPlainObject(data)) return undefined
-  if (data.phase !== 'decided') return undefined
   const requestId = typeof data.requestId === 'string' && data.requestId.length > 0 ? data.requestId : undefined
   const agentSessionId =
     typeof data.agentSessionId === 'string' && data.agentSessionId.length > 0 ? data.agentSessionId : undefined
   const toolCallId = typeof data.toolCallId === 'string' && data.toolCallId.length > 0 ? data.toolCallId : undefined
+  if (data.phase === 'codebuddy-review' && agentSessionId && toolCallId && typeof data.scope === 'string')
+    return JSON.stringify([data.phase, agentSessionId, toolCallId, data.scope, data.decision])
   if (requestId === undefined || agentSessionId === undefined || toolCallId === undefined) return undefined
-  return `decided:${agentSessionId}:${toolCallId}:${requestId}`
+  if (data.phase === 'decision-withdrawn') return JSON.stringify([data.phase, agentSessionId, toolCallId, requestId])
+  if (data.phase === 'decided') return `decided:${agentSessionId}:${toolCallId}:${requestId}`
+  if (
+    (data.phase === 'ai-review-started' || data.phase === 'ai-review-result') &&
+    typeof data.attemptId === 'string' &&
+    data.attemptId
+  )
+    return JSON.stringify([data.phase, agentSessionId, toolCallId, requestId, data.attemptId])
+  return undefined
 }
 
 /** 非 decided 记录的 recordId 基座：`h:<sha256(canonical [kind,time,payload])>` 前 16 hex。 */
@@ -908,10 +907,6 @@ CREATE TABLE IF NOT EXISTS member_model_selections (
   model_id TEXT NOT NULL,
   session_seq INTEGER,
   native_selection_key TEXT
-) STRICT;
-CREATE TABLE IF NOT EXISTS tool_approval_policies (
-  dsh_session_id TEXT PRIMARY KEY,
-  policy TEXT NOT NULL CHECK (policy IN ('auto', 'ask'))
 ) STRICT;
 CREATE TABLE IF NOT EXISTS option_snapshots (
   dsh_session_id TEXT PRIMARY KEY,
@@ -1401,7 +1396,7 @@ class SidecarStore implements AcpSidecar {
 
   /** Allocate audit identities and update the binding index under the caller's SQLite write lock. */
   private insertInTransaction(sessionId: string, entry: StampedEntry, directoryForkParent?: AcpBindingData): void {
-    const dedupeKey = decidedDedupeKeyOf(entry.kind, entry.data)
+    const dedupeKey = permissionDedupeKeyOf(entry.kind, entry.data)
     const deduplicate = entry.kind === 'permission' && dedupeKey !== undefined
     if (deduplicate && this.stmtHasDedupe?.get(sessionId, dedupeKey)) return
     if (entry.kind === 'binding') {
@@ -2794,38 +2789,6 @@ class SidecarStore implements AcpSidecar {
         selection.sessionSeq ?? null,
         selection.nativeSelectionKey ?? null,
       )
-  }
-
-  async readToolApprovalPolicy(sessionId: SessionId, initialize?: 'auto' | 'ask'): Promise<'auto' | 'ask' | undefined> {
-    assertSafeSessionId(sessionId)
-    if (initialize !== undefined && initialize !== 'auto' && initialize !== 'ask')
-      throw new TypeError('Invalid ACP tool approval policy')
-    const db = initialize === undefined ? this.openIfExists() : this.ensureDb()
-    if (db === undefined) return undefined
-    if (initialize !== undefined)
-      db.prepare(
-        'INSERT INTO tool_approval_policies (dsh_session_id, policy) VALUES (?, ?) ON CONFLICT(dsh_session_id) DO NOTHING',
-      ).run(sessionId, initialize)
-    const row = db.prepare('SELECT policy FROM tool_approval_policies WHERE dsh_session_id = ?').get(sessionId) as
-      { policy?: unknown } | undefined
-    if (row === undefined) return undefined
-    if (row.policy !== 'auto' && row.policy !== 'ask') {
-      this.warn(
-        `dsh-acp sidecar: invalid tool approval policy for session ${JSON.stringify(sessionId as string)}; refusing to choose a policy`,
-      )
-      throw new Error('ACP_TOOL_APPROVAL_POLICY_INVALID')
-    }
-    return row.policy
-  }
-
-  async writeToolApprovalPolicy(sessionId: SessionId, policy: 'auto' | 'ask'): Promise<void> {
-    assertSafeSessionId(sessionId)
-    if (policy !== 'auto' && policy !== 'ask') throw new TypeError('Invalid ACP tool approval policy')
-    this.ensureDb()
-      .prepare(
-        'INSERT INTO tool_approval_policies (dsh_session_id, policy) VALUES (?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET policy = excluded.policy',
-      )
-      .run(sessionId, policy)
   }
 
   writeOptionSnapshot(sessionId: SessionId, snapshot: AcpOptionsSnapshotRecord): Promise<void> {

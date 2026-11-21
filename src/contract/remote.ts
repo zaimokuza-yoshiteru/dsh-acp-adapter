@@ -165,6 +165,9 @@ export type AcpProbePhaseView = 'initialize' | 'session'
  * **密钥边界** 只回显 command/args/loginHint，env 永不在响应里（钉版）。
  */
 export interface AcpProviderHealth {
+  /** Present when this Host can isolate a local Devin reviewer. Choices come from the existing probe. */
+  readonly openCodeReviewModels?: readonly { readonly id: string; readonly name: string }[]
+  readonly devinReviewModels?: readonly { readonly id: string; readonly name: string }[]
   readonly id: string
   readonly name: string
   readonly command: string
@@ -233,6 +236,8 @@ export interface AcpHealthView {
   readonly liveSessions: readonly AcpLiveSessionContinuity[] | null
   /** Present only when this Host runs a DSH version other than the one the adapter is built for. */
   readonly hostVersion?: AcpHostVersionMismatchView
+  /** This Host cannot run an isolated review process on its execution backend. */
+  readonly localReviewUnavailable?: true
 }
 
 export interface AcpHostVersionMismatchView {
@@ -260,9 +265,16 @@ export interface AcpProjectedSubagentsView {
 export type AcpAuditSummaryCode =
   | 'binding.established'
   | 'permission.asked'
+  | 'permission.ai-review-started'
+  | 'permission.ai-review-result'
   | 'permission.pre-tool-denied'
+  | 'permission.codebuddy-review'
   | 'permission.bridge'
   | 'permission.decided'
+  | 'permission.ai-decided'
+  | 'permission.decision-withdrawn'
+  | 'permission.opencode-ai-decided'
+  | 'permission.card-decided'
   | 'reconciliation.required'
   | 'replay.matched'
   | 'replay.different'
@@ -510,19 +522,6 @@ export type AcpAgentSessionFrame =
 export type AcpAgentSessionOptionWrite =
   | { readonly kind: 'config'; readonly id: string; readonly value: string | boolean }
   | { readonly kind: 'mode'; readonly id: string }
-
-export interface AcpToolApprovalPolicySnapshot {
-  readonly sessionId: string
-  readonly policy: 'auto' | 'ask'
-  readonly source: 'session' | 'lead'
-  readonly editable: boolean
-}
-export type AcpToolApprovalPolicyFrame =
-  | { readonly type: 'opened'; readonly snapshot: AcpToolApprovalPolicySnapshot }
-  | { readonly type: 'changed'; readonly snapshot: AcpToolApprovalPolicySnapshot }
-export interface AcpToolApprovalPolicyWrite {
-  readonly policy: 'auto' | 'ask'
-}
 
 /** ACP agent 配置的五态 wire 词表；消费层从此 client-safe contract 派生。 */
 export const ACP_AGENT_CONFIG_STATES = [

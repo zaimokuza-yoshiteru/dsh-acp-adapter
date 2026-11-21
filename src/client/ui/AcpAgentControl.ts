@@ -14,8 +14,6 @@ import {
 } from './agent-session-controls.ts'
 import type { RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
 import { agentSessionStream } from '../data/agent-session-stream.ts'
-import { toolApprovalPolicyStream, type ToolApprovalPolicySnapshot } from '../data/tool-approval-policy-stream.ts'
-import { toolApprovalPolicyGroup } from './agent-session-controls.ts'
 import type { AcpUiFeedback } from '../data/feedback.ts'
 import type { SessionAccessSource } from './session-action-access.ts'
 import { localizedDiagnostic } from '../data/diagnostics.ts'
@@ -69,7 +67,6 @@ export function AcpAgentControl({
   const sessionTitle = useProjection('title')
   const running = useSession((state) => state.running)
   const optionWriteAllowed = useAccess('dshAcp/setAgentSessionOption')
-  const policyWriteAllowed = useAccess('dshAcp/setToolApprovalPolicy')
   const [defaultProvider, setDefaultProvider] = useState<string | undefined>()
   const [defaultGeneration, setDefaultGeneration] = useState(0)
   useEffect(
@@ -97,10 +94,6 @@ export function AcpAgentControl({
     snapshotIsAcp(projection, (id) => includesRoute(routes.providers, id), defaultProvider),
   )
   const [snapshot, setSnapshot] = useState<AcpAgentSessionSnapshotView | null>(null)
-  const [policySnapshot, setPolicySnapshot] = useState<ToolApprovalPolicySnapshot | null>(null)
-  const [policyError, setPolicyError] = useState<'toolApprovalUnavailable' | 'toolApprovalChangeFailed' | null>(null)
-  const [policyStale, setPolicyStale] = useState(false)
-  const [policyReadFailed, setPolicyReadFailed] = useState(false)
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<{ key: 'agentControlUnavailable' | 'actionSaveFailed'; detail?: string } | null>(
@@ -116,10 +109,6 @@ export function AcpAgentControl({
     setError(null)
     setReadFailed(false)
     setSnapshot(null)
-    setPolicySnapshot(null)
-    setPolicyError(null)
-    setPolicyStale(false)
-    setPolicyReadFailed(false)
     if (!isAcp || sessionId === undefined) return
     const stream = agentSessionStream(
       remote,
@@ -145,82 +134,29 @@ export function AcpAgentControl({
     }
   }, [isAcp, remote, streamFactory, sessionId, retry])
 
-  const policyEpoch = useRef(0)
-  useEffect(() => {
-    const current = ++policyEpoch.current
-    if (!isAcp || sessionId === undefined) {
-      setPolicySnapshot(null)
-      setPolicyError(null)
-      setPolicyStale(false)
-      setPolicyReadFailed(false)
-      return
-    }
-    setPolicySnapshot(null)
-    setPolicyError(null)
-    setPolicyStale(false)
-    setPolicyReadFailed(false)
-    const stream = toolApprovalPolicyStream(
-      remote,
-      streamFactory,
-      sessionId,
-      (value) => {
-        if (current !== policyEpoch.current || value.sessionId !== sessionId) return
-        setPolicySnapshot(value)
-        setPolicyError(null)
-        setPolicyStale(false)
-        setPolicyReadFailed(false)
-      },
-      () => {
-        if (current !== policyEpoch.current) return
-        setPolicyError('toolApprovalUnavailable')
-        setPolicyStale(true)
-        setPolicyReadFailed(true)
-      },
-    )
-    stream.start()
-    return () => {
-      ++policyEpoch.current
-      void stream.dispose()
-    }
-  }, [isAcp, remote, streamFactory, sessionId, retry])
-
-  if (
-    !isAcp ||
-    (snapshot !== null && snapshot.sessionId !== sessionId) ||
-    (policySnapshot !== null && policySnapshot.sessionId !== sessionId)
-  )
-    return null
-  if (snapshot === null && policySnapshot === null) {
-    if (policyError === null && error === null) return null
+  if (!isAcp || (snapshot !== null && snapshot.sessionId !== sessionId)) return null
+  if (snapshot === null) {
+    if (error === null) return null
     return h(
       'button',
       {
         type: 'button',
         className: `${css.trigger} ${css.retryTrigger}`,
         onClick: () => setRetry((value) => value + 1),
-        title: t(policyError !== null ? 'toolApprovalRetry' : 'agentControlRetry'),
+        title: t('agentControlRetry'),
       },
-      policyError !== null ? t(policyError) : localizedDiagnostic(t, error!.key, error!.detail),
+      localizedDiagnostic(t, error.key, error.detail),
     )
   }
   // The native running projection also locks the small interval before ACP prompt begins.
-  const visibleSnapshot =
-    snapshot === null ? null : { ...snapshot, editable: snapshot.editable && !running && optionWriteAllowed }
-  const settings = visibleSnapshot === null ? [] : agentControlMenuGroups(visibleSnapshot, t)
-  const label = snapshot === null ? t('toolApprovalSession') : agentControlLabel(snapshot, t)
-  const groups = [
-    ...(policySnapshot === null || policyStale
-      ? []
-      : [toolApprovalPolicyGroup({ ...policySnapshot, editable: policySnapshot.editable && policyWriteAllowed }, t)]),
-    ...settings,
-  ]
-  const footer = [...(snapshot === null ? [] : agentControlFooter(snapshot, t))]
-  // A read-only explanation must not create an empty menu before controls arrive.
-  if (groups.length === 0 && footer.length === 0 && error === null && policyError === null) return null
-  if (snapshot !== null && (running || (!visibleSnapshot?.editable && snapshot.freshness === 'live')))
+  const visibleSnapshot = { ...snapshot, editable: snapshot.editable && !running && optionWriteAllowed }
+  const groups = agentControlMenuGroups(visibleSnapshot, t)
+  const label = agentControlLabel(snapshot, t)
+  const footer = [...agentControlFooter(snapshot, t)]
+  if (groups.length === 0 && footer.length === 0 && error === null) return null
+  if (running || (!visibleSnapshot.editable && snapshot.freshness === 'live'))
     footer.push({ type: 'label', id: 'read-only', text: t(running ? 'agentControlRunning' : 'agentControlReadOnly') })
   if (error !== null) footer.push({ type: 'label', id: 'error', text: localizedDiagnostic(t, error.key, error.detail) })
-  if (policyError !== null) footer.push({ type: 'label', id: 'policy-error', text: t(policyError) })
   const select = (item: AgentControlChoice): void => {
     if (sessionId === undefined) return
     const current = epoch.current
@@ -228,36 +164,8 @@ export function AcpAgentControl({
     const sourceSession = { id: sessionId, title: sessionTitle ?? null }
     setOpen(false)
     setBusy(true)
-    if (item.write.kind === 'tool-approval-policy') {
-      if (
-        policySnapshot === null ||
-        policyStale ||
-        !policySnapshot.editable ||
-        !policyWriteAllowed ||
-        sessionAccessSource(sessionId, 'dshAcp/setToolApprovalPolicy')?.getSnapshot() !== true
-      ) {
-        setBusy(false)
-        return
-      }
-      setPolicyError(null)
-      void remote
-        .setToolApprovalPolicy(sessionId, { policy: item.write.policy })
-        .then((result) => {
-          if (result.ok) return
-          feedback.report('tool-approval-failed', current === epoch.current ? undefined : sourceSession)
-          if (current === epoch.current) setPolicyError('toolApprovalChangeFailed')
-        })
-        .catch(() => {
-          feedback.report('tool-approval-failed', current === epoch.current ? undefined : sourceSession)
-          if (current === epoch.current) setPolicyError('toolApprovalChangeFailed')
-        })
-        .finally(() => {
-          if (current === epoch.current) setBusy(false)
-        })
-      return
-    }
     if (
-      !visibleSnapshot?.editable ||
+      !visibleSnapshot.editable ||
       visibleSnapshot.freshness !== 'live' ||
       !optionWriteAllowed ||
       sessionAccessSource(sessionId, 'dshAcp/setAgentSessionOption')?.getSnapshot() !== true
@@ -289,7 +197,7 @@ export function AcpAgentControl({
     disabled: busy,
     side: 'top',
     onOpenChange: (value) => {
-      if (value && (readFailed || policyReadFailed)) setRetry((current) => current + 1)
+      if (value && readFailed) setRetry((current) => current + 1)
       setOpen(value)
     },
     onSelect: select,

@@ -232,20 +232,19 @@ afterEach(async () => {
 })
 
 describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
-  it('durably initializes a tool approval policy once and keeps session overrides isolated', async () => {
-    const lead = SessionId('approval-policy-lead')
-    const member = SessionId('approval-policy-member')
-    expect(await store.readToolApprovalPolicy(lead)).toBeUndefined()
-    expect(await store.readToolApprovalPolicy(lead, 'auto')).toBe('auto')
-    expect(await store.readToolApprovalPolicy(lead, 'ask')).toBe('auto')
-    await store.writeToolApprovalPolicy(lead, 'ask')
-    expect(await store.readToolApprovalPolicy(lead, 'auto')).toBe('ask')
-    expect(await store.readToolApprovalPolicy(member, 'auto')).toBe('auto')
+  it('opens an existing session without consulting its retired tool approval preference', async () => {
+    const id = SessionId('legacy-auto')
+    await store.append(id, { kind: 'binding', data: BINDING_A })
+    const binding = await store.readLatestBinding(id)
     await store.dispose()
+    const db = rawDb()
+    db.exec('CREATE TABLE tool_approval_policies (dsh_session_id TEXT PRIMARY KEY, policy TEXT NOT NULL)')
+    db.prepare("INSERT INTO tool_approval_policies VALUES (?, 'auto')").run(id)
+    db.close()
     store = createAcpSidecar({ root })
-    expect(await store.readToolApprovalPolicy(lead)).toBe('ask')
-    expect(await store.readToolApprovalPolicy(member)).toBe('auto')
+    expect(await store.readLatestBinding(id)).toEqual(binding)
   })
+
   it('reopens pre-diagnostics SQLite facts without rewriting payloads or blocking a valid binding', async () => {
     const id = SessionId('sess-before-diagnostics')
     await store.append(id, { kind: 'binding', data: BINDING_A })
@@ -913,6 +912,61 @@ describe('reconciliation kind', () => {
 })
 
 describe('permission decided 重连重放去重（/ dedupe_key）', () => {
+  it('keeps the withdrawn grant and its final cancellation in order after restart', async () => {
+    const sid = SessionId('work')
+    const ids = { requestId: 'ai-1', agentSessionId: 'main', toolCallId: 'read-1' }
+    const decision = {
+      ...ids,
+      phase: 'decided',
+      outcome: 'selected',
+      optionId: 'once',
+      decisionVia: 'opencode-ai',
+      selectedOptionKind: 'allow_once',
+    } as const
+    const withdrawal = { ...ids, phase: 'decision-withdrawn', outcome: 'cancelled' } as const
+    for (const data of [decision, withdrawal, withdrawal]) await store.append(sid, { kind: 'permission', data })
+    await store.dispose()
+    store = createAcpSidecar({ root })
+    const rows = (await store.list(sid)).map(auditTimelineRowOf)
+    expect(rows).toMatchObject([
+      { summaryCode: 'permission.opencode-ai-decided', status: 'allow_once' },
+      { summaryCode: 'permission.decision-withdrawn', status: 'cancelled' },
+    ])
+  })
+
+  it('persists independently correlated AI attempts and projects their phases after reopening', async () => {
+    const sid = SessionId('member-1')
+    const attempt = {
+      requestId: 'one',
+      attemptId: 'attempt-1',
+      agentSessionId: 'external-member',
+      toolCallId: 'call',
+      model: 'swe-2-high',
+      policyVersion: 'v1',
+      operationHash: 'operation-digest',
+    }
+    const start = { ...attempt, phase: 'ai-review-started' } as const
+    const result = {
+      ...attempt,
+      phase: 'ai-review-result',
+      status: 'high',
+      reason: 'Sharing a private document',
+      durationMs: 1000,
+    } as const
+    for (const data of [start, start, result, result, { ...start, attemptId: 'attempt-2' }]) {
+      await store.append(sid, { kind: 'permission', data })
+    }
+    await store.dispose()
+    store = createAcpSidecar({ root })
+    const entries = await store.list(sid)
+    expect(entries.map((e) => e.data)).toEqual([start, result, { ...start, attemptId: 'attempt-2' }])
+    expect(entries.map(auditTimelineRowOf)).toMatchObject([
+      { summaryCode: 'permission.ai-review-started', subject: 'swe-2-high', status: null },
+      { summaryCode: 'permission.ai-review-result', status: 'high', severity: 'warning' },
+      { summaryCode: 'permission.ai-review-started', status: null },
+    ])
+  })
+
   it('同 requestId 的 decided 第二次落库被跳过（行集不变，append 正常 resolve）', async () => {
     await store.append(SessionId('sess-1'), { kind: 'permission', time: 1, data: permissionData('req-1') })
     await store.append(SessionId('sess-1'), { kind: 'permission', time: 2, data: decidedData('req-1') })

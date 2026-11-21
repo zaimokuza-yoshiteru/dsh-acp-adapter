@@ -25,14 +25,7 @@ describe('ACP Agent control route selection', () => {
 })
 
 describe('ACP Agent control operation feedback', () => {
-  it.each([
-    ['session-option-failed', 'Saving failed. Try again.', '保存失败，请重试。'],
-    [
-      'tool-approval-failed',
-      'Could not save the DSH tool approval setting. Please retry.',
-      '无法保存 DSH 工具审批设置，请重试。',
-    ],
-  ] as const)('keeps %s feedback visible outside the menu and localizes at render', (outcome, english, chinese) => {
+  it('keeps session option failures visible outside the menu and localizes at render', () => {
     const feedback = new AcpUiFeedback()
     const render = (dictionary: typeof en) => {
       const hasKey = (key: string): key is keyof typeof dictionary => Object.hasOwn(dictionary, key)
@@ -47,15 +40,15 @@ describe('ACP Agent control operation feedback', () => {
       }) as { props: { text: string; tone?: string; onDone(): void } } | null
     }
     expect(render(en)).toBeNull()
-    feedback.report(outcome)
+    feedback.report('session-option-failed')
     const first = render(en)!
-    expect(first.props.text).toBe(english)
+    expect(first.props.text).toBe(en.actionSaveFailed.replace('{reference}', ''))
     expect(first.props.tone).toBeUndefined()
-    expect(render(zh)?.props.text).toBe(chinese)
+    expect(render(zh)?.props.text).toBe(zh.actionSaveFailed.replace('{reference}', ''))
     // A completed older toast cannot dismiss a newer operation's result.
-    feedback.report(outcome)
+    feedback.report('session-option-failed')
     first.props.onDone()
-    expect(render(en)?.props.text).toBe(english)
+    expect(render(en)?.props.text).toBe(en.actionSaveFailed.replace('{reference}', ''))
     render(en)!.props.onDone()
     expect(render(en)).toBeNull()
   })

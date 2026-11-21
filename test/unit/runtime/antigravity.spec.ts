@@ -5,7 +5,7 @@ import {
   normalizeAntigravityPresentation,
   resolveAntigravityNativeTool,
 } from '../../../src/host/tools/antigravity.ts'
-import { isAntigravityInteractionCall } from '../../../src/domain/policy/antigravity-question.ts'
+import { isAntigravityInteractionCall } from '../../../src/agents/antigravity.ts'
 
 describe('antigravity MCP adapter and schema parsing', () => {
   it('fingerprints the executable variable consumed by the confirmed wrapper', () => {

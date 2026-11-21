@@ -188,8 +188,6 @@ async function createHarness(sessionId: string) {
     agent.id,
     { mcpCapabilities: { http: true } },
     undefined,
-    async () => 'auto',
-    undefined,
     assembly.tools,
   ))!
   cleanup.push(() => lease.close())

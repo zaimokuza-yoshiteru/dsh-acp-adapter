@@ -9,6 +9,7 @@ import {
   IconPlusOutlineMedium,
   IconRefreshOutlineMedium,
   Menu,
+  Switch,
   Tag,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
@@ -16,6 +17,7 @@ import {
   draftFromAgent,
   draftFromCatalogEntry,
   dropMaskedEnvKey,
+  effectiveRuntimeOf,
   emptyDraft,
   errorMessageOf,
   healthRowOf,
@@ -44,7 +46,9 @@ export interface AcpSectionWire {
   saveAgent(editingId: string | undefined, draft: AgentDraft): Promise<string | undefined>
   deleteAgent(id: string): Promise<string | undefined>
   notifyOutcome?(outcome: 'saved' | 'save-failed' | 'deleted' | 'delete-failed'): void
-  setToolApprovalDefault(policy: 'auto' | 'ask'): Promise<string | undefined>
+  setAiApproval(enabled: boolean): Promise<string | undefined>
+  setOpenCodeReviewModel(id: string, model: string): Promise<string | undefined>
+  setDevinReviewModel(model: string): Promise<string | undefined>
   /**
    * 删除确认提示：该 profile 的既有会话 binding 计数；undefined = 计数不可
    * 得（RPC 失败/畸形），确认块退回无计数的基础文案（不冒充 0）。
@@ -86,7 +90,6 @@ function Loaded({
   const editorKey = useRef(0)
   const [approvalSaving, setApprovalSaving] = useState(false)
   const [approvalSaveFailed, setApprovalSaveFailed] = useState(false)
-  const [approvalMenuOpen, setApprovalMenuOpen] = useState(false)
   // Delegate placement, scrolling, focus and keyboard interaction to the native Menu.
   const [addMenuOpen, setAddMenuOpen] = useState(false)
   const addTrigger = useRef<HTMLButtonElement>(null)
@@ -103,10 +106,12 @@ function Loaded({
       if (entry?.intersectionRatio === 0) close()
     })
     observer.observe(trigger)
-    // The native portal follows its scrolling anchor even when the card already fills
-    // the window. Dismiss on panel scroll while leaving the menu's own scrollport alone.
+    // Scrolling the trigger into view can queue a scroll event that arrives after the click.
+    const anchorAtOpen = trigger.getBoundingClientRect()
     const onScroll = (event: Event) => {
-      if (event.target instanceof Node && event.target.contains(trigger)) close()
+      if (!(event.target instanceof Node) || !event.target.contains(trigger)) return
+      const anchor = trigger.getBoundingClientRect()
+      if (anchor.top !== anchorAtOpen.top || anchor.left !== anchorAtOpen.left) close()
     }
     const doc = trigger.ownerDocument
     doc.addEventListener('scroll', onScroll, true)
@@ -161,12 +166,11 @@ function Loaded({
   const ids = sortedAgentIds(agents)
   children.push(h('h2', { key: 'agents-title', className: css.sectionTitle }, t('agentConfiguration')))
 
-  const onApprovalDefaultChange = async (policy: unknown): Promise<void> => {
-    if (policy !== 'auto' && policy !== 'ask') return
+  const saveReview = async (write: () => Promise<string | undefined>): Promise<void> => {
     setApprovalSaving(true)
     setApprovalSaveFailed(false)
     try {
-      if ((await panel.setToolApprovalDefault(policy)) !== undefined) setApprovalSaveFailed(true)
+      if ((await write()) !== undefined) setApprovalSaveFailed(true)
     } catch {
       setApprovalSaveFailed(true)
     } finally {
@@ -355,49 +359,118 @@ function Loaded({
     ),
   )
 
+  const reviewDisabled = readOnly || approvalSaving
+  const modelFields: ReactNode[] = []
+  if (settings.aiApproval) {
+    for (const id of ids) {
+      const agent = agents[id]!
+      const row = healthRowOf(snapshot.health.rows, id)
+      const devin = effectiveRuntimeOf(id, agent) === 'devin'
+      const choices = devin ? row?.devinReviewModels : row?.openCodeReviewModels
+      if (!choices || (!choices.length && !agent.openCodeReviewModel)) continue
+      modelFields.push(
+        h(ReviewModelField, {
+          key: id,
+          profileId: id,
+          t,
+          label: t('reviewModelFor', { name: agent.name }),
+          model: devin ? settings.devinReviewModel : (agent.openCodeReviewModel ?? ''),
+          models: devin ? choices : [{ id: '', name: t('reviewSessionModel') }, ...choices],
+          disabled: reviewDisabled,
+          onSelect: (model) => {
+            void saveReview(() => (devin ? panel.setDevinReviewModel(model) : panel.setOpenCodeReviewModel(id, model)))
+          },
+        }),
+      )
+    }
+  }
   children.push(
     h(
       'section',
-      { key: 'tool-approval', className: css.preferences, 'aria-labelledby': 'dsh-acp-approval-title' },
-      h('h2', { id: 'dsh-acp-approval-title', className: css.preferencesTitle }, t('toolApprovalDefault')),
-      h('p', { className: css.hint }, t('toolApprovalDefaultHelp')),
-      h(Menu, {
-        open: approvalMenuOpen,
-        portal: true,
-        dense: true,
-        autoFocus: true,
-        side: 'bottom',
-        align: 'start',
-        selectedId: settings.toolApprovalDefault,
-        items: [
-          { id: 'auto', label: h('span', { className: css.catalogEntry }, t('toolApprovalAuto')) },
-          { id: 'ask', label: h('span', { className: css.catalogEntry }, t('toolApprovalAsk')) },
-        ],
-        onClose: () => setApprovalMenuOpen(false),
-        onSelect: (id: string) => {
-          setApprovalMenuOpen(false)
-          void onApprovalDefaultChange(id)
-        },
-        anchor: h(
-          'button',
-          {
-            type: 'button',
-            className: css.approvalButton,
-            disabled: readOnly || approvalSaving,
-            'aria-label': t('toolApprovalDefault'),
-            'aria-haspopup': 'menu',
-            'aria-expanded': approvalMenuOpen,
-            onClick: () => setApprovalMenuOpen((value) => !value),
+      {
+        key: 'ai-approval',
+        className: css.preferences,
+        'aria-labelledby': 'dsh-acp-approval-title',
+        'aria-describedby': 'dsh-acp-approval-help',
+      },
+      h(
+        'div',
+        { className: css.preferenceRow },
+        h('h2', { id: 'dsh-acp-approval-title', className: css.preferencesTitle }, t('aiApproval')),
+        h(Switch, {
+          label: t('aiApproval'),
+          checked: settings.aiApproval,
+          disabled: reviewDisabled,
+          onChange: (enabled) => {
+            void saveReview(() => panel.setAiApproval(enabled))
           },
-          t(settings.toolApprovalDefault === 'auto' ? 'toolApprovalAuto' : 'toolApprovalAsk'),
-          h(IconChevronDownOutlineMedium, null),
-        ),
-      }),
-      approvalSaveFailed ? h('p', { className: css.error, role: 'alert' }, t('toolApprovalSaveFailed')) : null,
+        }),
+      ),
+      h('p', { id: 'dsh-acp-approval-help', className: css.hint }, t('aiApprovalHelp')),
+      settings.aiApproval && snapshot.health.localReviewUnavailable
+        ? h('p', { className: css.notice }, t('aiApprovalUnavailable'))
+        : null,
+      ...modelFields,
+      approvalSaveFailed ? h('p', { className: css.error, role: 'alert' }, t('reviewSaveFailed')) : null,
     ),
   )
-
   return h('div', { className: css.section, 'data-dsh-acp-panel': '' }, children)
+}
+
+function ReviewModelField({
+  profileId,
+  t,
+  label,
+  model,
+  models,
+  disabled,
+  onSelect,
+}: {
+  t: AcpTranslate
+  label: string
+  model: string
+  profileId: string
+  models: NonNullable<AcpProviderHealth['devinReviewModels']>
+  disabled: boolean
+  onSelect(model: string): void
+}): ReactNode {
+  const [open, setOpen] = useState(false)
+  const current = models.find((option) => option.id === model)
+  const valueId = `dsh-acp-review-model-${profileId}`
+  return h(
+    'div',
+    { className: css.field },
+    h('span', { className: css.fieldLabel }, label),
+    h(Menu, {
+      open,
+      portal: true,
+      dense: true,
+      autoFocus: true,
+      selectedId: model,
+      items: models.map(({ id, name }) => ({ id, label: name })),
+      onClose: () => setOpen(false),
+      onSelect: (id: string) => {
+        setOpen(false)
+        if (models.some((option) => option.id === id)) onSelect(id)
+      },
+      anchor: h(
+        'button',
+        {
+          type: 'button',
+          className: css.approvalButton,
+          disabled,
+          'aria-label': label,
+          'aria-describedby': valueId,
+          'aria-haspopup': 'menu',
+          'aria-expanded': open,
+          onClick: () => setOpen(!open),
+        },
+        h('span', { id: valueId, className: css.reviewModelValue }, current?.name ?? model),
+        h(IconChevronDownOutlineMedium, null),
+      ),
+    }),
+    current === undefined ? h('p', { className: css.notice }, t('reviewModelMissing')) : null,
+  )
 }
 
 /** 一个已配置 Agent：默认只展示名称、可操作状态和管理动作。 */

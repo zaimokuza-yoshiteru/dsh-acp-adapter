@@ -18,6 +18,7 @@ import type { TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AcpAuditSummaryCode, AcpAuditTimelineEntry } from '../data/acp-remote.ts'
 import type { AcpRemoteLike } from '../data/acp-remote.ts'
 import type { AcpLocaleKey } from './locales.ts'
+import { publicAuditStatusLabels } from '../data/audit-status.ts'
 import { includesRoute, type UseRouteOwnership } from '../data/managed-routes.ts'
 import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
 import type { AcpDiagnosticView, AcpRecoveryView } from '../../contract/remote.ts'
@@ -136,9 +137,16 @@ export function auditRecordedCause(entry: AcpAuditTimelineEntry): string | null 
 const summaryKeys: Record<AcpAuditSummaryCode, AcpLocaleKey> = {
   'binding.established': 'auditSummaryBinding',
   'permission.asked': 'auditSummaryPermissionAsked',
+  'permission.ai-review-started': 'auditSummaryReviewStarted',
+  'permission.ai-review-result': 'auditSummaryReviewResult',
   'permission.pre-tool-denied': 'auditSummaryPreToolDenied',
+  'permission.codebuddy-review': 'auditCodeBuddyReview',
   'permission.bridge': 'auditSummaryPermissionBridge',
   'permission.decided': 'auditSummaryPermissionDecided',
+  'permission.decision-withdrawn': 'auditSummaryWithdrawn',
+  'permission.opencode-ai-decided': 'auditSummaryOpenCodeAiDecision',
+  'permission.ai-decided': 'auditSummaryAiDecision',
+  'permission.card-decided': 'auditSummaryCardDecision',
   'reconciliation.required': 'auditSummaryReconciliation',
   'replay.matched': 'auditSummaryReplayMatched',
   'replay.different': 'auditSummaryReplayDifferent',
@@ -167,51 +175,15 @@ export function auditSummaryOf(t: Translate, entry: AcpAuditTimelineEntry): stri
   return [base, subject, status].filter((value): value is string => value !== null && value !== '').join(' · ')
 }
 
+const auditStatusLabels: Partial<Record<string, AcpLocaleKey>> = {
+  ...publicAuditStatusLabels,
+  'danger-full-access': 'auditStatusNativeAccess',
+  set_config_option: 'auditStatusConfigSync',
+  'session-setup': 'auditStatusSessionSetup',
+}
+
 function auditStatusOf(t: Translate, status: string): string {
-  const key: Partial<Record<string, AcpLocaleKey>> = {
-    'auto-approved': 'auditAutoApproved',
-    'approval-required': 'auditApprovalRequired',
-    'policy-unavailable': 'auditPolicyUnavailable',
-    'bridge-unavailable': 'auditBridgeUnavailable',
-    'inactive-connection': 'auditBridgeInactive',
-    'inactive-prompt': 'auditPromptInactive',
-    'identity-unmatched': 'auditIdentityUnmatched',
-    'invalid-tool-name': 'auditInvalidToolName',
-    'not-coordination': 'auditNotCoordination',
-    'allow-once-unavailable': 'auditAllowOnceMissing',
-    'danger-full-access': 'auditStatusNativeAccess',
-    set_config_option: 'auditStatusConfigSync',
-    'session-setup': 'auditStatusSessionSetup',
-    ok: 'auditStatusOk',
-    error: 'auditStatusError',
-    aborted: 'auditStatusAborted',
-    timeout: 'auditStatusTimeout',
-    'concurrent-change': 'auditStatusConcurrentChange',
-    selected: 'auditStatusSelected',
-    cancelled: 'auditStatusCancelled',
-    started: 'auditStatusStarted',
-    running: 'auditStatusRunning',
-    exited: 'auditStatusExited',
-    killed: 'auditStatusKilled',
-    released: 'auditStatusReleased',
-    'output-summary': 'auditStatusOutputSummary',
-    'stop-requested': 'auditStatusStopRequested',
-    'exit-unverified': 'auditStatusExitUnverified',
-    allow_once: 'auditAllowOnce',
-    allow_always: 'auditAllowAlways',
-    reject_once: 'auditRejectOnce',
-    reject_always: 'auditRejectAlways',
-    inherited: 'auditForkInherited',
-    blank: 'auditForkBlank',
-    'agent-does-not-advertise-fork': 'auditForkUnsupported',
-    'parent-not-idle': 'auditForkParentNotIdle',
-    'parent-recovery-required': 'auditForkParentRecoveryRequired',
-    'parent-binding-unavailable': 'auditForkParentUnavailable',
-    'parent-binding-mismatch': 'auditForkParentMismatch',
-    'seed-not-latest-semantic-boundary': 'auditForkOlderBoundary',
-    'candidate-not-available': 'auditForkCandidateUnavailable',
-  }
-  const localeKey = key[status]
+  const localeKey = Object.hasOwn(auditStatusLabels, status) ? auditStatusLabels[status] : undefined
   return localeKey === undefined ? status : t(localeKey)
 }
 

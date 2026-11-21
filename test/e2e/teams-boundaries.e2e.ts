@@ -64,7 +64,6 @@ async function setup(teams: boolean, native = false, mockLog?: string) {
     },
   })
   await host.ctx.settings.replace('dsh-acp-adapter', {
-    toolApprovalDefault: 'auto',
     agents: { devin: profile('devin'), codex: profile('codex') },
   })
   await vi.waitFor(() => expect(host.ctx.llm.listProviders().some((item) => item.id === 'acp-devin')).toBe(true))

@@ -13,7 +13,8 @@
  * @module @zaimokuza/dsh-acp-adapter/host/composition/subprocess
  */
 
-import type { Context } from '@deepseek-ai/cordis'
+import { Context } from '@deepseek-ai/cordis'
+import { createRequire } from 'node:module'
 import { ACP_SUBPROCESS_UNAVAILABLE_MESSAGE, narrowSubprocessSeam } from '../../runtime/process/subprocess.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
 
@@ -24,7 +25,40 @@ import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.
 export function resolveSubprocessSeam(ctx: Context): SubprocessSeamResolution {
   const holder = ctx as Context & { get(name: string, strict?: boolean): unknown }
   if (typeof holder.get !== 'function') return { ok: false, message: ACP_SUBPROCESS_UNAVAILABLE_MESSAGE }
-  const seam = narrowSubprocessSeam(holder.get('subprocess'))
+  const provider = holder.get('subprocess')
+  const seam = narrowSubprocessSeam(provider)
   if (seam === undefined) return { ok: false, message: ACP_SUBPROCESS_UNAVAILABLE_MESSAGE }
+  if (isHostLocal(ctx, provider)) return { ok: true, seam: { ...seam, localExecution: true } }
   return { ok: true, seam }
+}
+
+/** Resolve the actual provider, including Loader-mounted source scaffolds with their own module identity. */
+function isHostLocal(ctx: Context, provider: unknown): boolean {
+  if (!provider || typeof provider !== 'object') return false
+  const ctor: unknown = Object.getPrototypeOf(provider)?.constructor
+  if (typeof ctor !== 'function' || ctor.name !== 'LocalSubprocessRuntime') return false
+  const isolate = ctx[Context.isolate]?.subprocess
+  const entry = isolate && ctx.reflect?.store[isolate]?.ctx.fiber.entry
+  if (entry?.options.name === '@deepseek-ai/dsh-subprocess-local') {
+    // Loader owns the actual namespace, including a source scaffold or an HMR replacement.
+    // Child providers inherit an entry; spelling the same constructor name does not confer its identity.
+    const loaded = entry.moduleNamespace
+    return (
+      loaded === ctor ||
+      (typeof loaded === 'object' &&
+        loaded !== null &&
+        'LocalSubprocessRuntime' in loaded &&
+        loaded.LocalSubprocessRuntime === ctor)
+    )
+  }
+  try {
+    // Directly mounted embedders have no Loader entry. Compare the official constructor;
+    // the optional peer is absent on installations that provide only a remote execution world.
+    const local = createRequire(import.meta.url)('@deepseek-ai/dsh-subprocess-local') as {
+      LocalSubprocessRuntime: unknown
+    }
+    return ctor === local.LocalSubprocessRuntime
+  } catch {
+    return false
+  }
 }

@@ -71,7 +71,6 @@ describe('live ACP input-image proof', () => {
         servers: [],
         beginPrompt() {},
         endPrompt() {},
-        permission: async () => undefined,
         close: async () => undefined,
       },
     })
@@ -105,7 +104,6 @@ describe('live ACP input-image proof', () => {
           needsRefresh: () => first && withdrawn,
           beginPrompt() {},
           endPrompt() {},
-          permission: () => undefined,
           async close() {
             closed++
             lifetime.abort()
@@ -185,7 +183,6 @@ describe('live ACP input-image proof', () => {
             bodySignal = body
           },
           endPrompt() {},
-          permission: async () => undefined,
           close: async () => undefined,
         },
       })

@@ -8,6 +8,7 @@
 /// <reference types="node" />
 
 import type * as acp from '@agentclientprotocol/sdk'
+import { isOpenCodeChildPermission } from '../../agents/opencode.ts'
 import { AcpClientConnection, supportsFork } from '../../protocol/v1/connection.ts'
 import type { AcpConnectionSpec, AcpSpawnPlanView } from '../process/types.ts'
 import type { SubprocessSeam } from '../process/subprocess.ts'
@@ -15,6 +16,7 @@ import type { AgyPreToolUseInput, AgyPreToolUseReply } from '../process/agy-pre-
 import { AgyPreToolCalls } from './agy-pre-tool.ts'
 import { HOOK_UNAVAILABLE } from '../process/agy-hook-wire.ts'
 import { realpath } from 'node:fs/promises'
+import { isDeepStrictEqual } from 'node:util'
 import { processWarningReporter } from '../process/warnings.ts'
 import type { AcpFileSystemHandlers } from '../client-capabilities/filesystem.ts'
 import { acpConfigOptionsSnapshot } from '../../protocol/v1/config-options.ts'
@@ -22,7 +24,7 @@ import type { AcpSessionNotification, AcpTerminalHandlers } from '../../protocol
 import { waitWithin } from '../process/timeout.ts'
 import { AcpHostSettlementError } from './mcp-lease.ts'
 import type { AcpMcpLease } from './mcp-lease.ts'
-import type { AcpPermissionFeedback } from '../../domain/policy/permissions.ts'
+import { discardPermissionResponse, type AcpPermissionFeedback } from '../../domain/policy/permissions.ts'
 import type { AcpPermissionCheck } from '../../domain/policy/permission-check.ts'
 import type { LiveDiagnosticTrace } from '../../contract/live-diagnostic-trace.ts'
 import { AcpClientError } from '../../protocol/v1/errors.ts'
@@ -146,6 +148,7 @@ export interface AcpSessionRuntimeOptions {
   readonly config: AcpRuntimeConfig
   readonly subprocess: SubprocessSeam
   readonly cwd: string
+  readonly verifyReviewOrigin?: () => Promise<boolean>
   readonly prepareLaunch: (
     config: AcpRuntimeConfig,
     cwd: string,
@@ -167,6 +170,7 @@ export interface AcpSessionRuntimeOptions {
     params: acp.RequestPermissionRequest,
     signal?: AbortSignal,
     onPolicyDenial?: (feedback: AcpPermissionFeedback) => void,
+    reviewContext?: AcpPermissionReviewContext,
   ) => Promise<acp.RequestPermissionResponse>
   readonly onPermissionCheck?: (check: AcpPermissionCheck, request: acp.RequestPermissionRequest) => Promise<void>
   readonly hasAgyPreToolPolicy?: () => boolean
@@ -240,8 +244,22 @@ export class AcpPromptNotDispatchedError extends Error {
   }
 }
 
+/** Detached wire evidence owned by this prompt, before display normalization. */
+export interface AcpPermissionReviewContext {
+  readonly agent: acp.Implementation | null | undefined
+  readonly task: () => string | undefined
+  readonly toolCall: acp.ToolCallUpdate
+  /** Available only when this business connection passed its source check before spawn. */
+  readonly verifiedActorCwd?: string | undefined
+  readonly sessionModel?: string | undefined
+  readonly humanOnly: boolean
+  readonly current: () => boolean
+}
+
 /** Options for one `prompt()` call. */
 export interface AcpPromptOptions {
+  /** Identity changes when the Host admits new steering input in the same ACP prompt. */
+  readonly reviewInput?: () => Pick<AcpPermissionReviewContext, 'task'> & { model?: () => string | undefined }
   /** Recheck the admitted input after local Host work has drained and immediately before SDK dispatch. */
   readonly beforeDispatch?: () => void
   /** Host execution lifetime, distinct from directory/input handoff cancellation. */
@@ -465,6 +483,7 @@ async function raceAbort<T>(pending: Promise<T>, signal: AbortSignal | undefined
 /** A bounded, detached ACP session configuration snapshot. */
 /** One reusable ACP connection/session, lazily started on the first prompt. */
 export class AcpSessionRuntime {
+  private verifiedReviewConnection: AcpClientConnection | undefined
   private connection: AcpClientConnection | undefined
   private mcpLease: AcpMcpLease | undefined
   private mcpKey: unknown
@@ -510,9 +529,11 @@ export class AcpSessionRuntime {
   private refreshBindingSessionId: string | undefined
   private lastRestoreRefreshedCancelledSessionValue = false
   private promptActive = false
+  private reviewInput: AcpPromptOptions['reviewInput']
   /** One map per active prompt. Tool call ids are only meaningful inside this
    * lifetime for permission enrichment and must never leak into another turn. */
   private promptToolSnapshots: Map<string, acp.ToolCallUpdate> | undefined
+  private readonly reviewedOperations = new WeakMap<acp.ToolCallUpdate, acp.ToolCallUpdate>()
   private readonly preToolCalls = new AgyPreToolCalls()
   private readonly cancelGraceMs: number
   private readonly retiredMcpLeases = new Set<AcpMcpLease>()
@@ -996,6 +1017,7 @@ export class AcpSessionRuntime {
         adoptedTurn === undefined ? new Map<string, acp.ToolCallUpdate>() : (this.promptToolSnapshots ?? new Map())
       if (adoptedTurn === undefined) this.promptToolSnapshots?.clear()
       this.promptToolSnapshots = promptToolSnapshots
+      this.reviewInput = promptOptions.reviewInput
       this.promptActive = true
       this.promptAbort = promptAbort
       let phaseAbort = new AbortController()
@@ -1271,6 +1293,7 @@ export class AcpSessionRuntime {
         if (this.promptAbort === promptAbort) {
           promptToolSnapshots.clear()
           if (this.promptToolSnapshots === promptToolSnapshots) this.promptToolSnapshots = undefined
+          this.reviewInput = undefined
           this.promptAbort = undefined
           phaseAbort.abort(new Error('ACP prompt phase ended'))
           if (this.promptPhaseAbort === phaseAbort) this.promptPhaseAbort = undefined
@@ -1393,6 +1416,7 @@ export class AcpSessionRuntime {
     qwenTasks?.beginClose()
     this.promptToolSnapshots?.clear()
     this.promptToolSnapshots = undefined
+    this.reviewInput = undefined
     connectionAbort?.abort()
 
     // MCP teardown is bounded independently. The subprocess owns a separate
@@ -1429,6 +1453,7 @@ export class AcpSessionRuntime {
 
     if (this.connection === connection && this.mcpLease === lease && this.launch === launch) {
       this.connection = undefined
+      this.verifiedReviewConnection = undefined
       this.mcpLease = undefined
       this.sessionId = undefined
       this.launch = undefined
@@ -1579,6 +1604,9 @@ export class AcpSessionRuntime {
       spawnPlan: launch.spawnPlan,
       subprocess: this.options.subprocess,
     }
+    // Enabling review mid-session cannot certify capabilities that an earlier process may have loaded.
+    const verifiedOrigin = await this.options.verifyReviewOrigin?.().catch(() => false)
+    setupSignal.throwIfAborted()
     const fileSystemHandlers = this.options.createFileSystemHandlers?.({ cwd: this.options.cwd, env: launch.env })
     const terminalHandlers = this.options.createTerminalHandlers?.({ cwd: this.options.cwd, env: launch.env })
     const connection = new AcpClientConnection(spec, {
@@ -1627,28 +1655,7 @@ export class AcpSessionRuntime {
                   lease === this.mcpLease &&
                   lease?.signal.aborted !== true &&
                   lease?.validateElicitationDecision?.(params, toolCall) !== false
-                const automaticPromise = Promise.resolve(lease?.elicitation?.(params, toolCall))
-                let automatic: acp.CreateElicitationResponse | undefined
-                if (signal === undefined) automatic = await automaticPromise
-                else {
-                  const capturedSignal = signal
-                  const abortToken = Symbol('abort')
-                  let onAbort: (() => void) | undefined
-                  const aborted = new Promise<typeof abortToken>((resolve) => {
-                    onAbort = () => resolve(abortToken)
-                    if (isAborted(capturedSignal)) onAbort()
-                    else capturedSignal.addEventListener('abort', onAbort, { once: true })
-                  })
-                  try {
-                    const result = await Promise.race([automaticPromise, aborted])
-                    if (result === abortToken) return { action: 'cancel' }
-                    automatic = result
-                  } finally {
-                    if (onAbort !== undefined) capturedSignal.removeEventListener('abort', onAbort)
-                  }
-                }
                 if (!decisionCurrent()) return { action: 'cancel' }
-                if (automatic !== undefined) return automatic
                 const hostToolName = this.mcpLease?.elicitationToolName?.(params, toolCall)
                 const response = await raceAbort(
                   this.options.onElicitationRequest!(
@@ -1702,6 +1709,7 @@ export class AcpSessionRuntime {
       this.mcpLease = await this.options.createMcpLease?.(connection.agentCapabilities)
       setupSignal.throwIfAborted()
       this.connection = connection
+      this.verifiedReviewConnection = verifiedOrigin ? connection : undefined
       this.connectionAbort = connectionAbort
     } catch (error) {
       await connection.close().catch(() => undefined)
@@ -1789,8 +1797,23 @@ export class AcpSessionRuntime {
       // tool arguments before requesting permission, so the map is cleared at
       // every turn boundary and can never authorize data from another turn.
       const snapshots = this.promptToolSnapshots
-      if (snapshots !== undefined)
-        snapshots.set(update.toolCallId, mergeToolCallSnapshot(snapshots.get(update.toolCallId), update))
+      if (snapshots !== undefined) {
+        const prior = snapshots.get(update.toolCallId)
+        const next = mergeToolCallSnapshot(prior, update)
+        snapshots.set(update.toolCallId, next)
+        const reviewed = prior && this.reviewedOperations.get(prior)
+        if (reviewed && update.status !== 'completed' && update.status !== 'failed') {
+          // Compare the patch to the actual permission payload. It may have overridden
+          // streamed arguments. Once an operation changes, a later reversal cannot revive it.
+          const patched = mergeToolCallSnapshot(reviewed, update)
+          if (
+            (['kind', 'name', 'title', 'rawInput', 'content', 'locations', '_meta'] as const).every((key) =>
+              isDeepStrictEqual(reviewed[key], patched[key]),
+            )
+          )
+            this.reviewedOperations.set(next, reviewed)
+        }
+      }
     }
     if (update.sessionUpdate === 'config_option_update')
       this.configSnapshot = acpConfigOptionsSnapshot(update.configOptions)
@@ -2236,15 +2259,21 @@ export class AcpSessionRuntime {
     const signal = this.permissionSignal()
     if (isAborted(signal)) return cancelled()
     if (this.connection?.agentInfo?.name === QWEN_AGENT_NAME && isQwenUserQuestion(params)) {
-      // A question is not an approval: never run it through the tool approval
-      // policy (Auto must not "approve" it with an empty answer).
+      // User questions need an actual answer, even when AI approval is enabled.
       const ask = this.options.onQwenQuestion
       if (ask === undefined) return cancelled()
       return await raceAbort(ask(params, signal), signal, cancelled)
     }
+    const snapshots = this.promptToolSnapshots
     const request = {
       ...params,
-      toolCall: permissionToolCall(this.promptToolSnapshots, params.toolCall),
+      toolCall: permissionToolCall(snapshots, params.toolCall),
+    }
+    const input = this.reviewInput?.()
+    if (input && snapshots && request.toolCall.status !== 'completed' && request.toolCall.status !== 'failed') {
+      const previous = snapshots.get(request.toolCall.toolCallId) ?? { toolCallId: request.toolCall.toolCallId }
+      snapshots.set(request.toolCall.toolCallId, previous)
+      this.reviewedOperations.set(previous, request.toolCall)
     }
     const lease = this.mcpLease
     const inspectPromise = Promise.resolve(lease?.inspectPermission?.(request))
@@ -2279,24 +2308,22 @@ export class AcpSessionRuntime {
         return cancelled()
       }
     }
-    // A matching DSH title alone grants no identity or Auto approval, but it
+    // A matching DSH title alone does not establish identity, but it
     // is ambiguous ownership and must retain the bridge's revocation fence.
     const ownedByBridge = inspected?.reason !== 'identity-unmatched' || inspected.titleMatchesCurrentTool === true
     const decisionRevoked = () =>
-      (targetSignal !== undefined ||
-        inspected?.reason === 'auto-approved' ||
-        inspected?.reason === 'approval-required') &&
+      (targetSignal !== undefined || inspected?.reason === 'approval-required') &&
       lease?.validatePermissionDecision?.(request) === false
     if (
       isAborted(inspectionSignal) ||
+      inspected?.reason === 'inactive-connection' ||
+      inspected?.reason === 'inactive-prompt' ||
       (ownedByBridge && (lease !== this.mcpLease || lease?.signal.aborted)) ||
       decisionRevoked()
     )
       return cancelled()
-    // Use the very policy resolution that was audited above. Re-reading here
-    // could turn an audited Ask into an automatic approval (or the reverse).
-    const bridgeDecision = inspected === undefined ? await lease?.permission(request) : inspected.response
-    if (bridgeDecision !== undefined) return bridgeDecision
+    // Reuse the checked identity and revocation decision recorded in the audit.
+    if (inspected?.reason === 'invalid-tool-name') return inspected.response ?? cancelled()
     // Resolve bridge decisions against the original wire identity first; normalize
     // only the request shown by the native approval surface.
     // Native Agent permissions outlive an unrelated MCP bridge. A permission
@@ -2306,6 +2333,7 @@ export class AcpSessionRuntime {
       ownedByBridge && lease !== undefined
         ? AbortSignal.any(inspectionSignal === undefined ? [lease.signal] : [inspectionSignal, lease.signal])
         : inspectionSignal
+    const sessionModel = input?.model?.()
     let denial: AcpPermissionFeedback | undefined
     const pending = handler(
       { ...request, toolCall: lease?.presentTool?.(request.toolCall) ?? request.toolCall },
@@ -2313,10 +2341,44 @@ export class AcpSessionRuntime {
       (feedback) => {
         denial = feedback
       },
+      input && {
+        task: input.task,
+        sessionModel,
+        verifiedActorCwd:
+          this.verifiedReviewConnection && this.connection === this.verifiedReviewConnection
+            ? this.options.cwd
+            : undefined,
+        agent: this.connection?.agentInfo,
+        toolCall: request.toolCall,
+        current: () => {
+          if (!this.promptActive || this.promptToolSnapshots !== snapshots || this.reviewInput?.() !== input)
+            return false
+          if (this.connection?.agentInfo?.name === 'OpenCode' && sessionModel !== input.model?.()) return false
+          const latest = snapshots?.get(request.toolCall.toolCallId)
+          return latest !== undefined && this.reviewedOperations.get(latest) === request.toolCall
+        },
+        humanOnly:
+          isOpenCodeChildPermission(
+            this.connection?.agentInfo?.name,
+            params._meta,
+            params.toolCall._meta,
+            request.toolCall._meta,
+            snapshots?.get(request.toolCall.toolCallId)?._meta,
+          ) ||
+          (inspected?.reason === 'identity-unmatched' && inspected.titleMatchesCurrentTool === true) ||
+          (inspected !== undefined &&
+            inspected.reason !== 'identity-unmatched' &&
+            inspected.reason !== 'approval-required'),
+      },
     )
     // Recheck after the race, even when the answer resolved in the same microtask as cancellation.
     const response = await raceAbort(pending, approvalSignal, cancelled)
-    if (isAborted(approvalSignal) || (ownedByBridge && lease !== this.mcpLease) || decisionRevoked()) return cancelled()
+    if (isAborted(approvalSignal) || (ownedByBridge && lease !== this.mcpLease) || decisionRevoked()) {
+      // If cancellation won the race, the review scope still owns any outstanding audit write.
+      // A selected answer that arrives after this point must also carry its withdrawal.
+      if (response.outcome.outcome === 'cancelled') void pending.then(discardPermissionResponse).catch(() => {})
+      return discardPermissionResponse(response)
+    }
     if (denial !== undefined && denial.isCurrentOwner()) {
       // Keep only recent context if an Agent makes many denied calls in one turn.
       if (this.policyFeedback.length === POLICY_FEEDBACK_MAX) this.policyFeedback.shift()

@@ -112,6 +112,48 @@ async function fixture({ service = true, profile = 'antigravity', policy = 'ask'
 }
 
 describe('complete ACP options with an explicitly installed machine policy', () => {
+  it.each(['empty', 'next', 'human', 'malformed'] as const)(
+    'preserves OpenCode review and explicit human decisions when a mounted policy chain is %s',
+    async (step) => {
+      const f = await fixture()
+      const nextResult = vi.fn()
+      const rule = async (_request: AcpExternalPolicyRequest, next: () => Promise<AcpExternalPolicyDecision>) => {
+        if (step === 'next') {
+          const value = await next()
+          nextResult(value)
+          return value
+        }
+        if (step === 'malformed') return undefined as never
+        return 'not-applicable' as const
+      }
+      if (step !== 'empty') {
+        f.ctx.on('dsh-acp/permission-policy', rule)
+        f.ctx.on('dsh-acp/binary-permission-policy', rule)
+      }
+      const review = vi.fn(async () => ({ risk: 'not_high' as const, reason: 'Routine read' }))
+      const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async ({ questions }) => ({
+        answers: [{ id: questions[0]!.id, selected: ['Deny'] }],
+      }))
+      const handle = createAcpNativePermissionHandler({
+        getAgent: f.deps.getAgent,
+        approval: f.deps.approval,
+        audit: f.deps.audit,
+        riskReviewer: { agent: 'opencode', model: 'provider/model', policyVersion: '1', review },
+        permissionQuestions: { ask },
+      })
+      for (const binary of [false, true]) {
+        const params = request()
+        if (binary) params.options = params.options.filter((option) => option.kind !== 'allow_always')
+        expect(await handle(params)).toEqual(
+          step === 'malformed' ? cancelled : selected(step === 'human' ? 'deny' : 'once'),
+        )
+      }
+      expect(review).toHaveBeenCalledTimes(step === 'next' || step === 'empty' ? 2 : 0)
+      expect(ask).toHaveBeenCalledTimes(step === 'human' ? 2 : 0)
+      if (step === 'next') expect(nextResult.mock.calls).toEqual([['not-applicable'], ['not-applicable']])
+    },
+  )
+
   it.each(['allow-once', 'deny-once'] as const)(
     '%s selects only the exact original once ID and preserves the existing audit pair',
     async (decision) => {

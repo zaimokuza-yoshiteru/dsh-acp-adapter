@@ -83,7 +83,6 @@ async function fixture(parentKind: 'native' | 'acp' = 'native', locale: 'en' | '
   try {
     await host.ctx.settings.replace('locale', { preference: 'en' })
     await host.ctx.settings.replace('dsh-acp-adapter', {
-      toolApprovalDefault: 'ask',
       agents: {
         'parent-options': {
           name: 'Parent permission fixture',
