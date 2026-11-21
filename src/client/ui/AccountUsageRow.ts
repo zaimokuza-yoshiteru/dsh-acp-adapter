@@ -1,6 +1,6 @@
 import { createElement as h, useEffect, useState } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { AcpAccountUsageView } from '../../contract/account-usage.ts'
+import type { accountUsageLinks, AcpAccountUsageView } from '../../contract/account-usage.ts'
 import type { AcpTranslate } from './AcpSection.ts'
 import css from './AcpSection.module.css'
 
@@ -53,10 +53,14 @@ export function accountUsageLines(view: AcpAccountUsageView, t: AcpTranslate, lo
 export function AccountUsageRow({
   id,
   read,
+  links,
+  expanded = false,
   t,
 }: {
   id: string
-  read: (id: string, refresh: boolean) => Promise<AcpAccountUsageView>
+  read?: ((id: string, refresh: boolean) => Promise<AcpAccountUsageView>) | undefined
+  links?: ReturnType<typeof accountUsageLinks>
+  expanded?: boolean
   t: AcpTranslate
 }) {
   const [request, setRequest] = useState(0)
@@ -64,10 +68,11 @@ export function AccountUsageRow({
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState(false)
   useEffect(() => {
+    if (!read) return
     let active = true
     setBusy(true)
     setFailed(false)
-    void read(id, request !== 0).then(
+    void read(id, expanded || request !== 0).then(
       (value) => {
         if (active) {
           setView(value)
@@ -85,9 +90,30 @@ export function AccountUsageRow({
     return () => {
       active = false
     }
-  }, [id, read, request])
+  }, [id, read, expanded, request])
 
-  if ((!view && !failed) || view?.status === 'unsupported') return null
+  const websites = links?.map(({ url, site }) =>
+    h(
+      'a',
+      {
+        key: url,
+        href: url,
+        target: '_blank',
+        rel: 'noopener noreferrer',
+        className: css.guideLink,
+      },
+      t(site === 'cn' ? 'accountWebsiteChina' : site === 'intl' ? 'accountWebsiteInternational' : 'accountWebsite'),
+    ),
+  )
+  if (!read || view?.status === 'unsupported' || (!view && !failed)) {
+    if (!expanded && !websites?.length) return null
+    return h(
+      'div',
+      { className: css.accountRow, 'data-dsh-acp-account': id },
+      expanded && read ? h('span', { role: 'status' }, t(view ? 'accountNotProvided' : 'accountReading')) : null,
+      websites,
+    )
+  }
   const locale = typeof document === 'undefined' ? 'en' : document.documentElement.lang || navigator.language
   const lines = view ? accountUsageLines(view, t, locale) : []
   const summary = lines.slice(0, 2).join(' · ')
@@ -95,21 +121,31 @@ export function AccountUsageRow({
   return h(
     'div',
     { className: css.accountRow, 'data-dsh-acp-account': id },
-    lines.length > 2
+    expanded && lines.length
       ? h(
-          'details',
-          { className: css.accountDetails },
-          h('summary', null, summary, ' · ', t('accountDetails')),
-          h(
-            'ul',
-            null,
-            lines.slice(2).map((line, i) => h('li', { key: i }, line)),
-          ),
+          'ul',
+          { className: css.accountLines },
+          lines.map((line, index) => h('li', { key: index }, line)),
         )
-      : summary
-        ? h('span', null, summary)
+      : lines.length > 2
+        ? h(
+            'details',
+            { className: css.accountDetails },
+            h('summary', null, summary, ' · ', t('accountDetails')),
+            h(
+              'ul',
+              null,
+              lines.slice(2).map((line, i) => h('li', { key: i }, line)),
+            ),
+          )
+        : summary
+          ? h('span', null, summary)
+          : null,
+    view?.status === 'signin-required'
+      ? h('span', { role: 'status' }, t('accountSignIn'))
+      : unavailable
+        ? h('span', { role: 'status' }, t('accountUnavailable'))
         : null,
-    unavailable ? h('span', { role: 'status' }, t('accountUnavailable')) : null,
     view?.provider === 'antigravity' && view.checkedAt !== null && lines.length > 0
       ? h(
           'time',
@@ -128,5 +164,6 @@ export function AccountUsageRow({
       },
       t(busy ? 'accountReading' : view?.status === 'available' ? 'accountCheck' : 'accountRefresh'),
     ),
+    websites,
   )
 }

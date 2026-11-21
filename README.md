@@ -60,9 +60,7 @@ npx @deepseek-ai/dsh@0.2.2-rc.5 plugin --profile web add @zaimokuza/dsh-acp-adap
 | Codex                                                      | `codex-acp`        | `codex login`        |
 | Qwen Code                                                  | `qwen --acp`       | `qwen`               |
 
-> WorkBuddy 用户可通过 CodeBuddy CLI 接入 DSH。见 [ACP 命令参考](https://www.codebuddy.cn/docs/cli/cli-reference)。套餐与积分可在 [CodeBuddy 个人主页](https://www.codebuddy.cn/docs/ide/Account/usage)查看。
-
-插件详情可通过本机已有登录显示 Codex 套餐与额度、Devin 套餐。在 macOS 上，点击 Antigravity 的「查看套餐与额度」即可查询。可见的额度和重置时间取决于账户。
+点击模型选择器旁的「套餐」可查看当前 Agent 的账户信息。气泡在编辑消息和操作其他菜单时保持打开，可手动关闭。Codex 显示套餐与额度，Devin 显示套餐，macOS 上的 Antigravity 支持按需查询套餐与配额。插件详情也有相同入口。CodeBuddy（含 WorkBuddy）、Claude、Qwen 和 OpenCode 的用量按账户或模型提供方在官网查看。
 
 ## 选择模式
 
@@ -77,7 +75,7 @@ npx @deepseek-ai/dsh@0.2.2-rc.5 plugin --profile web add @zaimokuza/dsh-acp-adap
 ## 使用会话
 
 - **AI 审批**。企业限制 Agent 的自动模式时，可在插件详情页开启 AI 审批，减少重复确认。默认关闭。支持的 Devin 和 OpenCode 请求经审查可允许一次，模型标为高风险或无法判断的请求由你确认，每次判断均可在会话审计中查看。[支持范围](docs/permission-policy.md#ai-审批)
-- **CodeBuddy 安全审查**。会话审计会显示 CodeBuddy 对本会话工具报告的安全结果，包括拦截工具调用、工具结果或沙箱权限请求，以及保护敏感数据。常规自动放行由 CodeBuddy 内部处理。
+- **CodeBuddy 安全审查**。会话审计会显示 CodeBuddy 对本会话工具报告的安全结果，包括拦截工具调用、工具结果或沙箱权限请求，以及保护敏感数据。需要逐次确认时，请在专用 ACP 模式选择 CodeBuddy 的 Default。
 - **排队与停止**。运行中按 Enter 可将下一条消息加入队列，支持续聊的 Agent 会在同一会话处理。点击停止按钮可取消当前轮次。Agent 负责停止其自带工具，未报告结果的工具会保留为未完成。
 - **成员与任务**。在主会话中可查看子代理进度并处理成员审批。需要共享任务时，打开本会话的 **Agent Teams** 开关。
 

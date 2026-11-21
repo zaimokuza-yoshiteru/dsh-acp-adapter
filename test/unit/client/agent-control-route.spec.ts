@@ -1,10 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { isNativePermissionSeat, selectedAgentProvider } from '../../../src/client/ui/AcpAgentControl.ts'
+import { composerSelection, selectedAgentProvider } from '../../../src/client/ui/composer-provider.ts'
+import { isNativePermissionSeat } from '../../../src/client/ui/AcpAgentControl.ts'
 import { AcpUiFeedback } from '../../../src/client/data/feedback.ts'
 import { AcpOutcomeToast } from '../../../src/client/ui/AcpOutcomeToast.ts'
 import { en, zh } from '../../../src/client/ui/locales.ts'
 
 describe('ACP Agent control route selection', () => {
+  it('queries the complete account route, preserving historical choices and withholding conflicting snapshots', () => {
+    const original = { provider: 'acp-opencode', model: 'provider-one/model' }
+    const selected = { provider: 'acp-opencode', model: 'provider-two/model' }
+    const fallback = { provider: 'acp-codex', model: 'cli-default' }
+    expect(composerSelection({ lastUsed: original }, fallback)).toEqual(original)
+    expect(composerSelection({ lastUsed: original, next: null }, fallback)).toBeUndefined()
+    expect(composerSelection({ lastUsed: original, next: selected }, fallback)).toEqual(selected)
+    expect(composerSelection({ lastUsed: null, next: null }, fallback)).toEqual(fallback)
+  })
   it('leaves an unconfirmed or competing permission owner visible, including an equal-priority entry using the native locale', () => {
     const stock = {
       component: function PermissionSelect() {},

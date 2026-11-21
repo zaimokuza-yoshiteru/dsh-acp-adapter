@@ -1,6 +1,8 @@
 import type { AcpAccountUsageView, AcpAccountWindow } from '../../contract/account-usage.ts'
 
-export type AccountFields = Pick<AcpAccountUsageView, 'plan' | 'credits' | 'windows'>
+export type AccountFields = Pick<AcpAccountUsageView, 'plan' | 'credits' | 'windows'> & {
+  readonly signInRequired?: true
+}
 
 export function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
@@ -23,7 +25,10 @@ export function devinPlan(output: string): AccountFields {
 }
 
 export function codexFields(accountResult: unknown, limitsResult: unknown): AccountFields {
-  const account = record(record(accountResult).account)
+  const result = record(accountResult)
+  if (result.account === null && result.requiresOpenaiAuth === true)
+    return { signInRequired: true, plan: null, credits: null, windows: [] }
+  const account = record(result.account)
   if (account.type !== 'chatgpt') return { plan: null, credits: null, windows: [] }
   const response = record(limitsResult)
   const limits = record(response.rateLimits)

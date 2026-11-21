@@ -117,6 +117,8 @@ When the model rates the operation “not high risk” and the audit is saved, t
 
 The audit masks credentials such as cookies. When you view older records, input summaries that cannot be safely redacted are hidden. The original session can still resume. Existing database records and backups retain their original contents.
 
+CodeBuddy can send identical ACP choices for an ordinary write and a rule that explicitly requires a person. The plugin presents those choices to you. The ACP preset exposes the permission modes advertised by the Agent. In a test with CodeBuddy 2.185.0, native `auto` executed a write covered by `permissions.ask` without sending DSH a permission request. Use a verified `default` configuration for workflows that require human confirmation.
+
 ### Devin
 
 The official CLI `3000.14.30821` is supported. The default review model is `swe-2-high`. If the selected model is unavailable, you decide on the request and can choose another model in plugin details. Third-party policies do not answer Devin requests. Organization-enforced extensions or an unverifiable inventory of extensions and MCP servers in the reviewer require a person. The working session can still use its own MCP and Teams tools. When Devin asks to use a DSH tool, AI approval can grant Devin’s request once if the bridge verifies the tool’s identity and registration in the current session. DSH checks the session’s tool rules at execution time and can still deny the call.

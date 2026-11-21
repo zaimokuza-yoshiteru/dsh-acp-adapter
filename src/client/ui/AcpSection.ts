@@ -31,7 +31,7 @@ import type { AcpAgentConfig, AcpProviderHealth, AgentDraft, DraftError } from '
 import type { AcpLocaleKey } from './locales.ts'
 import type { AcpPanelSnapshot, HealthState } from '../data/stores/panel-store.ts'
 import css from './AcpSection.module.css'
-import { accountUsageProvider, type AcpAccountUsageView } from '../../contract/account-usage.ts'
+import { accountUsageLinks, accountUsageProvider, type AcpAccountUsageView } from '../../contract/account-usage.ts'
 import { acpProbeConfigKey } from '../../contract/agent-config.ts'
 import { AccountUsageRow } from './AccountUsageRow.ts'
 
@@ -631,8 +631,18 @@ function AgentCard(props: {
     ),
   ]
 
-  if (!props.readOnly && !retired && accountUsageProvider(id, config)) {
-    children.push(h(AccountUsageRow, { key: `account:${acpProbeConfigKey(config)}`, id, t, read: panel.accountUsage }))
+  const accountProvider = accountUsageProvider(id, config)
+  const accountLinks = accountUsageLinks(id, config)
+  if (!props.readOnly && !retired && (accountProvider || accountLinks.length)) {
+    children.push(
+      h(AccountUsageRow, {
+        key: `account:${acpProbeConfigKey(config)}`,
+        id,
+        t,
+        read: accountProvider ? panel.accountUsage : undefined,
+        links: accountLinks,
+      }),
+    )
   }
 
   if (diagnostic !== undefined) {

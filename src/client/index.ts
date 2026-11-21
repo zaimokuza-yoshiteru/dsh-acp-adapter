@@ -45,6 +45,7 @@ import { CrossBackendModal } from './ui/CrossBackendModal.ts'
 import { AcpOutcomeToast } from './ui/AcpOutcomeToast.ts'
 import { AcpRecoveryDock } from './ui/AcpRecoveryDock.ts'
 import { AcpNativeForkRecovery } from './ui/AcpNativeForkRecovery.ts'
+import { AccountPlanControl } from './ui/AccountPlanControl.ts'
 import { AcpAgentControl, isNativePermissionSeat } from './ui/AcpAgentControl.ts'
 import {
   AcpExternalSubagentComposer,
@@ -567,6 +568,76 @@ async function registerUi(ctx: ClientContext): Promise<void> {
       AcpRecoveryDock,
     ),
   )
+  // One default-model lookup per catalog generation, shared by all mounted composers.
+  type Selection = { provider: string; model: string }
+  let defaultRead: Promise<Selection | undefined> | undefined
+  const defaultListeners = new Set<() => void>()
+  const getDefaultSelection = (): Promise<Selection | undefined> => {
+    if (defaultRead) return defaultRead
+    const current: Promise<Selection | undefined> = ctx.remote.session.modelCatalog().then(
+      (result) => {
+        if (defaultRead !== current) return undefined
+        if (result.ok) return result.value.default
+        defaultRead = undefined
+      },
+      () => {
+        if (defaultRead === current) defaultRead = undefined
+        return undefined
+      },
+    )
+    defaultRead = current
+    return current
+  }
+  const composerDefault = {
+    getDefaultProvider: async () => (await getDefaultSelection())?.provider,
+    watchDefaultProvider: (changed: () => void) => {
+      defaultListeners.add(changed)
+      return () => {
+        defaultListeners.delete(changed)
+      }
+    },
+  }
+  const invalidateDefault = () => {
+    defaultRead = undefined
+    for (const changed of defaultListeners) changed()
+  }
+  ctx.effect(() => {
+    const stop = [
+      ctx.remote.$on('settings/document-updated', invalidateDefault),
+      ctx.remote.$on('llm/adapters-updated', invalidateDefault),
+      ctx.remote.$on('llm/models-updated', invalidateDefault),
+      ctx.remote.$on('credentials/record-updated', invalidateDefault),
+      ctx.remote.$on('credentials/reference-updated', invalidateDefault),
+      ctx.on('connection/reset', invalidateDefault),
+    ]
+    return () => {
+      for (const dispose of stop) dispose()
+    }
+  }, 'dsh-acp: composer default model')
+  const openPlans = new WeakMap<object, ReturnType<typeof createSnapshotStore<boolean>>>()
+  ctx.slots.inject('conversation.input.right', () =>
+    ctx.slots.register(
+      {
+        name: 'conversation.input.right',
+        id: 'dsh-acp-account-plan',
+        order: 90,
+        locale: 'acpActivity',
+        inject: (sessionId) => {
+          const binding = sessions.binding(sessionId)
+          const visibility = (binding && openPlans.get(binding)) ?? createSnapshotStore(false)
+          if (binding) openPlans.set(binding, visibility)
+          return {
+            getDefaultSelection,
+            watchDefaultProvider: composerDefault.watchDefaultProvider,
+            hooks: { routeOwnership: managedRoutes.store, accountSettings: settingsScope, planOpen: visibility },
+            setOpen: visibility.set,
+            read: panelWire.accountUsage,
+          }
+        },
+      },
+      AccountPlanControl,
+    ),
+  )
   ctx.slots.inject('conversation.input.left', () =>
     ctx.slots.register(
       {
@@ -604,22 +675,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
             return (await triggers?.adjudicate('/permission', signal, { attachments: 0 })) === 'handled'
           },
           feedback,
-          getDefaultProvider: async () => {
-            const result = await ctx.remote.session.modelCatalog()
-            return result.ok ? result.value.default.provider : undefined
-          },
-          watchDefaultProvider: (changed: () => void) => {
-            const disposers = [
-              ctx.remote.$on('settings/document-updated', changed),
-              ctx.remote.$on('llm/adapters-updated', changed),
-              ctx.remote.$on('credentials/record-updated', changed),
-              ctx.remote.$on('credentials/reference-updated', changed),
-              ctx.on('connection/reset', changed),
-            ]
-            return () => {
-              for (const dispose of disposers) dispose()
-            }
-          },
+          ...composerDefault,
         }),
       },
       AcpAgentControl,

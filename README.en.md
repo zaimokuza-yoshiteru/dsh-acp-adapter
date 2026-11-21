@@ -60,9 +60,7 @@ Launch and sign-in commands for common Agents:
 | Codex                                                      | `codex-acp`        | `codex login`                 |
 | Qwen Code                                                  | `qwen --acp`       | `qwen`                        |
 
-> To use WorkBuddy with DSH, connect through the [CodeBuddy CLI](https://www.codebuddy.ai/docs/cli/reference). Your plan and credits are available in your [CodeBuddy profile](https://www.codebuddy.ai/docs/ide/Account/usage).
-
-Plugin details use your existing local sign-in to show your Codex plan and quota or your Devin plan. On macOS, choose **View plan and quota** to check Antigravity. Available limits and reset times depend on your account.
+Choose **Usage** next to the model picker to check the current Agent’s account. The panel stays open while you write or use other menus. Close it when you’re done. Codex reports its plan and quota, Devin reports its plan, and Antigravity on macOS can check both on request. Plugin details also offer account information. For CodeBuddy (including WorkBuddy), Claude, Qwen and OpenCode, usage depends on the account or model provider.
 
 ## Choose a mode
 
@@ -77,7 +75,7 @@ Use the selector beside the ACP composer to choose a work or permission mode off
 ## Working in a session
 
 - **AI approval.** If your organization restricts an Agent’s automatic modes, turn on AI approval in plugin details to reduce manual prompts. It is off by default. Eligible Devin and OpenCode requests can be allowed once after review. You decide when the model flags a request as high risk or cannot assess it. Each assessment appears in the session audit. [Supported configurations](docs/permission-policy.en.md#ai-approval)
-- **CodeBuddy security review.** The session audit shows security outcomes CodeBuddy reports for tools in this session, including blocked calls, results, and sandbox requests, and sensitive data protection. CodeBuddy handles routine automatic approvals internally.
+- **CodeBuddy security review.** The session audit shows security outcomes CodeBuddy reports for tools in this session, including blocked calls, results, and sandbox requests, and sensitive data protection. Choose CodeBuddy’s Default mode in the ACP preset when writes need individual confirmation.
 - **Queue and stop.** Press Enter during a turn to queue the next message. Agents that support continuation handle it in the same session. **Stop** cancels the current turn. Agents are responsible for stopping their own tools. Tools without a reported result stay unfinished.
 - **Members and tasks.** View subagent progress and handle member approvals in the main session. To share tasks, turn on **Agent Teams** in that session.
 

@@ -26,7 +26,7 @@ export interface AcpAccountWindow {
 }
 
 export interface AcpAccountUsageView {
-  readonly status: 'ready' | 'available' | 'unavailable' | 'unsupported'
+  readonly status: 'ready' | 'available' | 'unavailable' | 'unsupported' | 'signin-required'
   readonly provider: AcpAccountProvider | null
   readonly checkedAt: number | null
   readonly plan: string | null

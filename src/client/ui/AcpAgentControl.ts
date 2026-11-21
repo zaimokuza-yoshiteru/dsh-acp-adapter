@@ -1,3 +1,4 @@
+import { selectedAgentProvider, useComposerDefault, type ComposerDefaultProvider } from './composer-provider.ts'
 import { createElement as h, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ReactNode } from 'react'
 import type { PropsLocale, PropsRuntime, StoredEntry } from '@deepseek-ai/dsh-client-ui-slots'
@@ -29,24 +30,17 @@ import {
 } from '../data/first-turn-intent.ts'
 
 type AgentControlProps = PropsRuntime<'conversation.input.left'> &
-  PropsLocale<'acpActivity'> & {
+  PropsLocale<'acpActivity'> &
+  ComposerDefaultProvider & {
     readonly remote: AcpRemoteLike
     readonly streamFactory: RemoteStreamFactory
     readonly useRouteOwnership: UseRouteOwnership
     readonly useNativePermissionSeat: (select: (native: boolean) => boolean) => boolean
     readonly openToolPermissions: (sessionId: string, signal: AbortSignal) => Promise<boolean>
     readonly nativeStopLabel: () => string
-    readonly getDefaultProvider: () => Promise<string | undefined>
-    readonly watchDefaultProvider: (changed: () => void) => () => void
     readonly feedback: Pick<AcpUiFeedback, 'report'>
     readonly sessionAccessSource: SessionAccessSource
   }
-
-function providerOf(value: unknown): string | undefined {
-  if (typeof value !== 'object' || value === null) return undefined
-  const provider = (value as { readonly provider?: unknown }).provider
-  return typeof provider === 'string' ? provider : undefined
-}
 
 /** RC.5's permission package inherits its Loader fiber's name. Match the stock
  * export and its uncontested native priority as well as that diagnostic stamp. */
@@ -65,17 +59,6 @@ export function isNativePermissionSeat(
     winner.component.name === 'PermissionSelect' &&
     !candidates.some((other) => other !== winner && (other.options.priority ?? 0) === 0)
   )
-}
-
-export function selectedAgentProvider(value: unknown, fallbackProvider?: string): string | undefined {
-  if (typeof value !== 'object' || value === null) return fallbackProvider
-  const selection = value as { readonly lastUsed?: unknown; readonly next?: unknown }
-  const current = selection.next === undefined ? selection.lastUsed : selection.next
-  return current === null || current === undefined
-    ? selection.lastUsed == null
-      ? fallbackProvider
-      : undefined
-    : providerOf(current)
 }
 
 /** Small ACP-only control in DSH's native input-left extension point. */
@@ -104,30 +87,7 @@ export function AcpAgentControl({
   const running = useSession((state) => state.running)
   const optionWriteAllowed = useAccess('dshAcp/setAgentSessionOption')
   const clearAllowed = useAccess('dshAcp/clearAgentPreselection')
-  const [defaultProvider, setDefaultProvider] = useState<string | undefined>()
-  const [defaultGeneration, setDefaultGeneration] = useState(0)
-  useEffect(
-    () =>
-      watchDefaultProvider(() => {
-        setDefaultProvider(undefined)
-        setDefaultGeneration((value) => value + 1)
-      }),
-    [watchDefaultProvider],
-  )
-  useEffect(() => {
-    let active = true
-    void getDefaultProvider()
-      .then((provider) => {
-        if (active) setDefaultProvider(provider)
-      })
-      .catch(() => {
-        if (active) setDefaultProvider(undefined)
-      })
-    return () => {
-      active = false
-    }
-  }, [getDefaultProvider, defaultGeneration])
-  const provider = selectedAgentProvider(projection, defaultProvider)
+  const provider = selectedAgentProvider(projection, useComposerDefault(getDefaultProvider, watchDefaultProvider))
   const isAcp = useRouteOwnership((routes) => includesRoute(routes.providers, provider))
   const selectedProvider = isAcp ? provider : undefined
   const intentKey =

@@ -1,4 +1,5 @@
-import { isCodeBuddyPeer, isAnonymousCodeBuddyLaunch } from '../../agents/codebuddy.ts'
+import { isCodeBuddyPeer } from '../../agents/codebuddy.ts'
+import { isAnonymousCodeBuddyLaunch } from '../../contract/codebuddy-profile.ts'
 import type { AcpStubAgentConfig } from '../../contract/agent-config.ts'
 import { redactSecretText } from '../../contract/redaction.ts'
 import type { AcpCodeBuddyReviewAuditData } from '../../domain/policy/events.ts'

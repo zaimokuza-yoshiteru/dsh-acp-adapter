@@ -98,6 +98,7 @@ export class AccountUsageService {
           ? await readAntigravityAccount(this.subprocess.seam, profile, signal)
           : await readAccountCli(this.subprocess.seam, profile, provider, signal)
       lifetime.throwIfAborted()
+      if (fields.signInRequired) return { ...EMPTY, provider, status: 'signin-required', checkedAt: Date.now() }
       if (hasAccountFields(fields)) return { ...fields, provider, status: 'ready', checkedAt: Date.now() }
     } catch {
       // CLI diagnostics may include account identities or credentials. Return only the stable state.

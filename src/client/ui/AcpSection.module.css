@@ -387,3 +387,9 @@
   line-height: 18px;
   color: var(--dsw-alias-state-error-primary);
 }
+.accountLines {
+  flex-basis: 100%;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}

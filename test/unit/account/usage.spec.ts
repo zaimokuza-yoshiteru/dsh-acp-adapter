@@ -52,6 +52,8 @@ describe('Agent account reads', () => {
     expect(accountUsageProvider('custom', { ...devin, args: ['acp', '--cloud'] })).toBeUndefined()
     expect(accountUsageProvider('custom', { ...devin, command: './devin' })).toBeUndefined()
     expect(accountUsageProvider('custom', { ...agy, command: 'agy-acp' })).toBeUndefined()
+    expect(accountUsageProvider('custom', { ...agy, args: ['acp', '--stdio'] }, 'darwin')).toBe('antigravity')
+    expect(accountUsageProvider('custom', { ...agy, args: ['acp', '--login'] }, 'darwin')).toBeUndefined()
     const remote = new AccountUsageService(
       { ok: true, seam: { spawn: vi.fn(), resolveExecutable: vi.fn() } },
       () => new Map([['custom', devin]]),
@@ -108,6 +110,32 @@ describe('Agent account reads', () => {
       codexFields({ account: { type: 'apiKey' } }, { rateLimits: { credits: { balance: '42' } } }).credits,
     ).toBeNull()
   })
+
+  it.each([
+    [{ account: null, requiresOpenaiAuth: true }, 'signin-required'],
+    [{ account: null, requiresOpenaiAuth: false }, 'unavailable'],
+    [{ account: { type: 'apiKey' }, requiresOpenaiAuth: true }, 'unavailable'],
+  ] as const)(
+    'distinguishes an explicit Codex sign-in requirement from unavailable account data',
+    async (account, status) => {
+      const codex = { name: 'Codex', command: 'codex-acp', args: [], env: {} }
+      const p = pipes()
+      const calls: string[] = []
+      p.stdin.on('data', (raw) => {
+        const message = JSON.parse(String(raw))
+        calls.push(message.method)
+        if (message.id !== undefined)
+          p.stdout.write(JSON.stringify({ id: message.id, result: message.id === 1 ? {} : account }) + '\n')
+      })
+      expect(await service(new Map([['codex', codex]]), { spawn: () => p }).read('codex', true)).toMatchObject({
+        status,
+        plan: null,
+        credits: null,
+        windows: [],
+      })
+      expect(calls).toEqual(['initialize', 'initialized', 'account/read'])
+    },
+  )
 
   it.each([null, 'alternate-default'])('shows every metered window once, default first (limit ID %s)', (limitId) => {
     const account = { account: { type: 'chatgpt', planType: 'pro', email: 'private@example.test' } }
