@@ -45,7 +45,7 @@ import { CrossBackendModal } from './ui/CrossBackendModal.ts'
 import { AcpOutcomeToast } from './ui/AcpOutcomeToast.ts'
 import { AcpRecoveryDock } from './ui/AcpRecoveryDock.ts'
 import { AcpNativeForkRecovery } from './ui/AcpNativeForkRecovery.ts'
-import { AcpAgentControl } from './ui/AcpAgentControl.ts'
+import { AcpAgentControl, isNativePermissionSeat } from './ui/AcpAgentControl.ts'
 import {
   AcpExternalSubagentComposer,
   followExternalSubagentRecords,
@@ -81,7 +81,6 @@ import { AcpAuditViewVisibility } from './ui/audit-view-visibility.ts'
 import { createAcpJsonStringWrapping, type AcpJsonStringWrapping } from './ui/json-tree.ts'
 import { en, zh } from './ui/locales.ts'
 import type { AcpRemoteLike } from './data/acp-remote.ts'
-import type { RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { IWorkspaces } from '@deepseek-ai/dsh-api-workspace-controller/client'
@@ -192,6 +191,11 @@ async function registerUi(ctx: ClientContext): Promise<void> {
   )
   const jsonStringWrapping = createAcpJsonStringWrapping()
   const panelWire: AcpSectionWire = {
+    accountUsage: async (id, refresh) => {
+      const result = await acpRemote.accountUsage(id, refresh)
+      if (!result.ok) throw new Error('Account information unavailable')
+      return result.value
+    },
     refreshHealth: (recheck) => {
       void panelController.refreshHealth(recheck)
     },
@@ -570,25 +574,41 @@ async function registerUi(ctx: ClientContext): Promise<void> {
         id: 'dsh-acp-agent-control',
         order: 80,
         locale: 'acpActivity',
-        inject: (): {
-          readonly remote: AcpRemoteLike
-          readonly streamFactory: RemoteStreamFactory
-          readonly hooks: { routeOwnership: typeof managedRoutes.store }
-          readonly getDefaultProvider: () => Promise<string | undefined>
-          readonly watchDefaultProvider: (changed: () => void) => () => void
-          readonly feedback: Pick<AcpUiFeedback, 'report'>
-          readonly sessionAccessSource: SessionAccessSource
-        } => ({
+        inject: () => ({
           remote: acpRemote,
           sessionAccessSource,
           streamFactory: ctx.remote,
-          hooks: { routeOwnership: managedRoutes.store },
+          hooks: {
+            routeOwnership: managedRoutes.store,
+            nativePermissionSeat: {
+              getSnapshot: () => {
+                const slot = 'conversation.input.permission'
+                if (!ctx.get('inputTriggers')) return false
+                const official = Array.from(ctx.get('loader')?.entries() ?? []).find(
+                  (entry) => entry.options.name === '@deepseek-ai/dsh-client-ui-permission-presets',
+                )
+                return isNativePermissionSeat(
+                  ctx.slots.entriesOfSlot(slot)[0],
+                  ctx.slots.entries(slot),
+                  official?.fiber?.name,
+                )
+              },
+              subscribe: (changed: () => void) => ctx.slots.subscribe('conversation.input.permission', changed),
+            },
+          },
+          nativeStopLabel: () => ctx.locale.bind('conversation')('input.stop'),
+          openToolPermissions: async (sessionId: string, signal: AbortSignal) => {
+            const scope = sessions.scope(sessionId as SessionId)
+            const triggers = scope && ctx.get('inputTriggers')?.sessionOf(scope)
+            // Use the native decorated command with its own confirmation and Session binding.
+            return (await triggers?.adjudicate('/permission', signal, { attachments: 0 })) === 'handled'
+          },
           feedback,
           getDefaultProvider: async () => {
             const result = await ctx.remote.session.modelCatalog()
             return result.ok ? result.value.default.provider : undefined
           },
-          watchDefaultProvider: (changed) => {
+          watchDefaultProvider: (changed: () => void) => {
             const disposers = [
               ctx.remote.$on('settings/document-updated', changed),
               ctx.remote.$on('llm/adapters-updated', changed),

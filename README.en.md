@@ -60,13 +60,17 @@ Launch and sign-in commands for common Agents:
 | Codex                                                      | `codex-acp`        | `codex login`                 |
 | Qwen Code                                                  | `qwen --acp`       | `qwen`                        |
 
-> To use WorkBuddy with DSH, connect through the CodeBuddy CLI. See the [ACP CLI reference](https://www.codebuddy.cn/docs/cli/cli-reference) and [CodeBuddy account and subscription details](https://www.codebuddy.cn/docs/ide/Account/pricing).
+> To use WorkBuddy with DSH, connect through the [CodeBuddy CLI](https://www.codebuddy.ai/docs/cli/reference). Your plan and credits are available in your [CodeBuddy profile](https://www.codebuddy.ai/docs/ide/Account/usage).
+
+Plugin details use your existing local sign-in to show your Codex plan and quota or your Devin plan. On macOS, choose **View plan and quota** to check Antigravity. Available limits and reset times depend on your account.
 
 ## Choose a mode
 
 Standard mode works with ACP Agents. Choose **Creator mode** to create plugins through conversation.
 
 Choose the optional **ACP** mode to let the Agent manage conversation context. This mode provides DSH tools and omits DSH plugin management, subagent, and compaction tools.
+
+Use the selector beside the ACP composer to choose a work or permission mode offered by the current Agent. You can choose before your first message. The adapter waits for the Agent to confirm before sending. Use `/permission` to change permissions for DSH bridge tools.
 
 **Switch models within a conversation.** Choose a CodeBuddy or OpenCode model directly in the model menu. The adapter confirms the model with the Agent before sending. You can switch models in the same main conversation. Switching to another Agent or a native DSH model opens a separate chat in the same mode. Your history and draft stay in the original chat.
 

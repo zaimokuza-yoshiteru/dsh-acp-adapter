@@ -36,6 +36,7 @@ function text(value: unknown): string {
 }
 function renderPanel(snapshot: AcpPanelSnapshot, locale = en) {
   const panel: AcpSectionWire = {
+    accountUsage: vi.fn(),
     refreshHealth: vi.fn(),
     refreshAgentHealth: vi.fn(),
     saveAgent: vi.fn(),

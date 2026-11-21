@@ -234,11 +234,16 @@ export class AcpForkPreDispatchError extends Error {
 export class AcpPromptNotDispatchedError extends Error {
   readonly code = 'ACP_PROMPT_NOT_DISPATCHED'
 
-  constructor(readonly cancelled = false) {
+  constructor(
+    readonly cancelled = false,
+    reason?: 'agent-settings',
+  ) {
     super(
       cancelled
         ? 'The ACP prompt was cancelled before it was sent.'
-        : 'The ACP connection changed before this request was sent. Retry to continue the original session.',
+        : reason === 'agent-settings'
+          ? 'The Agent settings changed before this request was sent. Review the settings and retry.'
+          : 'The ACP connection changed before this request was sent. Retry to continue the original session.',
     )
     this.name = 'AcpPromptNotDispatchedError'
   }

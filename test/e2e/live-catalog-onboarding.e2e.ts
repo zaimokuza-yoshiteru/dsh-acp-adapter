@@ -73,6 +73,17 @@ for (const { agent, id, label, model } of cases) {
         })
         await page.reload()
         await connectFreshWorkspace(page, host.workspaceCwd)
+        const preselect = agent === 'codebuddy' && process.env.DSH_E2E_LIVE_CODEBUDDY_PRESELECT === '1'
+        if (preselect) {
+          await page.getByRole('button', { name: 'Standard mode', exact: true }).click()
+          await page.getByRole('menuitem', { name: /^ACP\b/ }).click()
+          const selector = page.locator('[data-acp-permission-replacement] button').first()
+          await selector.click()
+          await page.getByRole('menuitem', { name: /^Accept Edits\b/ }).click()
+          await expect.poll(() => selector.innerText()).toBe('Accept Edits')
+          expect(requestSessions).toHaveLength(0)
+          await capture('preselected')
+        }
         const number = 10 + Math.floor(Math.random() * 89)
         const answer = String(number + 17)
         await writeComposerDraft(
@@ -92,6 +103,10 @@ for (const { agent, id, label, model } of cases) {
         expect(snapshot.configOptions).toContainEqual(
           expect.objectContaining({ category: 'model', currentValue: model }),
         )
+        if (preselect)
+          expect(snapshot.configOptions).toContainEqual(
+            expect.objectContaining({ category: 'mode', currentValue: 'acceptEdits' }),
+          )
         if (agent === 'antigravity')
           expect(snapshot.configOptions).toContainEqual(
             expect.objectContaining({ category: 'thought_level', currentValue: 'low' }),

@@ -1,3 +1,5 @@
+import { firstTurnOptionsRecord, type FirstTurnOptions } from '../../../src/domain/session/first-turn-options.ts'
+import type { SessionEventLike, SessionLike } from '../../../src/domain/session/session-facts.ts'
 import { withSessionFacts } from '../../support/session-facts.ts'
 import { describe, expect, it } from 'vitest'
 import {
@@ -12,7 +14,9 @@ import { ProviderRequestId } from '@deepseek-ai/dsh-llm/brand'
 import { AcpProfileAdapter } from '../../../src/host/composition/profile-adapter.ts'
 import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts'
 import type { AcpProfileRuntime } from '../../../src/host/composition/profile-adapter.ts'
-import type { AcpSidecar } from '../../../src/persistence/sidecar.ts'
+import { unsentModelSwitchRecord } from '../../../src/domain/session/unsent-model-switch.ts'
+import { managedModelRetryNotice } from '../../../src/host/composition/managed-model-resend.ts'
+import type { AcpBindingRecord, AcpSidecar } from '../../../src/persistence/sidecar.ts'
 import type { DispatchLedgerStore, DispatchRecord } from '../../../src/runtime/session/dispatch-ledger.ts'
 import { ACP_CURRENT_CONFIG_MODEL_ID, acpDeclaredModelRoute } from '../../../src/contract/model-selection.ts'
 
@@ -331,6 +335,211 @@ describe('ACP M6a session configuration convergence', () => {
     expect(snapshot.configOptions?.some((option) => option.id === 'auto_compact')).toBe(true)
     await adapter.setAgentSessionOption('session-controls', { kind: 'config', id: 'auto_compact', value: false })
     expect(calls).not.toContainEqual(['model', false])
+  })
+
+  it.each([
+    'confirm',
+    'withdraw',
+    'stale-click',
+    'wrong-ack',
+    'drift',
+    'automatic-result',
+    'missing-session',
+    'outdated-binding',
+    'no-sidecar',
+    'preset-changed',
+  ] as const)('gates the first ACP prompt on the settings of its real session (%s)', async (outcome) => {
+    const events: SessionEventLike[] = []
+    let dedicated = false
+    const hostMessage = createUserMessage({
+      content: message.content,
+      source: { kind: 'user', rpcId: 'first-request' as never },
+    })
+    let unsent: Parameters<NonNullable<SessionLike['recordUndispatchedModelInput']>>[0] | undefined
+    const input = withSessionFacts({
+      header: { cwd: '/workspace' },
+      inheritedEventCount: 0,
+      dedicatedAcpRoute: (provider: string) => dedicated && provider === 'acp-test',
+      snapshotEvents: () => events,
+      recordUndispatchedModelInput: (
+        ticket: Parameters<NonNullable<SessionLike['recordUndispatchedModelInput']>>[0],
+      ) => {
+        unsent = ticket
+        events.push({ seq: events.length, type: unsentModelSwitchRecord, ignorable: true, data: ticket })
+      },
+      readCommittedModelRetry: async () => unsent && { ticket: unsent, input: hostMessage },
+      writeFirstTurnOptions: (data: FirstTurnOptions) =>
+        events.push({ seq: events.length, type: firstTurnOptionsRecord, ignorable: true, data }),
+    })
+    const mode = {
+      type: 'select' as const,
+      id: 'workflow',
+      category: 'mode',
+      name: 'Work mode',
+      currentValue: 'ask',
+      options: [
+        { value: 'ask', name: 'Ask' },
+        { value: 'plan', name: 'Plan' },
+      ],
+    }
+    const active = ['withdraw', 'stale-click'].includes(outcome) ? { ...mode, options: mode.options.slice(0, 1) } : mode
+    let discovered = mode
+    const calls: Array<[string, string | boolean]> = []
+    const prompted = { value: 0 }
+    const runtime = runtimeFor(calls, [active], prompted, { confirm: outcome !== 'wrong-ack' })
+    if (outcome === 'automatic-result')
+      runtime.start = async () => {
+        Object.assign(runtime, {
+          pendingAgentTurnFailure: { acpSessionId: runtime.acpSessionId, error: new Error('Automatic turn failed') },
+        })
+      }
+    if (outcome === 'missing-session') Object.assign(runtime, { acpSessionId: undefined })
+    const original = runtime.prompt.bind(runtime)
+    runtime.prompt = async (...args) => {
+      if (outcome === 'drift') await runtime.setConfigOption!('workflow', 'ask')
+      args[6]?.beforeDispatch?.()
+      return original(...args)
+    }
+    const ledger = new Ledger()
+    let binding: AcpBindingRecord | undefined
+    const store = {
+      ...sidecar,
+      append: async (...[, entry]: Parameters<AcpSidecar['append']>) => {
+        if (entry.kind === 'binding') binding = { ...entry.data, time: 1 }
+      },
+      readLatestBinding: async () =>
+        outcome === 'outdated-binding'
+          ? { status: 'outdated' as const }
+          : binding && { status: 'ok' as const, binding },
+      readDispatch: (_id: unknown, key: string) => ledger.read('first', key),
+      clearDispatch: async (_id: unknown, key?: string) => {
+        ledger.records = ledger.records.filter((record) => record.key !== key)
+      },
+    }
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => profile,
+      seam(),
+      () => input,
+      ledger,
+      () => ({
+        listModels: async () => [],
+        probeSnapshot: () => ({
+          key: 'test',
+          at: 1,
+          result: {
+            kind: 'ok',
+            models: [],
+            configOptions: [discovered],
+            authMethods: [],
+            agentInfo: null,
+            agentCapabilities: {},
+            cleanup: { close: 'done', delete: 'done' },
+            capabilityHash: 'test',
+            protocolVersion: 1,
+          },
+        }),
+      }),
+      () => runtime,
+      outcome === 'no-sidecar' ? undefined : store,
+    )
+    const choice = { kind: 'config' as const, id: 'workflow', value: 'plan' }
+    expect(adapter.firstTurnControls('first')).toBeUndefined()
+    expect(() => adapter.setFirstTurnOption('first', choice, () => true, 0)).toThrow()
+    dedicated = true
+    expect(() => adapter.setFirstTurnOption('first', choice, () => false, 0)).toThrow()
+    if (outcome === 'stale-click') {
+      discovered = active
+      expect(() => adapter.setFirstTurnOption('first', choice, () => true, 0)).toThrow()
+    } else {
+      expect(adapter.setFirstTurnOption('first', choice, () => true, 0)).toMatchObject({
+        preselection: true,
+        preselected: [choice],
+      })
+    }
+    if (outcome === 'confirm') {
+      const revision = input.facts.preselectionRevision!
+      const cleared = adapter.setFirstTurnOption('first', null, () => true, revision)
+      expect(cleared.preselectionRevision).toBeGreaterThan(revision)
+      expect(cleared.preselected).toBeUndefined()
+      const beforeLateWrites = events.length
+      expect(() => adapter.setFirstTurnOption('first', choice, () => true, 0)).toThrow()
+      expect(() => adapter.setFirstTurnOption('first', null, () => true, revision)).toThrow()
+      let checks = 0
+      expect(() =>
+        adapter.setFirstTurnOption('first', choice, () => ++checks === 1, cleared.preselectionRevision),
+      ).toThrow()
+      expect(events).toHaveLength(beforeLateWrites)
+      expect(input.facts.firstTurnOptions?.choices).toEqual([])
+      adapter.setFirstTurnOption('first', choice, () => true, cleared.preselectionRevision)
+    }
+    if (outcome === 'preset-changed') dedicated = false
+    expect(calls).toEqual([])
+    events.push(
+      { type: 'turn/start', seq: events.length, data: { turn: 1 } },
+      { type: 'step/start', seq: events.length + 1, data: { turn: 1, step: 1 } },
+      { type: 'user/message', seq: events.length + 2, data: hostMessage },
+    )
+    const actual = drain(
+      adapter.stream(request('first', { model: ACP_CURRENT_CONFIG_MODEL_ID, messages: [hostMessage] })),
+    )
+    if (outcome === 'confirm') {
+      await actual
+      expect(calls).toEqual([['workflow', 'plan']])
+      expect(prompted.value).toBe(1)
+      expect(input.facts.firstTurnOptions).toBeUndefined()
+    } else {
+      await expect(actual).rejects.toMatchObject({
+        code: {
+          withdraw: 'ACP_CONFIG_UNSUPPORTED',
+          'stale-click': 'ACP_CONFIG_UNSUPPORTED',
+          'wrong-ack': 'ACP_CONFIG_SYNC_FAILED',
+          drift: 'ACP_PROMPT_NOT_DISPATCHED',
+          'automatic-result': 'ACP_CONFIG_UNSUPPORTED',
+          'missing-session': 'ACP_SESSION_UNAVAILABLE',
+          'no-sidecar': 'ACP_BINDING_UNAVAILABLE',
+          'outdated-binding': 'ACP_RECONCILIATION_REQUIRED',
+          'preset-changed': 'ACP_CONFIG_UNSUPPORTED',
+        }[outcome],
+      })
+      expect(prompted.value).toBe(0)
+      expect(ledger.records).toEqual([])
+      expect(input.facts.firstTurnOptions?.choices).toEqual([choice])
+      events.push({ type: 'turn/end', seq: events.length, data: { reason: { kind: 'failed' } } })
+      dedicated = true
+      const revision = input.facts.preselectionRevision
+      expect(revision).toBeGreaterThan(0)
+      expect(() => adapter.setFirstTurnOption('first', null, () => true, 0)).toThrow()
+      expect(input.facts.firstTurnOptions?.choices).toEqual([choice])
+      adapter.setFirstTurnOption('first', null, () => true, revision)
+      expect(input.facts.preselectionRevision).toBeGreaterThan(revision!)
+      expect(() => adapter.setFirstTurnOption('first', choice, () => true, revision)).toThrow()
+      expect(input.facts.firstTurnOptions?.choices).toEqual([])
+      expect(adapter.firstTurnControls('first')).toMatchObject({
+        preselection: true,
+        preselectionRevision: input.facts.preselectionRevision,
+      })
+      expect(adapter.firstTurnControls('first')?.preselected).toBeUndefined()
+      if (outcome === 'withdraw') {
+        expect(unsent?.committed).toMatchObject({ inputSeq: 3 })
+        const notice = managedModelRetryNotice(input.facts.unsentModelSwitch!.failureSeq)
+        runtime.restore = async () => 'reused'
+        events.push(
+          { type: 'turn/start', seq: events.length, data: { turn: 2 } },
+          { type: 'step/start', seq: events.length + 1, data: { turn: 2, step: 1 } },
+          { type: 'user/message', seq: events.length + 2, data: notice },
+        )
+        await drain(adapter.stream(request('first', { model: ACP_CURRENT_CONFIG_MODEL_ID, messages: [notice] })))
+        expect(prompted.value).toBe(1)
+        expect(ledger.records).toHaveLength(1)
+        await expect(
+          drain(adapter.stream(request('first', { model: ACP_CURRENT_CONFIG_MODEL_ID, messages: [notice] }))),
+        ).rejects.toMatchObject({ code: 'ACP_MODEL_SWITCH_UNAVAILABLE' })
+        expect(prompted.value).toBe(1)
+        expect(events.filter((event) => event.type === 'user/message' && event.data === hostMessage)).toHaveLength(1)
+      }
+    }
+    await adapter.close()
   })
 
   it('converges model and reasoning before prompt', async () => {

@@ -10,6 +10,7 @@ export async function presetTurn(session: MockSession, msg: PromptMessage, peer:
     .map((block) => block.text)
     .join('\n')
   if (!prompt.includes('E2E_ACP_PRESET')) return false
+  peer.log(`preset prompt mode=${session.configOptions?.find((option) => option.id === 'mode')?.currentValue}`)
   const client = new Client({ name: 'acp-preset-fixture', version: '1' })
   try {
     const server = session.mcpServers?.[0]

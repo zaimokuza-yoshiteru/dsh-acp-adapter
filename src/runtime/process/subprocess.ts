@@ -71,6 +71,24 @@ export interface AcpSubprocessHandle {
   waitForExit(signal?: AbortSignal): Promise<boolean>
 }
 
+/** Optional local interactive terminal used by Google's status line during an explicit account refresh. */
+export interface AcpAccountTerminalSpec {
+  argv: readonly string[]
+  cwd: string
+  env: Record<string, string>
+  rows: number
+  cols: number
+  terminalType: string
+  graceMs: number
+  signal: AbortSignal
+}
+
+export interface AcpAccountTerminal {
+  output: Readable
+  done: Promise<AcpSubprocessExitFact>
+  terminate(): Promise<void>
+}
+
 /**
  * `ctx.subprocess` 的最小消费面：spawn + resolveExecutable（PATH 解析预检，
  * Windows 下含 PATHEXT 语义）。插件加载期经
@@ -79,21 +97,23 @@ export interface AcpSubprocessHandle {
 export interface SubprocessSeam {
   /** Proven Host-local provider; filesystem paths and login material may not cross a remote seam. */
   readonly localExecution?: true
+  spawnTerminal?(spec: AcpAccountTerminalSpec): Promise<AcpAccountTerminal>
   spawn(spec: AcpSubprocessSpawnSpec): AcpSubprocessHandle
   resolveExecutable(command: string, env?: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<string>
 }
 
 /**
  * 结构化窄化：候选值必须具备 spawn/resolveExecutable 两个方法（其余上游成员
- * ——spawnTerminal/collected 等——本包不消费，不参与窄化）。返回的 seam 在
- * spawn 调用点固定填入 pipe/pipe/pipe stdio（本包唯一 stdio 形态）；候选缺
+ * ——collected 等——不参与窄化）。返回的 seam 在
+ * spawn 调用点固定填入 pipe/pipe/pipe stdio（常规 ACP 连接的 stdio 形态）；候选缺
  * 方法面时返回 undefined（调用方 fail closed）。
  */
 export function narrowSubprocessSeam(candidate: unknown): SubprocessSeam | undefined {
   if (typeof candidate !== 'object' || candidate === null) return undefined
-  const face = candidate as { spawn?: unknown; resolveExecutable?: unknown }
+  const face = candidate as { spawn?: unknown; resolveExecutable?: unknown; spawnTerminal?: unknown }
   if (typeof face.spawn !== 'function' || typeof face.resolveExecutable !== 'function') return undefined
   const service = candidate as {
+    spawnTerminal(spec: AcpAccountTerminalSpec): Promise<AcpAccountTerminal>
     spawn(
       spec: AcpSubprocessSpawnSpec & {
         stdio: { stdin: 'pipe'; stdout: 'pipe'; stderr: 'pipe' }
@@ -102,6 +122,9 @@ export function narrowSubprocessSeam(candidate: unknown): SubprocessSeam | undef
     resolveExecutable(command: string, env?: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<string>
   }
   return {
+    ...(typeof face.spawnTerminal === 'function'
+      ? { spawnTerminal: (spec: AcpAccountTerminalSpec) => service.spawnTerminal(spec) }
+      : {}),
     spawn: (spec) => service.spawn({ ...spec, stdio: { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' } }),
     resolveExecutable: (command, env, signal) => service.resolveExecutable(command, env, signal),
   }

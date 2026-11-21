@@ -89,6 +89,14 @@ import {
   lastConfirmedBindingModel,
   readManagedModelFeedback,
 } from './managed-model-feedback.ts'
+import { firstTurnOptionsSchema } from '../../domain/session/first-turn-options.ts'
+import {
+  confirmFirstTurnOptions,
+  offersFirstTurnOption,
+  preselectionUnavailable,
+  updatedPreselection,
+  withPreselection,
+} from './first-turn-options.ts'
 import { StreamHandoff } from './stream-handoff.ts'
 import type { ConfirmedNamedModelSwitch, NamedModelSteps } from './named-model-compaction.ts'
 import type { DispatchLedgerStore } from '../../runtime/session/dispatch-ledger.ts'
@@ -460,6 +468,7 @@ export interface AcpNativeQuestionBinding {
 export class AcpProfileAdapter extends LlmAdapter {
   private approvalReview: ApprovalReviewScope | undefined
   private probeGeneration: ProfileGeneration | undefined
+  private readonly discoveryListeners = new Set<() => void>()
   private readonly runtimes = new Map<string, AcpProfileRuntime>()
   private readonly terminalOutcomes = new WeakMap<AcpProfileRuntime, HostTerminalOutcomes>()
   private readonly runtimeOwners = new WeakMap<AcpProfileRuntime, object>()
@@ -800,7 +809,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     if (generation === undefined) return []
     // Preserve provider-local failures for the native catalog's error row.
     // An empty success hides the route and can remain cached after recovery.
-    const models = await generation.probe.listModels(provider)
+    const models = await this.readModelCatalog(generation, provider)
     if (
       models.some((model) => isAcpCurrentConfigModel(model.id)) &&
       hostLocale(this.hostRoot)?.toLowerCase().startsWith('zh')
@@ -810,6 +819,24 @@ export class AcpProfileAdapter extends LlmAdapter {
         return model
       })
     return models
+  }
+
+  /** A composer that opened before the native picker finished discovery receives that same result. */
+  subscribeDiscoveryChanges(listener: () => void): () => void {
+    this.discoveryListeners.add(listener)
+    return () => {
+      this.discoveryListeners.delete(listener)
+    }
+  }
+
+  private async readModelCatalog(generation: ProfileGeneration, provider: string): Promise<readonly LlmModelInfo[]> {
+    const before = generation.probe.probeSnapshot?.(provider)
+    try {
+      return await generation.probe.listModels(provider)
+    } finally {
+      if (this.probeGeneration === generation && generation.probe.probeSnapshot?.(provider) !== before)
+        for (const listener of this.discoveryListeners) listener()
+    }
   }
 
   /** The profile adapter is the single probe cache owner for both ModelPicker and health. */
@@ -824,6 +851,7 @@ export class AcpProfileAdapter extends LlmAdapter {
 
   invalidateProbe(routeId: string): void {
     this.currentProbeGeneration()?.probe.invalidateProbe?.(routeId)
+    for (const listener of this.discoveryListeners) listener()
   }
 
   override async resolveModel(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo> {
@@ -926,7 +954,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     generation: ProfileGeneration,
     signal?: AbortSignal,
   ): Promise<LlmResolvedModelInfo> {
-    const models = await generation.probe.listModels(provider)
+    const models = await this.readModelCatalog(generation, provider)
     if (signal?.aborted) signal.throwIfAborted()
     const found = models.find((entry) => entry.id === model)
     // Reasoning on a managed route belongs to the selected model's live
@@ -992,11 +1020,76 @@ export class AcpProfileAdapter extends LlmAdapter {
     if (!feedback.possiblyDelivered) return acpDeclaredModelRoute(intent.target)
   }
 
+  /** Never start a process when a composer subscribes. Only a selected, blank ACP preset may borrow discovery choices. */
+  firstTurnControls(sessionId: string): AgentSessionSnapshotView | undefined {
+    const provider = `acp-${this.profileId}`
+    const session = this.sessionOf(sessionId)
+    if (
+      !session?.dedicatedAcpRoute?.(provider) ||
+      session.facts.acpReplaySeen ||
+      (session.facts.hasSemanticHistory && session.facts.firstTurnOptions?.provider !== provider)
+    )
+      return
+    const pending = session.facts.firstTurnOptions?.provider === provider ? session.facts.firstTurnOptions : undefined
+    const runtime = this.runtimeForSession(sessionId)
+    if (!pending?.choices.length && runtime && (this.runtimeBindings.get(runtime)?.committedPromptOrdinal ?? 0) > 0)
+      return
+    const probe = this.probeSnapshot(provider)?.result
+    const source = runtime ?? (probe?.kind === 'ok' ? probe : undefined)
+    return withPreselection(
+      {
+        ...this.sessionControls.liveAgentSessionSnapshot(sessionId, source ?? {}),
+        preselection: true,
+        preselectionRevision: session.facts.preselectionRevision ?? 0,
+        freshness: 'stale',
+        editable: !session.facts.turnOpen && !this.handoffs.has(sessionId) && !this.closing,
+      },
+      pending,
+    )
+  }
+
+  /** Store an explicit choice in the native session before acknowledging the click; discovery never auto-selects. */
+  setFirstTurnOption(
+    sessionId: string,
+    choice: AgentSessionOptionWrite | null,
+    authorized: () => boolean,
+    expectedRevision: number | undefined,
+  ): AgentSessionSnapshotView {
+    const provider = `acp-${this.profileId}`
+    const session = this.sessionOf(sessionId)
+    const preview = this.firstTurnControls(sessionId)
+    const generation = this.currentProbeGeneration()
+    if (!authorized() || !preview?.editable || !generation || !session?.writeFirstTurnOptions)
+      throw preselectionUnavailable()
+    const probe = generation.probe.probeSnapshot?.(provider)?.result
+    const source = this.runtimeForSession(sessionId) ?? (probe?.kind === 'ok' ? probe : undefined)
+    const previous = session.facts.firstTurnOptions
+    const choices =
+      choice === null
+        ? []
+        : updatedPreselection(
+            previous?.generation === generation.id && previous.provider === provider ? previous.choices : [],
+            choice,
+          )
+    const parsed = firstTurnOptionsSchema.safeParse({ provider, generation: generation.id, choices })
+    if (!parsed.success || !authorized() || expectedRevision !== (session.facts.preselectionRevision ?? 0))
+      throw preselectionUnavailable()
+    // A click can outlive the menu that displayed it. Keep the exact intent even if discovery has
+    // just changed, so an immediate send still requires the real Agent to confirm the user's choice.
+    session.writeFirstTurnOptions(parsed.data)
+    if (!choice && previous?.provider === provider) this.sessionControls.forget(sessionId)
+    this.controlsChanged?.(sessionId)
+    if (choice && !offersFirstTurnOption(source ?? {}, choice)) throw preselectionUnavailable()
+    return this.firstTurnControls(sessionId) ?? preview
+  }
+
   /** Session-scoped view used by the existing Remote API. */
   async agentSessionSnapshot(sessionId: string): Promise<AgentSessionSnapshotView> {
-    const snapshot = await this.sessionControls.agentSessionSnapshot(sessionId)
-    const sidecar = this.sidecar
+    const raw = await this.sessionControls.agentSessionSnapshot(sessionId)
     const session = this.sessionOf(sessionId)
+    const pending = session?.facts.firstTurnOptions
+    const snapshot = withPreselection(raw, pending?.provider === `acp-${this.profileId}` ? pending : undefined)
+    const sidecar = this.sidecar
     const provider = `acp-${this.profileId}`
     const named = session?.committedNamedModel?.(provider) === true
     if (
@@ -1910,12 +2003,17 @@ export class AcpProfileAdapter extends LlmAdapter {
         if (error instanceof AcpAdmissionError) throw LlmError.fromFailure({ message: error.message, code: error.code })
         throw error
       }
+      const sessionFacts = session?.facts
+      const firstTurnDraft =
+        sessionFacts?.firstTurnOptions?.provider === options.provider ? sessionFacts.firstTurnOptions : undefined
+      const pendingFirstOptions = firstTurnDraft?.choices.length ? firstTurnDraft : undefined
+      const selectionRevision = sessionFacts?.preselectionRevision
       const retries = messages.filter((message) => message.source.kind === managedModelResendSource)
       let originalInputSeq = session?.facts.openSteps.at(-1)?.directInput?.seq
       if (retries.length) {
         const retry = retries[0]!
         if (
-          !(managedRoute || verifiedNamed) ||
+          !(managedRoute || verifiedNamed || session?.dedicatedAcpRoute?.(options.provider)) ||
           retries.length !== 1 ||
           retry.source.kind !== managedModelResendSource ||
           messages.some((message) => message.source.kind === 'user')
@@ -2080,7 +2178,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         })
         const recordUnsentModelInput = async () => {
           if (
-            (managedRoute || verifiedNamed) &&
+            (managedRoute || verifiedNamed || pendingFirstOptions || retries.length) &&
             admissionProof &&
             originalInputSeq !== undefined &&
             !options.signal?.aborted
@@ -2258,7 +2356,7 @@ export class AcpProfileAdapter extends LlmAdapter {
               runtime,
               binding,
               options.signal,
-              managedRoute || verifiedNamed ? { requireFreshConfig: true } : undefined,
+              managedRoute || verifiedNamed || pendingFirstOptions ? { requireFreshConfig: true } : undefined,
             )
           } catch (error: unknown) {
             const cancelledRefreshPending = runtime.cancelledSessionRefreshPending === true
@@ -2558,9 +2656,11 @@ export class AcpProfileAdapter extends LlmAdapter {
         // only after setup/restore has established the session, but before the
         // dispatch WAL: a rejected or unconfirmed change must cause zero WAL and
         // zero prompt, never a silent request with a different model/effort.
-        const restoreSavedMode = self.sessionControls.needsModeRestore(sessionKey, bindingForModeRestore)
+        const restoreSavedMode =
+          !pendingFirstOptions && self.sessionControls.needsModeRestore(sessionKey, bindingForModeRestore)
         let managedDispatch: ManagedDispatchReceipt | undefined
         let verifyDispatchModel: (() => void) | undefined
+        let verifyFirstOptions: (() => void) | undefined
         try {
           const pendingAutomaticFailure = runtime.pendingAgentTurnFailure !== undefined
           // No configuration write can repair an already failed remote turn.
@@ -2628,10 +2728,42 @@ export class AcpProfileAdapter extends LlmAdapter {
             })
             verifyDispatchModel = managedDispatch.verify
           }
+          if (pendingFirstOptions) {
+            retainHealthyRuntimeAfterNotDispatched = true
+            if (
+              bindingForModeRestore?.provider !== options.provider ||
+              bindingForModeRestore.agentSessionId !== runtime.acpSessionId ||
+              bindingForModeRestore.committedPromptOrdinal !== 0 ||
+              pendingAutomaticFailure ||
+              !session?.dedicatedAcpRoute?.(options.provider)
+            )
+              throw preselectionUnavailable()
+            const verify = await confirmFirstTurnOptions(runtime, pendingFirstOptions, generation.id, options.signal)
+            const confirmedBinding = bindingForModeRestore
+            verifyFirstOptions = () => {
+              try {
+                if (
+                  session?.facts.preselectionRevision !== selectionRevision ||
+                  !session?.dedicatedAcpRoute?.(options.provider)
+                )
+                  throw preselectionUnavailable()
+                verify()
+                self.sessionControls.rememberFirstTurnMode(
+                  sessionKey,
+                  runtime,
+                  pendingFirstOptions.choices,
+                  confirmedBinding,
+                )
+              } catch {
+                throw new AcpPromptNotDispatchedError(options.signal?.aborted === true, 'agent-settings')
+              }
+            }
+          }
           await self.persistRuntimeSnapshot(sessionKey, runtime)
         } catch (error: unknown) {
           await recordUnsentModelInput()
-          if (!restoreSavedMode) await self.releaseRuntime(runtimeKey, runtime)
+          if (!restoreSavedMode && !retainHealthyRuntimeAfterNotDispatched)
+            await self.releaseRuntime(runtimeKey, runtime)
           if (error instanceof LlmError) throw error
           throw LlmError.fromFailure(
             {
@@ -2769,6 +2901,11 @@ export class AcpProfileAdapter extends LlmAdapter {
               if (!bindingHeadRefreshed && bindingCommit !== undefined) {
                 committedBindingAfterSettle = await sink.refreshBindingHead(sessionKey, session, bindingCommit)
                 bindingHeadRefreshed = true
+              }
+              if (firstTurnDraft) {
+                const current = session?.facts
+                if (current?.firstTurnOptions && current.preselectionRevision === selectionRevision)
+                  session?.writeFirstTurnOptions?.({ ...firstTurnDraft, choices: [], consumed: true })
               }
             }
           }
@@ -3370,7 +3507,14 @@ export class AcpProfileAdapter extends LlmAdapter {
             ...(approvalReviewAgent(self.profileId, profile) !== undefined ? { reviewInput: () => reviewInput } : {}),
             projection: validatedPrompt.projection,
             hostBodySignal,
-            ...(verifyDispatchModel ? { beforeDispatch: verifyDispatchModel } : {}),
+            ...(verifyDispatchModel || verifyFirstOptions
+              ? {
+                  beforeDispatch: () => {
+                    verifyDispatchModel?.()
+                    verifyFirstOptions?.()
+                  },
+                }
+              : {}),
           },
         )
         self.controlsChanged?.(sessionKey)

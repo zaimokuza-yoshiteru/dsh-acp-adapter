@@ -42,6 +42,7 @@ const actions: readonly RemoteAccessAction[] = [
   'dshAcp/teamMemberModels',
   'dshAcp/setTeamMemberModel',
   'dshAcp/health',
+  'dshAcp/accountUsage',
   'dshAcp/projectedSubagentIds',
   'dshAcp/backendOf',
   'dshAcp/registerNativeFork',
@@ -61,6 +62,7 @@ const member: AcpTeamMemberView = {
 async function fixture(
   options: {
     ownedSessionReadGate?: AcpRemoteServiceDeps['ownedSessionReadGate']
+    agentSessionControl?: AcpRemoteServiceDeps['agentSessionControl']
     management?: (ctx: Context) => NonNullable<AcpRemoteServiceDeps['teamManagement']>
   } = {},
 ) {
@@ -109,6 +111,7 @@ async function fixture(
     nativeFork,
     retryModelSwitchInput,
     nativeForkScope,
+    ...(options.agentSessionControl && { agentSessionControl: options.agentSessionControl }),
     checkExecutable: async () => true,
     queryVersion: async () => null,
     ownedSessionReadGate: options.ownedSessionReadGate ?? (async () => true),
@@ -161,6 +164,62 @@ async function fixture(
 }
 
 describe('ACP resources through the published Gateway and Peer', () => {
+  it('keeps local account information behind global Host settings management', async () => {
+    const h = await fixture()
+    const args = { agentId: 'devin' }
+    h.hold(['reader'])
+    await expect(h.call(h.restricted, 'accountUsage', args)).rejects.toMatchObject({ code: 'remote-access/denied' })
+    h.hold([], true)
+    await expect(h.call(h.restricted, 'accountUsage', args)).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
+    await expect(h.call(h.owner, 'accountUsage', args)).resolves.toMatchObject({ status: 'unsupported' })
+  })
+
+  it('clears first-turn settings only with the current grants and live request signal', async () => {
+    const request = new AbortController()
+    let beforeCommit = () => {}
+    const applied: number[] = []
+    const h = await fixture({
+      agentSessionControl: () => ({
+        agentSessionSnapshot: vi.fn(),
+        setAgentSessionOption: vi.fn(),
+        setFirstTurnOption: (_sessionId, choice, authorized, revision) => {
+          expect(choice).toBeNull()
+          expect(authorized()).toBe(true)
+          beforeCommit()
+          if (!authorized()) throw new Error('Authorization expired')
+          applied.push(revision!)
+          return {} as never
+        },
+      }),
+    })
+    const args = { target: { sessionId: 'first', provider: 'acp-test', preselectionRevision: 3 } }
+    const clear = () =>
+      h.ctx.typertGateway.invoke({
+        peer: h.restricted,
+        namespace: 'dshAcp',
+        method: 'clearAgentPreselection',
+        args,
+        signal: request.signal,
+      })
+    const clearOnly = [...actions, 'dshAcp/clearAgentPreselection'] as const
+    const both = [...clearOnly, 'dshAcp/setAgentSessionOption'] as const
+    h.hold(['first'], false, clearOnly)
+    await expect(clear()).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
+    h.hold(['first'], false, both)
+    await clear()
+    beforeCommit = () =>
+      h.hold(
+        ['first'],
+        false,
+        both.filter((action) => action !== 'dshAcp/clearAgentPreselection'),
+      )
+    await expect(clear()).rejects.toThrow()
+    h.hold(['first'], false, both)
+    beforeCommit = () => request.abort()
+    await expect(clear()).rejects.toThrow()
+    expect(applied).toEqual([3])
+  })
+
   it('requires both retry and native prompt grants on the same session and passes the actual caller', async () => {
     const h = await fixture()
     const args = { sessionId: 'original', failureSeq: 17 }

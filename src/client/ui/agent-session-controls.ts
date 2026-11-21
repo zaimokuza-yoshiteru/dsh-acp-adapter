@@ -1,6 +1,6 @@
 import type { AcpAgentSessionSnapshotView, AcpAgentSessionOptionWrite } from '../data/acp-remote.ts'
 import type { AcpLocaleKey } from './locales.ts'
-import { isAcpModelOrReasoningOption } from '../../contract/config-options.ts'
+import { isAcpModelOrReasoningOption, normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
 import { teamModeLabel } from '../../contract/session-modes.ts'
 import { disambiguateModelLabels } from '../../contract/model-labels.ts'
 
@@ -31,6 +31,18 @@ export interface AgentControlGroup {
   readonly choices: readonly AgentControlChoice[]
 }
 
+/** Promote only a reported permission control or Agent mode. Other custom options stay reachable. */
+export function primaryAgentControlGroup(groups: readonly AgentControlGroup[]): AgentControlGroup | undefined {
+  const selectable = groups.filter((group) => group.choices.length > 0)
+  return (
+    selectable.find((group) =>
+      ['config:permission_mode', 'config:permissionmode', 'config:approval_mode', 'config:approvalmode'].includes(
+        normalizeAcpConfigOptionKey(group.id),
+      ),
+    ) ?? selectable.find((group) => group.kind === 'mode')
+  )
+}
+
 /** Recovery can restore only a previously delivered model which this Agent still offers. */
 export function lastSuccessfulModelChoice(snapshot: AcpAgentSessionSnapshotView) {
   const model = snapshot.managedModel
@@ -55,7 +67,7 @@ export function lastSuccessfulModelChoice(snapshot: AcpAgentSessionSnapshotView)
 /** Normalize ACP settings once; native Menu owns selection styling and keyboard navigation. */
 export function agentControlMenuGroups(snapshot: AcpAgentSessionSnapshotView, t: Translate): AgentControlGroup[] {
   const groups: AgentControlGroup[] = []
-  const disabled = !snapshot.editable || snapshot.freshness !== 'live'
+  const disabled = !snapshot.editable || (snapshot.freshness !== 'live' && snapshot.preselection !== true)
   // configOptions is canonical; legacy modes are only a fallback.
   if (!(snapshot.configOptions ?? []).some(isModeConfigOption) && (snapshot.modes?.length ?? 0) > 0) {
     groups.push({
@@ -66,6 +78,7 @@ export function agentControlMenuGroups(snapshot: AcpAgentSessionSnapshotView, t:
       choices: (snapshot.modes ?? []).map((mode) => ({
         id: `mode:${mode.id}`,
         label: mode.name,
+        ...(mode.description == null ? {} : { description: mode.description }),
         current: mode.id === (snapshot.pendingModeId ?? snapshot.currentModeId),
         write: { kind: 'mode', id: mode.id },
         disabled,
@@ -150,6 +163,7 @@ export function agentControlFooter(
         }),
       })
   }
-  if (snapshot.freshness === 'stale') footer.push({ type: 'label', id: 'stale', text: t('agentStateStale') })
+  if (snapshot.freshness === 'stale' && snapshot.preselection !== true)
+    footer.push({ type: 'label', id: 'stale', text: t('agentStateStale') })
   return footer
 }

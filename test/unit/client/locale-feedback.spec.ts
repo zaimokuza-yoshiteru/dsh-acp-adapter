@@ -231,6 +231,7 @@ it.each(['save', 'delete'] as const)(
       health: { status: 'ready', rows: [], fetchedAt: 1, message: undefined, checkingAgentIds: [], agentErrors: {} },
     }
     const panel: AcpSectionWire = {
+      accountUsage: vi.fn(),
       refreshHealth: vi.fn(),
       refreshAgentHealth: vi.fn(),
       saveAgent: vi.fn(async () => 'PRIVATE_HOST_FAILURE ACP_SAVE_FAILED'),

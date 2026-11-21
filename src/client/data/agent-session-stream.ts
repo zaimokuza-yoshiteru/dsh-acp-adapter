@@ -6,7 +6,7 @@ import type { AcpRemoteLike } from './acp-remote.ts'
 export function agentSessionStream(
   remote: AcpRemoteLike,
   factory: RemoteStreamFactory,
-  sessionId: string,
+  target: string | { readonly sessionId: string; readonly provider: string },
   changed: (snapshot: AcpAgentSessionSnapshotView | null) => void,
   unavailable: (error: unknown) => void,
 ): RemoteSnapshotStream<
@@ -16,7 +16,7 @@ export function agentSessionStream(
   return new RemoteSnapshotStream(
     factory.$stream<AcpAgentSessionFrame>({
       name: 'ACP Agent controls',
-      open: (signal) => remote.agentSessionFollow(sessionId, signal),
+      open: (signal) => remote.agentSessionFollow(target, signal),
       ended: () => new Error('ACP Agent controls stream ended'),
       carrierFailed: unavailable,
     }),

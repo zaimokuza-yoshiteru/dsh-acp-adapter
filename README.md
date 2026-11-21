@@ -60,13 +60,17 @@ npx @deepseek-ai/dsh@0.2.2-rc.5 plugin --profile web add @zaimokuza/dsh-acp-adap
 | Codex                                                      | `codex-acp`        | `codex login`        |
 | Qwen Code                                                  | `qwen --acp`       | `qwen`               |
 
-> WorkBuddy 用户可通过 CodeBuddy CLI 接入 DSH。参见 [ACP 命令参考](https://www.codebuddy.cn/docs/cli/cli-reference)和 [CodeBuddy 账号与订阅说明](https://www.codebuddy.cn/docs/ide/Account/pricing)。
+> WorkBuddy 用户可通过 CodeBuddy CLI 接入 DSH。见 [ACP 命令参考](https://www.codebuddy.cn/docs/cli/cli-reference)。套餐与积分可在 [CodeBuddy 个人主页](https://www.codebuddy.cn/docs/ide/Account/usage)查看。
+
+插件详情可通过本机已有登录显示 Codex 套餐与额度、Devin 套餐。在 macOS 上，点击 Antigravity 的「查看套餐与额度」即可查询。可见的额度和重置时间取决于账户。
 
 ## 选择模式
 
 标准模式可直接使用 ACP Agent。需要通过对话创建插件时，选择**创造模式**。
 
 如需让 Agent 管理对话上下文，可选择 **ACP** 模式。此模式提供 DSH 工具，不加载 DSH 的插件管理、子代理和压缩工具。
+
+在 **ACP** 模式的输入框旁选择当前 Agent 提供的工作或权限模式。首条消息可以先选模式，Agent 确认后才会发送。DSH 桥接工具的权限仍可通过 `/permission` 调整。
 
 **在会话中切换模型**。在模型菜单里直接选择 CodeBuddy 或 OpenCode 的具体模型。插件会在发送前向 Agent 核对所选模型。同一个 Agent 的主会话可以换模型接着聊；改用另一个 Agent 或 DSH 原生模型时，会按原模式另开会话，历史和草稿留在原处。
 

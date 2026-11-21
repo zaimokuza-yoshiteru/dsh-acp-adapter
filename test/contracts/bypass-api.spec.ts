@@ -57,6 +57,7 @@ const HTTP_SURFACE_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
 
 /** 钉版的完整 Remote invocation 集合。 */
 const PINNED_REMOTE_METHODS: readonly string[] = [
+  'accountUsage',
   'activityDetail',
   'activityFollow',
   'activityPage',
@@ -67,6 +68,7 @@ const PINNED_REMOTE_METHODS: readonly string[] = [
   'auditTimeline',
   'backendOf',
   'boundSessions',
+  'clearAgentPreselection',
   'health',
   'ownedProviderRoutes',
   'projectedSubagentIds',
@@ -85,7 +87,7 @@ const PINNED_REMOTE_METHODS: readonly string[] = [
 ]
 
 describe(' 旁路 API 消除门', () => {
-  it('limits transport primitives to the MCP bridge, the private agy hook and the local OpenCode generation client', () => {
+  it('limits transport primitives to the MCP bridge, the private agy callbacks and the local OpenCode generation client', () => {
     const violations: string[] = []
     for (const abs of walkTsFiles(SRC_DIR)) {
       const rel = path.relative(SRC_DIR, abs).split(path.sep).join('/')
@@ -99,6 +101,9 @@ describe(' 旁路 API 消除门', () => {
       'host/tools/bridge.ts: createServer',
       'host/tools/bridge.ts: .listen(',
       'host/tools/bridge.ts: node:http(s)/node:net import',
+      'remote/account/antigravity.ts: createServer',
+      'remote/account/antigravity.ts: .listen(',
+      'remote/account/antigravity.ts: node:http(s)/node:net import',
       'runtime/process/agy-hook-client.ts: node:http(s)/node:net import',
       'runtime/process/agy-hook-workspace.ts: createServer',
       'runtime/process/agy-hook-workspace.ts: .listen(',

@@ -372,6 +372,18 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
     })
   }
 
+  rememberFirstTurnMode(
+    sessionId: string,
+    runtime: Runtime,
+    choices: readonly AgentSessionOptionWrite[],
+    binding: AcpBindingData,
+  ): void {
+    for (const choice of choices) {
+      const mode = this.modeSelectionForRequest(runtime, choice)
+      if (mode) this.rememberConfirmedUserMode(sessionId, runtime, mode, binding)
+    }
+  }
+
   private modeSelectionForRequest(runtime: Runtime, request: AgentSessionOptionWrite): UserModeChoice | undefined {
     if (request.kind === 'mode') return { kind: 'legacy', id: request.id }
     const option = runtime.configOptions?.find((candidate) => candidate.id === request.id)
@@ -519,7 +531,7 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
     }
   }
 
-  private liveAgentSessionSnapshot(sessionId: string, runtime: Runtime): AgentSessionSnapshotView {
+  liveAgentSessionSnapshot(sessionId: string, runtime: SessionControlRuntime): AgentSessionSnapshotView {
     const options =
       runtime.configOptions === undefined
         ? null

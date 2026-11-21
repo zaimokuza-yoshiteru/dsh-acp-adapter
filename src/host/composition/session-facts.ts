@@ -16,6 +16,7 @@ import {
 import { currentModelContextSnapshots } from '../../domain/session/model-context-snapshots.ts'
 
 import { appendPluginRecord } from '@deepseek-ai/dsh-session'
+import { firstTurnOptionsRecord } from '../../domain/session/first-turn-options.ts'
 import { unsentModelSwitchRecord } from '../../domain/session/unsent-model-switch.ts'
 import { readCommittedModelRetry } from './managed-model-resend.ts'
 import { permitsManagedModelScope, permitsOrdinaryModelScope } from './managed-model.ts'
@@ -33,7 +34,7 @@ const unroutedHistoryView: AcpExecutionView = { externalSubagent: false, complet
 
 const acpExecutionProjection = {
   key: 'acpExecution',
-  stateVersion: 7,
+  stateVersion: 8,
   stateSchema: sessionFactsSchema,
   init: (_header, inheritedEventCount) => initialSessionFacts(inheritedEventCount),
   apply: applySessionFact,
@@ -111,6 +112,22 @@ export function acpSessionView(
         ctx.get('sessions', false)?.get(session.id) === session
       )
         appendPluginRecord(session, unsentModelSwitchRecord, ticket)
+    },
+    writeFirstTurnOptions: (value) => {
+      appendPluginRecord(session, firstTurnOptionsRecord, value)
+    },
+    dedicatedAcpRoute: (provider) => {
+      const agent = ctx.get('agents', false)?.get(session.id)
+      const presets = ctx.get('agentPresets', false)
+      return (
+        agent?.session === session &&
+        session.header.origin !== 'subagent' &&
+        !session.header.isSeeded &&
+        presets?.presetForSession(session) === 'acp-adapter' &&
+        presets.composedPreset(agent.ctx) === 'acp-adapter' &&
+        (agent.model.current()?.provider ?? ctx.get('agentDefaultModel', false)?.currentSelection().provider) ===
+          provider
+      )
     },
     managedModelRoute: (provider, source) => {
       const agent = ctx.get('agents', false)?.get(session.id)

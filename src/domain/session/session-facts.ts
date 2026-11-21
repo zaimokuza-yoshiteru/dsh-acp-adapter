@@ -4,6 +4,7 @@ import type { AcpActivityPresentation } from '../policy/activity-presentation.ts
 import { acpReplayPayloadOf, acpReplayPayloadSchema } from './acp-replay-payload.ts'
 import type { ModelContextSnapshot } from './model-context-snapshots.ts'
 import { EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER } from '../../contract/external-subagent.ts'
+import { firstTurnOptionsRecord, firstTurnOptionsSchema } from './first-turn-options.ts'
 import { unsentModelSwitchRecord, unsentModelSwitchSchema } from './unsent-model-switch.ts'
 
 export interface SessionEventLike {
@@ -39,6 +40,8 @@ export const sessionFactsSchema = z.object({
   acpReplaySeen: z.boolean(),
   /** The only provider this session's own requests were routed to; null before any, '' once they differ. */
   soleRequestProvider: z.string().nullable(),
+  firstTurnOptions: firstTurnOptionsSchema.optional(),
+  preselectionRevision: z.number().int().positive().optional(),
   unsentModelSwitch: unsentModelSwitchSchema.extend({ failureSeq: z.number().int().nonnegative() }).optional(),
 })
 export type SessionFacts = z.infer<typeof sessionFactsSchema>
@@ -62,6 +65,23 @@ export function initialSessionFacts(inheritedEventCount = 0): SessionFacts {
 /** One committed event; unrelated events retain identity and no transcript is cached. */
 export function applySessionFact(previous: SessionFacts, event: SessionEventLike): SessionFacts {
   let state = previous
+  if (event.type === firstTurnOptionsRecord && event.ignorable === true && !state.inheritedRemaining) {
+    const parsed = firstTurnOptionsSchema.safeParse(event.data)
+    if (parsed.success)
+      return {
+        ...state,
+        firstTurnOptions: parsed.data.consumed ? undefined : parsed.data,
+        preselectionRevision: event.seq + 1,
+      }
+  }
+  if (
+    state.firstTurnOptions &&
+    (acpReplayPayloadOf(event) !== undefined ||
+      event.type === 'working-directory/change' ||
+      (event.type === 'model/selection' &&
+        (event.data as { provider?: string } | null)?.provider !== state.firstTurnOptions.provider))
+  )
+    state = { ...state, firstTurnOptions: undefined, preselectionRevision: event.seq + 1 }
   if (
     state.unsentModelSwitch !== undefined &&
     ['turn/start', 'agent/inbox/spliced', 'user/message', 'request/header', 'working-directory/change'].includes(
@@ -156,6 +176,8 @@ export function applySessionFact(previous: SessionFacts, event: SessionEventLike
 
 /** Live read face backed by native Session and projection services, not a log copy. */
 export interface SessionLike {
+  dedicatedAcpRoute?(provider: string): boolean
+  writeFirstTurnOptions?(options: z.infer<typeof firstTurnOptionsSchema>): void
   readCommittedModelRetry?(
     failureSeq: number,
     signal?: AbortSignal,

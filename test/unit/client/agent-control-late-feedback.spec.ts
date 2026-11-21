@@ -12,12 +12,17 @@ const runtime = vi.hoisted(() => ({
   streamEvents: [] as string[],
   agentReadFailed: undefined as (() => void) | undefined,
   managed: false,
+  withdrawn: false,
 }))
 
 // Run the component's actual handlers and effect cleanup around a held RPC.
 // The browser scenario owns native React rendering and navigation geometry.
 vi.mock('react', () => ({
-  createElement: (type: unknown, props: Record<string, unknown> | null) => ({ type, props }),
+  createElement: (type: unknown, props: Record<string, unknown> | null, ...children: unknown[]) => ({
+    type,
+    props: { ...props, children },
+  }),
+  useLayoutEffect: () => {},
   useState: (initial: unknown) => {
     const index = runtime.cursor++
     if (!(index in runtime.cells)) runtime.cells[index] = typeof initial === 'function' ? initial() : initial
@@ -90,21 +95,35 @@ vi.mock('../../../src/client/data/agent-session-stream.ts', () => ({
   agentSessionStream: (
     _remote: unknown,
     _factory: unknown,
-    sessionId: string,
+    target: string | { sessionId: string; provider: string },
     changed: (value: unknown) => void,
     failed: () => void,
   ) => ({
     start: () => {
+      const sessionId = typeof target === 'string' ? target : target.sessionId
       runtime.streamEvents.push(`agent:start:${sessionId}`)
       runtime.agentReadFailed = failed
-      changed(agentSnapshot(sessionId))
+      const snapshot = agentSnapshot(sessionId)
+      changed(
+        typeof target === 'string'
+          ? snapshot
+          : {
+              ...snapshot,
+              freshness: 'stale',
+              preselection: true,
+              preselectionRevision: 1,
+              preselected: [{ kind: 'mode', id: 'plan' }],
+              modes: runtime.withdrawn ? [] : snapshot.modes,
+            },
+      )
     },
     dispose: async () => {
-      runtime.streamEvents.push(`agent:dispose:${sessionId}`)
+      runtime.streamEvents.push(`agent:dispose:${typeof target === 'string' ? target : target.sessionId}`)
     },
   }),
 }))
 import { AcpAgentControl } from '../../../src/client/ui/AcpAgentControl.ts'
+import { AgentSessionMenu } from '../../../src/client/ui/AgentSessionMenu.ts'
 import { AcpOutcomeToast } from '../../../src/client/ui/AcpOutcomeToast.ts'
 import { AcpUiFeedback } from '../../../src/client/data/feedback.ts'
 import { en, zh } from '../../../src/client/ui/locales.ts'
@@ -117,6 +136,8 @@ type Menu = {
     onOpenChange(open: boolean): void
     footer: readonly { text: string }[]
     groups: readonly { choices: readonly AgentControlChoice[] }[]
+    actions: readonly { id: string; run(anchor: HTMLElement | null): void }[]
+    replacesPermission: boolean
     onSelect(choice: AgentControlChoice): void
   }
 }
@@ -146,7 +167,7 @@ function render(props: Props): Menu {
   return menu!
 }
 
-function setup() {
+function setup(dedicated = false) {
   let resolve!: (response: Response) => void
   let reject!: (reason: Error) => void
   const pending = new Promise<Response>((accept, refuse) => {
@@ -155,6 +176,7 @@ function setup() {
   })
   const remote = {
     setAgentSessionOption: vi.fn((_sessionId: string, _request: unknown) => pending),
+    clearAgentPreselection: vi.fn(async () => ({ ok: true as const, value: undefined })),
     agentSessionSnapshot: vi.fn(async (sessionId: string) => ({ ok: true, value: agentSnapshot(sessionId) })),
   }
   const feedback = new AcpUiFeedback()
@@ -163,15 +185,22 @@ function setup() {
   const props = {
     sessionId: 'session-source',
     useProjection: (key: string) =>
-      key === 'title'
-        ? 'Source conversation'
-        : { lastUsed: { provider: 'acp-codex' }, next: { provider: 'acp-codex' } },
+      key === 'agentPreset'
+        ? dedicated
+          ? 'acp-adapter'
+          : 'standard'
+        : key === 'title'
+          ? 'Source conversation'
+          : { lastUsed: { provider: 'acp-codex' }, next: { provider: 'acp-codex' } },
     useSession: (selector: (state: { running: boolean }) => unknown) => selector({ running: false }),
     useAccess: () => permitted,
     sessionAccessSource: () => ({ getSnapshot: () => permitted }),
     t: english,
     remote,
     streamFactory: {},
+    useNativePermissionSeat: () => true,
+    openToolPermissions: vi.fn(async () => true),
+    nativeStopLabel: () => 'Stop',
     useRouteOwnership: (select: (value: AcpOwnedRoutesView) => unknown) =>
       select({ providers: ['acp-codex'], historicalProviders: [] }),
     getDefaultProvider: async () => 'acp-codex',
@@ -203,6 +232,7 @@ beforeEach(() => {
   runtime.streamEvents = []
   runtime.agentReadFailed = undefined
   runtime.managed = false
+  runtime.withdrawn = false
 })
 afterEach(() => {
   for (const cleanup of runtime.cleanups.values()) cleanup()
@@ -215,6 +245,57 @@ it('keeps mode available without a second model selector on old conversations', 
   const choices = menu.props.groups.flatMap((group) => group.choices)
   expect(choices.some((choice) => choice.write.kind === 'mode')).toBe(true)
   expect(choices.some((choice) => choice.write.kind === 'config' && choice.write.id === 'engine')).toBe(false)
+})
+
+it('selects a reported choice even when another settings group and an action use the same ID', () => {
+  const plan = {
+    id: 'mode:plan',
+    label: 'Plan',
+    write: { kind: 'mode' as const, id: 'plan' },
+    current: true,
+    disabled: false,
+  }
+  const primary = { kind: 'mode' as const, id: 'mode', name: 'Mode', current: 'Plan', choices: [plan] }
+  const onSelect = vi.fn()
+  const run = vi.fn()
+  const menu = AgentSessionMenu({
+    groups: [primary, { ...primary, id: plan.id, name: 'Another setting' }],
+    primaryGroup: primary,
+    actions: [{ id: plan.id, label: 'Another action', run }],
+    label: 'Plan',
+    t: english,
+    open: true,
+    onOpenChange: vi.fn(),
+    onSelect,
+  }) as {
+    props: { children: [{ props: { selectedId: string; items: { id: string }[]; onSelect(id: string): void } }] }
+  }
+  const native = menu.props.children[0].props
+  expect(new Set(native.items.map(({ id }) => id)).size).toBe(native.items.length)
+  native.onSelect(native.selectedId)
+  expect(onSelect).toHaveBeenCalledWith(plan)
+  expect(run).not.toHaveBeenCalled()
+})
+
+it('leaves a withdrawn first-turn choice clearable without hiding DSH permissions and rechecks access on click', () => {
+  runtime.withdrawn = true
+  const fixture = setup(true)
+  const menu = render(fixture.props)
+  expect(menu.props.replacesPermission).toBe(false)
+  expect(menu.props.groups).toEqual([])
+  const clear = menu.props.actions.find((action) => action.id === 'agent-defaults')!
+  clear.run(null)
+  expect(fixture.remote.clearAgentPreselection).toHaveBeenCalledWith(
+    {
+      sessionId: 'session-source',
+      provider: 'acp-codex',
+      preselectionRevision: 1,
+    },
+    expect.any(AbortSignal),
+  )
+  fixture.revoke()
+  clear.run(null)
+  expect(fixture.remote.clearAgentPreselection).toHaveBeenCalledOnce()
 })
 
 it('keeps the full source identity and limits wrapping to source-session failure toasts', () => {

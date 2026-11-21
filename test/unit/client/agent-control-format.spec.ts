@@ -5,9 +5,17 @@ import {
   agentControlMenuGroups,
   formatContextTokenCount,
   lastSuccessfulModelChoice,
+  primaryAgentControlGroup,
 } from '../../../src/client/ui/agent-session-controls.ts'
 import type { AcpAgentSessionSnapshotView } from '../../../src/client/data/acp-remote.ts'
 import { en, zh } from '../../../src/client/ui/locales.ts'
+import {
+  beginFirstTurnIntent,
+  confirmsFirstTurnIntent,
+  finishFirstTurnIntent,
+  firstTurnIntentKey,
+  readFirstTurnIntent,
+} from '../../../src/client/data/first-turn-intent.ts'
 
 const t = (key: string, params?: Record<string, unknown>): string => `${key}:${JSON.stringify(params ?? {})}`
 const snapshot = (overrides: Partial<AcpAgentSessionSnapshotView> = {}): AcpAgentSessionSnapshotView => ({
@@ -24,6 +32,63 @@ const snapshot = (overrides: Partial<AcpAgentSessionSnapshotView> = {}): AcpAgen
 })
 
 describe('ACP Agent control presentation', () => {
+  it('reconciles an unknown write only against a newer Host revision with the same intent', () => {
+    const key = firstTurnIntentKey('session', 'acp-test')
+    const other = firstTurnIntentKey('other', 'acp-test')
+    const choice = { kind: 'config' as const, id: 'approval', value: 'ask' }
+    const intent = beginFirstTurnIntent(key, 2, choice)
+    expect(confirmsFirstTurnIntent(snapshot(), intent)).toBe(true)
+    expect(confirmsFirstTurnIntent(snapshot({ freshness: 'stale' }), intent)).toBe(false)
+    expect(readFirstTurnIntent(other)).toBeNull()
+    expect(confirmsFirstTurnIntent(snapshot({ preselectionRevision: 2, preselected: [choice] }), intent)).toBe(false)
+    expect(
+      confirmsFirstTurnIntent(
+        snapshot({ preselectionRevision: 3, preselected: [{ ...choice, value: 'code' }] }),
+        intent,
+      ),
+    ).toBe(false)
+    expect(confirmsFirstTurnIntent(snapshot({ preselectionRevision: 3, preselected: [choice] }), intent)).toBe(true)
+    const clear = beginFirstTurnIntent(key, 3, null)
+    finishFirstTurnIntent(key, intent)
+    expect(readFirstTurnIntent(key)).toBe(clear)
+    expect(confirmsFirstTurnIntent(snapshot({ preselectionRevision: 4, preselected: [choice] }), clear)).toBe(false)
+    expect(confirmsFirstTurnIntent(snapshot({ preselectionRevision: 4 }), clear)).toBe(true)
+    finishFirstTurnIntent(key, clear)
+    expect(readFirstTurnIntent(key)).toBeNull()
+  })
+  it('prefers the Agent permission option to its mode and enables only editable first-turn discovery', () => {
+    const permission = {
+      type: 'select' as const,
+      id: 'approval-mode',
+      name: 'Tool approvals',
+      currentValue: 'ask',
+      options: [
+        { value: 'ask', name: 'Ask before use' },
+        { value: 'edit', name: 'Allow edits' },
+      ],
+    }
+    const discovery = snapshot({ preselection: true, freshness: 'stale', configOptions: [permission] })
+    const primary = primaryAgentControlGroup(agentControlMenuGroups(discovery, t))
+    expect(primary?.choices.map((choice) => [choice.label, choice.disabled])).toEqual([
+      ['Ask before use', false],
+      ['Allow edits', false],
+    ])
+    expect(agentControlFooter(discovery, t)).toEqual([])
+    const stale = snapshot({ freshness: 'stale', editable: false, configOptions: [permission] })
+    expect(primaryAgentControlGroup(agentControlMenuGroups(stale, t))?.choices.every((choice) => choice.disabled)).toBe(
+      true,
+    )
+    expect(
+      primaryAgentControlGroup(
+        agentControlMenuGroups({ ...discovery, configOptions: [{ ...permission, options: [] }] }, t),
+      )?.kind,
+    ).toBe('mode')
+    expect(
+      primaryAgentControlGroup(
+        agentControlMenuGroups({ ...discovery, modes: null, configOptions: [{ ...permission, id: 'theme' }] }, t),
+      ),
+    ).toBeUndefined()
+  })
   it('leaves model and reasoning in the native picker, including on old Agent-managed conversations', () => {
     const value = snapshot({
       managedModel: { optionId: 'engine', confirmed: 'large' },

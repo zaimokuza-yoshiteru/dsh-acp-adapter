@@ -38,6 +38,8 @@
 /// <reference types="node" />
 
 import os from 'node:os'
+import { AccountUsageService } from './account/service.ts'
+import type { AcpAccountUsageView } from '../contract/account-usage.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import { Remote, RemoteError, TypertRemoteService, principalOf, type Principal } from '@deepseek-ai/dsh-typert-protocol'
@@ -96,6 +98,7 @@ import type {
   AcpActivityJournalFrame,
   AcpAgentSessionSnapshotView,
   AcpAgentSessionFrame,
+  AcpSessionControlsTarget,
   AcpAgentSessionOptionWrite,
   AcpOwnedRoutesView,
   AcpProjectedSubagentsView,
@@ -274,6 +277,14 @@ export interface AcpRecoveryAdapterLike {
 
 /** New additive provider control seam. It never exposes the legacy Agent. */
 export interface AcpAgentSessionControlLike {
+  subscribeDiscoveryChanges?(listener: () => void): () => void
+  firstTurnControls?(sessionId: string): AcpAgentSessionSnapshotView | undefined
+  setFirstTurnOption?(
+    sessionId: string,
+    choice: AcpAgentSessionOptionWrite | null,
+    authorized: () => boolean,
+    expectedRevision: number | undefined,
+  ): AcpAgentSessionSnapshotView
   setTeamMemberMode?(sessionId: string, modeId: string): Promise<AcpAgentSessionSnapshotView>
   agentSessionSnapshot(sessionId: string): Promise<AcpAgentSessionSnapshotView>
   setAgentSessionOption(
@@ -549,6 +560,7 @@ interface ResolvedDeps {
  * 不再经过 HTTP req/res 假件。
  */
 export class AcpRemoteService extends TypertRemoteService {
+  private readonly accounts: AccountUsageService
   private readonly resolved: ResolvedDeps
   private readonly recoveryOperations = new Set<string>()
 
@@ -556,6 +568,13 @@ export class AcpRemoteService extends TypertRemoteService {
     super(ctx, 'dshAcp')
     // seam 解析产物只驱动缺省实现；显式注入的 deps 原样优先（测试全注入假实现）。
     const subprocess = deps.subprocess ?? { ok: false as const, message: ACP_SUBPROCESS_UNAVAILABLE_MESSAGE }
+    this.accounts = new AccountUsageService(
+      subprocess,
+      () => deps.registry.agents(),
+      process.platform,
+      deps.registry.registeredProviderGenerations,
+    )
+    ctx.effect(() => () => this.accounts.close())
     this.resolved = {
       nativeForkScope: deps.nativeForkScope,
       nativeFork: deps.nativeFork,
@@ -595,6 +614,25 @@ export class AcpRemoteService extends TypertRemoteService {
       localAiReview:
         subprocess.ok && subprocess.seam.localExecution === true && supportsLocalApprovalReview(process.platform),
     }
+  }
+
+  /** Global account metadata is visible only to a caller who can manage Host settings. */
+  @Remote
+  async accountUsage(agentId: string, refresh?: boolean): Promise<AcpAccountUsageView> {
+    const principal = principalOf(this.ctx.invocation)
+    const requireSettingsAccess = () => {
+      if (
+        principal !== undefined &&
+        this.ctx.get('remoteAccess')?.decide({ principal, action: 'settings/mutate', resources: [{ kind: 'global' }] })
+          .kind !== 'allow'
+      )
+        throw acpRemoteFailure('user-rejected', 'Host settings access is required to view account usage')
+    }
+    requireSettingsAccess()
+    if (!ACP_AGENT_ID_PATTERN.test(agentId)) throw badRequest('Invalid ACP Agent ID')
+    const result = await this.accounts.read(agentId, refresh === true)
+    requireSettingsAccess()
+    return result
   }
 
   /** Resend one previously admitted message to its original ACP session. */
@@ -1073,7 +1111,7 @@ export class AcpRemoteService extends TypertRemoteService {
   private sessionActionAllowed(
     sessionId: string,
     principal: Principal | undefined,
-    action: 'session/prompt' | 'session/selectModel' | 'dshAcp/setAgentSessionOption',
+    action: 'session/prompt' | 'session/selectModel' | 'dshAcp/setAgentSessionOption' | 'dshAcp/clearAgentPreselection',
   ): boolean {
     if (!this.callerCanReadSession(sessionId)) return false
     if (principal === undefined) return true
@@ -1246,8 +1284,15 @@ export class AcpRemoteService extends TypertRemoteService {
   }
 
   /** Subscribe before reading: creation or a config notification cannot fall into the opening gap. */
-  @Remote({ mode: 'stream' })
-  async *agentSessionFollow(sessionId: string, signal: AbortSignal): AsyncIterable<AcpAgentSessionFrame> {
+  @Remote({
+    mode: 'stream',
+    resources: { session: (target) => SessionId(typeof target === 'string' ? target : target.sessionId) },
+  })
+  async *agentSessionFollow(
+    target: string | AcpSessionControlsTarget,
+    signal: AbortSignal,
+  ): AsyncIterable<AcpAgentSessionFrame> {
+    const sessionId = typeof target === 'string' ? target : target.sessionId
     const changes = this.resolved.agentSessionChanges
     const facts = this.resolved.backendFacts
     const resolver = this.resolved.agentSessionControl
@@ -1256,7 +1301,12 @@ export class AcpRemoteService extends TypertRemoteService {
     // Unlike the durable sidecar gate used by ACP-only controls, the stream
     // permits a live session before its first ACP binding so the client can
     // wait for the initial binding and receive a null baseline.
-    if (sessionId.length === 0 || sessionId.length > 256 || !(await changes.canRead(sessionId))) {
+    if (
+      sessionId.length === 0 ||
+      sessionId.length > 256 ||
+      !this.callerCanReadSession(sessionId) ||
+      !(await changes.canRead(sessionId))
+    ) {
       throw acpRemoteFailure('user-rejected', 'ACP Agent session access is not authorized')
     }
     let dirty = true
@@ -1266,6 +1316,8 @@ export class AcpRemoteService extends TypertRemoteService {
       wake?.()
     }
     const unsubscribe = changes.subscribe(sessionId, notify)
+    const unsubscribeDiscovery =
+      typeof target === 'string' ? undefined : resolver(target.provider)?.subscribeDiscoveryChanges?.(notify)
     signal.addEventListener('abort', notify, { once: true })
     let previous: string | undefined
     try {
@@ -1282,8 +1334,13 @@ export class AcpRemoteService extends TypertRemoteService {
         const adapter = provider === undefined ? undefined : resolver(provider)
         if (provider !== undefined && adapter === undefined)
           throw acpRemoteFailure('config', 'The ACP Agent profile is unavailable')
+        const preview =
+          typeof target !== 'string' && (!provider || provider === target.provider)
+            ? resolver(target.provider)?.firstTurnControls?.(sessionId)
+            : undefined
         const snapshot =
-          adapter === undefined ? null : await preserveAcpFailure(() => adapter.agentSessionSnapshot(sessionId))
+          preview ??
+          (adapter === undefined ? null : await preserveAcpFailure(() => adapter.agentSessionSnapshot(sessionId)))
         if (signal.aborted) break
         const key = JSON.stringify(snapshot)
         if (key === previous) continue
@@ -1292,23 +1349,51 @@ export class AcpRemoteService extends TypertRemoteService {
       }
     } finally {
       unsubscribe()
+      unsubscribeDiscovery?.()
       signal.removeEventListener('abort', notify)
     }
   }
 
-  @Remote({ resources: { session: (sessionId) => SessionId(sessionId) } })
+  @Remote({ resources: { session: (target) => SessionId(typeof target === 'string' ? target : target.sessionId) } })
   async setAgentSessionOption(
-    sessionId: string,
+    target: string | AcpSessionControlsTarget,
     request: AcpAgentSessionOptionWrite,
     signal?: AbortSignal,
   ): Promise<AcpAgentSessionSnapshotView> {
+    const sessionId = typeof target === 'string' ? target : target.sessionId
     const principal = principalOf(this.ctx.invocation)
     const canSelectModel = () =>
       this.sessionActionAllowed(sessionId, principal, 'session/selectModel') &&
       this.sessionActionAllowed(sessionId, principal, 'dshAcp/setAgentSessionOption')
+    if (typeof target !== 'string') {
+      return await this.writeFirstTurnSelection(target, request, signal)
+    }
     await this.requireOwnedSessionAccess(sessionId)
     const adapter = await this.agentSessionControlFor(sessionId)
     return await preserveAcpFailure(() => adapter.setAgentSessionOption(sessionId, request, canSelectModel, signal))
+  }
+
+  @Remote({ resources: { session: (target) => SessionId(target.sessionId) } })
+  async clearAgentPreselection(target: AcpSessionControlsTarget, signal?: AbortSignal): Promise<void> {
+    await this.writeFirstTurnSelection(target, null, signal)
+  }
+
+  private writeFirstTurnSelection(
+    target: AcpSessionControlsTarget,
+    choice: AcpAgentSessionOptionWrite | null,
+    signal?: AbortSignal,
+  ): Promise<AcpAgentSessionSnapshotView> {
+    const principal = principalOf(this.ctx.invocation)
+    const authorized = () =>
+      !signal?.aborted &&
+      this.sessionActionAllowed(target.sessionId, principal, 'dshAcp/setAgentSessionOption') &&
+      (choice !== null || this.sessionActionAllowed(target.sessionId, principal, 'dshAcp/clearAgentPreselection'))
+    if (!authorized()) throw acpRemoteFailure('user-rejected', 'The session setting cannot be changed')
+    const adapter = this.resolved.agentSessionControl?.(target.provider)
+    if (!adapter?.setFirstTurnOption) throw acpRemoteFailure('resume-conflict', 'Agent settings are unavailable')
+    return preserveAcpFailure(async () =>
+      adapter.setFirstTurnOption!(target.sessionId, choice, authorized, target.preselectionRevision),
+    )
   }
 
   private async agentSessionControlFor(sessionId: string): Promise<AcpAgentSessionControlLike> {

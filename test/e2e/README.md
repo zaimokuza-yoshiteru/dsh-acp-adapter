@@ -116,6 +116,10 @@ DSH_E2E_LIVE_CATALOG=antigravity pnpm test:e2e test/e2e/live-catalog-onboarding.
 
 可选 `antigravity`（`agy acp`，Gemini 3.8 Flash / Low）、`codebuddy`（`hy4flash-free`）或 `devin`（`swe-2-high`）。用例从目录保存默认配置，等待自动检查，在隔离工作区发一条算术题，核对 DSH 请求、同一会话中 Agent 确认的模型及答案，再刷新确认答案仍在。模型缺失时结束。Devin 使用本机现有登录的临时凭据副本。可设置 `DSH_E2E_EVIDENCE_DIR` 保存添加、检查通过和回复画面。
 
+对 CodeBuddy 同时设置 `DSH_E2E_LIVE_CODEBUDDY_PRESELECT=1`，可验证专用 ACP 模式在首条消息前预选 Accept Edits，以及 Agent 在该会话中确认的选项。
+
+用 `DSH_E2E_LIVE_ACCOUNT_DETAILS=1 pnpm test:e2e test/e2e/live-account-details.e2e.ts` 检查插件详情。此用例复用本机 Codex、Devin 和 macOS 上 Antigravity 的登录，读取套餐与可用额度，不发送模型消息，也不保存账户页面截图。
+
 `test/e2e/long-conversation.e2e.ts` 默认的 12 轮是确定性 scripted ACP/Native composer 负载与渲染回归，不代表真实模型长会话。100 轮 opt-in 分支会在同一会话重新加载后验证分页、历史渲染与续聊持久化。它们都不能替代下面的真实 Agent/Teams 验证。
 
 以下浏览器真实连接测试默认跳过，不在普通 CI 中运行；带凭据的 Devin 专项见独立 `Real Devin integration` 工作流。明确授权使用现有 Agent 登录和模型额度后，可执行：

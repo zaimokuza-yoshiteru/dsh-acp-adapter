@@ -201,6 +201,24 @@
   flex-wrap: wrap;
   gap: 10px;
 }
+.accountRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+.accountDetails summary {
+  cursor: pointer;
+}
+.accountDetails ul {
+  margin: 4px 0 0;
+  padding-inline-start: 20px;
+}
 .rowIdentity {
   display: inline-flex;
   align-items: center;

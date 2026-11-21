@@ -136,6 +136,7 @@ export interface AcpProbeCacheEntry {
         /** initialize 协商的 ACP 协议版本（readiness；health 端点透传）。 */
         readonly protocolVersion: number | undefined
         /** Bounded session-scoped configuration snapshot used for exact model resolution. */
+        readonly modes?: acp.SessionModeState
         readonly configOptions: readonly acp.SessionConfigOption[] | undefined
         /** Model-scoped snapshots for Agents whose reasoning
          * catalogue changes when the selected model changes. */
@@ -514,6 +515,7 @@ export class AcpStubAdapter extends LlmAdapter {
           capabilityHash: acpCanonicalHash16(probe.agentCapabilities ?? null),
           // readiness：协商的协议版本随缓存保留（health 行展示）
           protocolVersion: probe.protocolVersion,
+          ...(probe.modes ? { modes: probe.modes } : {}),
           configOptions: acpConfigOptionsSnapshot(probe.configOptions),
           ...(probe.modelConfigOptions === undefined
             ? {}

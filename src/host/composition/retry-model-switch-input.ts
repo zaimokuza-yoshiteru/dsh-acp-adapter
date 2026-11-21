@@ -76,7 +76,12 @@ export async function retryModelSwitchInput(
   if (resolved === undefined || 'error' in resolved) throw unavailable()
   const { agent } = resolved
   await agent.runMaintenance(async (maintenanceSignal) => {
-    const current = agent.model.current()
+    const currentRoute = () =>
+      agent.model.current() ??
+      (ctx.get('agentPresets', false)?.composedPreset(agent.ctx) === 'acp-adapter'
+        ? ctx.get('agentDefaultModel', false)?.currentSelection()
+        : undefined)
+    const current = currentRoute()
     if (current === undefined) throw unavailable()
     if (message.content.some((block) => block.type === 'image')) {
       const info = await ctx.llm.resolveModelInfo(current.provider, current.model)
@@ -89,7 +94,7 @@ export async function retryModelSwitchInput(
     const recovery = await sidecar.readRecoveryState(id)
     signal.throwIfAborted()
     maintenanceSignal.throwIfAborted()
-    const next = agent.model.current()
+    const next = currentRoute()
     if (
       !authorized() ||
       ctx.get('agents', false)?.get(id) !== agent ||
@@ -128,8 +133,8 @@ export async function retryModelSwitchInput(
         agent.inbox.nextStep.length ||
         ctx.get('agents', false)?.get(id) !== agent ||
         readSessionFacts(ctx, agent.session).unsentModelSwitch?.failureSeq !== failureSeq ||
-        agent.model.current()?.provider !== next.provider ||
-        agent.model.current()?.model !== next.model
+        currentRoute()?.provider !== next.provider ||
+        currentRoute()?.model !== next.model
       )
         throw unavailable()
     }
