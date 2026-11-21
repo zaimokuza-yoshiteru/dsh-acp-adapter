@@ -1,36 +1,75 @@
 import type { ToolCallUpdate } from '@agentclientprotocol/sdk'
-import type { ApprovalReviewDecision } from '../../contract/approval-review.ts'
+import { ApprovalReviewError, type ApprovalReviewDecision } from '../../contract/approval-review.ts'
 import { isSensitiveActivityField } from '../../contract/redaction.ts'
 import { permissionOperationEvidence, redactSecretText } from '../../domain/policy/events.ts'
+import { commandOf } from '../../domain/policy/permissions.ts'
 
 /** Audit version of the review prompt, evidence selection and decision schema. */
-export const APPROVAL_REVIEW_POLICY_VERSION = '3'
+export const APPROVAL_REVIEW_POLICY_VERSION = '4'
 
 const MAX_EVIDENCE_BYTES = 64 * 1024
 export const MAX_REVIEW_OUTPUT_BYTES = 4096
 
-/** Build a complete snapshot synchronously; callers must never classify a truncated command or diff. */
-export function reviewPrompt(task: string, call: ToolCallUpdate, locale: string | undefined): string {
+/** The runtime has already merged the current permission and updates for this call. */
+function hasOperationDetails(call: ToolCallUpdate): boolean {
+  const name = call.name?.toLowerCase()
   const raw = call.rawInput
-  const hasArgs =
-    typeof raw === 'string' ? !!raw.trim() : !!raw && typeof raw === 'object' && Object.keys(raw).length > 0
-  const hasDiff = call.content?.some((item) => item.type === 'diff' && !!item.path && typeof item.newText === 'string')
-  if (!task.trim() || !(call.name || call.title || call.kind) || (!hasArgs && !hasDiff))
-    throw new Error('Incomplete ACP approval evidence')
+  const input = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : undefined
+  if (name === 'shell' || name === 'bash' || (!name && call.kind === 'execute')) {
+    const argv = Array.isArray(raw) ? raw : input?.argv
+    return (
+      !!commandOf(call)?.trim() ||
+      (Array.isArray(argv) &&
+        typeof argv[0] === 'string' &&
+        !!argv[0].trim() &&
+        argv.every((v) => typeof v === 'string'))
+    )
+  }
+  if (call.content?.some((item) => item.type === 'diff' && !!item.path.trim() && typeof item.newText === 'string'))
+    return true
+  const located = !!call.locations?.length && call.locations.every((loc) => !!loc.path.trim())
+  const hasTarget =
+    located || [input?.path, input?.file_path, input?.filePath].some((v) => typeof v === 'string' && !!v.trim())
+  if (name === 'read' && call.kind === 'read') return hasTarget || (typeof raw === 'string' && !!raw.trim())
+  if (name === 'write' || name === 'edit' || name === 'patch' || (!name && call.kind === 'edit')) {
+    if (!input) return false
+    if ([input.patch, input.patchText].some((v) => typeof v === 'string' && !!v.trim())) return true
+    return (
+      hasTarget &&
+      (typeof input.content === 'string' ||
+        (typeof input.oldString === 'string' && typeof input.newString === 'string') ||
+        (typeof input.old_string === 'string' && typeof input.new_string === 'string'))
+    )
+  }
+  if (typeof raw === 'string') return !!raw.trim()
+  return (
+    !!input &&
+    Object.entries(input).some(
+      ([key, value]) =>
+        key !== 'description' && key !== 'title' && value != null && (typeof value !== 'string' || !!value.trim()),
+    )
+  )
+}
+
+/** Build the complete available snapshot synchronously; never classify a truncated command or diff. */
+export function reviewPrompt(task: string, call: ToolCallUpdate, locale: string | undefined): string {
+  if (!task.trim() || !(call.name || call.title || call.kind) || !hasOperationDetails(call))
+    throw new ApprovalReviewError('incomplete-evidence', 'Incomplete ACP approval evidence')
   const op = permissionOperationEvidence(call)
   // A terminal stream or embedded resource can carry the operation's actual target or content.
-  if (op.content?.some((item) => item.type === 'unavailable')) throw new Error('Incomplete ACP approval evidence')
-  const action = JSON.stringify(op, (key, value: unknown) => {
-    if (isSensitiveActivityField(key, value)) return '<redacted>'
+  if (op.content?.some((item) => item.type === 'unavailable'))
+    throw new ApprovalReviewError('incomplete-evidence', 'Incomplete ACP approval evidence')
+  const action = JSON.stringify(op, function (this: unknown, key, value: unknown) {
+    if (isSensitiveActivityField(key, value, this)) return '<redacted>'
     if (typeof value !== 'string') return value
     const safe = redactSecretText(value)
     if (safe !== value && /^\s*<redacted(?:-[^>]+)?>\s*$/i.test(safe))
-      throw new Error('ACP approval target obscured by redaction')
+      throw new ApprovalReviewError('incomplete-evidence', 'ACP approval target obscured by redaction')
     return safe
   })
   const userTask = JSON.stringify(redactSecretText(task))
   if (Buffer.byteLength(action) + Buffer.byteLength(userTask) > MAX_EVIDENCE_BYTES)
-    throw new Error('ACP approval evidence exceeds the review budget')
+    throw new ApprovalReviewError('incomplete-evidence', 'ACP approval evidence exceeds the review budget')
   const reasonFormat = locale
     ? `a short ${/^zh(?:-|$)/i.test(locale) ? 'Chinese' : 'English'} sentence`
     : 'a short sentence in the language of the original user task, or in English if its language is unclear'
@@ -50,23 +89,26 @@ export function reviewPrompt(task: string, call: ToolCallUpdate, locale: string 
 }
 
 /** Only a completed two-field answer can authorize anything. Duplicate decisions are ambiguous. */
-export function readReviewDecision(output: string, fencedDecisions: 'high-only' | 'both'): ApprovalReviewDecision {
+export function readReviewDecision(output: string): ApprovalReviewDecision {
   const fence = /^```json\r?\n([\s\S]*?)\r?\n```$/.exec(output.trim())
   const json = fence?.[1] ?? output
   const fields =
     /^\s*\{\s*"(risk|reason)"\s*:\s*"(?:[^"\\]|\\.)*"\s*,\s*"(risk|reason)"\s*:\s*"(?:[^"\\]|\\.)*"\s*\}\s*$/s.exec(
       json,
     )
-  if (!fields || fields[1] === fields[2]) throw new Error('Invalid ACP review decision')
-  const { risk, reason } = JSON.parse(json) as { risk: unknown; reason: unknown }
+  if (!fields || fields[1] === fields[2]) throw new ApprovalReviewError('invalid-response')
+  let decision: { risk: unknown; reason: unknown }
+  try {
+    decision = JSON.parse(json)
+  } catch {
+    throw new ApprovalReviewError('invalid-response')
+  }
+  const { risk, reason } = decision
   if ((risk !== 'high' && risk !== 'not_high') || typeof reason !== 'string' || !reason.trim() || reason.length > 300)
-    throw new Error('Invalid ACP review decision')
-  // A high result only requests human review. Devin also fenced a low verdict for
-  // an access-expanding action, so this presentation cannot authorize a grant there.
-  if (fence && risk === 'not_high' && fencedDecisions !== 'both') throw new Error('Unconfirmed ACP review decision')
+    throw new ApprovalReviewError('invalid-response')
   const safeReason = redactSecretText(reason)
     .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, ' ')
     .trim()
-  if (!safeReason) throw new Error('Invalid ACP review decision')
+  if (!safeReason) throw new ApprovalReviewError('invalid-response')
   return { risk, reason: safeReason }
 }

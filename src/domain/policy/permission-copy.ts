@@ -1,3 +1,5 @@
+import { approvalReviewFailures, permissionAuditFailureMessage } from '../../contract/approval-review.ts'
+
 /** Adapter-owned approval text; Agent commands, titles and options stay intact. */
 const en = {
   actions: {
@@ -11,6 +13,8 @@ const en = {
   restrictedOperation: 'Restricted operation',
   permission: 'Permission request',
   reviewHighRisk: (reason: string) => `AI review found a high risk: ${reason}`,
+  reviewFailures: approvalReviewFailures.en,
+  permissionAuditFailed: permissionAuditFailureMessage.en,
   reviewUnavailable: 'AI review could not assess this operation. Choose how to proceed.',
   reviewTimeout: 'AI review timed out. Choose how to proceed.',
   reviewAuditUnavailable: 'The AI review could not be recorded. Choose how to proceed.',
@@ -69,6 +73,8 @@ const zh: typeof en = {
   restrictedOperation: '受限操作',
   permission: '授权请求',
   reviewHighRisk: (reason) => `AI 判断此操作风险较高：${reason}`,
+  reviewFailures: approvalReviewFailures.zh,
+  permissionAuditFailed: permissionAuditFailureMessage.zh,
   reviewUnavailable: 'AI 未能判断本次操作的风险，请选择如何处理。',
   reviewTimeout: 'AI 审查超时，请选择如何处理。',
   reviewAuditUnavailable: '未能保存 AI 审查记录，请选择如何处理。',

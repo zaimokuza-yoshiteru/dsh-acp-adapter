@@ -19,8 +19,9 @@
  */
 
 import { createHash } from 'node:crypto'
+import type { ApprovalReviewFailureCode } from '../../contract/approval-review.ts'
 import type { AcpPermissionCheck } from './permission-check.ts'
-import { redactSecretText as redactCommonSecretText } from '../observability/redaction.ts'
+import { isSensitiveActivityField, redactSecretText as redactCommonSecretText } from '../observability/redaction.ts'
 import type { PermissionOption, ToolCallLocation, ToolCallUpdate } from '@agentclientprotocol/sdk'
 
 /** 审批审计 entry 在 sidecar 里的 `kind`（src/persistence/sidecar.ts entry 联合的判别值之一）。 */
@@ -110,6 +111,8 @@ export interface AcpDegradationAuditData {
 /** Legacy approval outcome retained only to decode older permission audit rows. */
 export type AcpApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
 
+const RAW_INPUT_SUMMARY_VERSION = 3
+
 /**
  * The tool-call snapshot persisted in the `asked` phase: id/title/kind/
  * locations + rawInput 的**有界脱敏摘要与哈希**（修订—— 曾把 rawInput
@@ -127,13 +130,11 @@ export interface AcpPermissionToolCallSnapshot {
   readonly locations?: readonly ToolCallLocation[]
   /** rawInput 的字段级脱敏、有界单行摘要（{@link summarizeRawInputForAudit}；agent 未发 rawInput 时缺席）。 */
   readonly rawInputSummary?: string
+  /** Earlier summaries could retain Cookie headers and need filtering when read. */
+  readonly rawInputSummaryVersion?: typeof RAW_INPUT_SUMMARY_VERSION
   /** rawInput canonical JSON 的 sha256 前 16 hex（agent 未发 rawInput 时缺席）。 */
   readonly rawInputHash?: string
 }
-
-/** rawInput 审计摘要按字段名脱敏的 key 词表（命中键的值替换为 `<redacted>`，永不落盘）。 */
-const AUDIT_SECRET_KEY_PATTERN =
-  /(?:token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)/i
 
 /** rawInput 审计摘要的截断上限（单行可读性；与审批 reason 摘要同口径）。 */
 const RAW_INPUT_AUDIT_SUMMARY_MAX_CHARS = 300
@@ -192,14 +193,18 @@ function redactForAudit(value: unknown, depth: number): unknown {
     return redacted.length > REDACT_STRING_MAX ? `${redacted.slice(0, REDACT_STRING_MAX)}…` : redacted
   }
   if (Array.isArray(value)) {
-    const items: unknown[] = value.slice(0, REDACT_ARRAY_MAX).map((item) => redactForAudit(item, depth + 1))
+    const items: unknown[] = value
+      .slice(0, REDACT_ARRAY_MAX)
+      .map((item, index) =>
+        isSensitiveActivityField(String(index), item, value) ? '<redacted>' : redactForAudit(item, depth + 1),
+      )
     if (value.length > REDACT_ARRAY_MAX) items.push(`… +${String(value.length - REDACT_ARRAY_MAX)} items`)
     return items
   }
   if (isPlainObjectValue(value)) {
-    const out: Record<string, unknown> = {}
+    const out: Record<string, unknown> = Object.create(null)
     for (const key of Object.keys(value)) {
-      out[key] = AUDIT_SECRET_KEY_PATTERN.test(key) ? '<redacted>' : redactForAudit(value[key], depth + 1)
+      out[key] = isSensitiveActivityField(key, value[key], value) ? '<redacted>' : redactForAudit(value[key], depth + 1)
     }
     return out
   }
@@ -230,14 +235,35 @@ function canonicalJson(value: unknown, omitUndefinedFields = false): string {
  * sha256-16（完整性证据，不可逆、不含秘密字节）；`summary` 是**脱敏后**的
  * canonical 单行，超界截断并标注原始长度。summary 不含任何 secret 键的值。
  */
+function rawInputAuditSummary(rawInput: unknown): string {
+  const redacted = canonicalJson(redactForAudit(rawInput, 0))
+  return redacted.length > RAW_INPUT_AUDIT_SUMMARY_MAX_CHARS
+    ? `${redacted.slice(0, RAW_INPUT_AUDIT_SUMMARY_MAX_CHARS)}…(+${String(redacted.length - RAW_INPUT_AUDIT_SUMMARY_MAX_CHARS)} chars)`
+    : redacted
+}
+
 export function summarizeRawInputForAudit(rawInput: unknown): { summary: string; hash: string } {
   const hash = createHash('sha256').update(canonicalJson(rawInput)).digest('hex').slice(0, 16)
-  const redacted = canonicalJson(redactForAudit(rawInput, 0))
-  const summary =
-    redacted.length > RAW_INPUT_AUDIT_SUMMARY_MAX_CHARS
-      ? `${redacted.slice(0, RAW_INPUT_AUDIT_SUMMARY_MAX_CHARS)}…(+${String(redacted.length - RAW_INPUT_AUDIT_SUMMARY_MAX_CHARS)} chars)`
-      : redacted
-  return { summary, hash }
+  return { summary: rawInputAuditSummary(rawInput), hash }
+}
+
+/** Old snapshots may contain a full input or a clipped JSON prefix. Keep their original IDs and digests. */
+export function redactLegacyPermissionInput(payload: Record<string, unknown>): Record<string, unknown> {
+  if (payload.phase !== 'asked' || !isPlainObjectValue(payload.toolCall)) return payload
+  const { rawInput, rawInputSummary, rawInputSummaryVersion, ...snapshot } = payload.toolCall
+  if (rawInput === undefined && (rawInputSummary === undefined || rawInputSummaryVersion === RAW_INPUT_SUMMARY_VERSION))
+    return payload
+
+  let summary: string | undefined
+  if (rawInput !== undefined) summary = rawInputAuditSummary(rawInput)
+  else if (typeof rawInputSummary === 'string') {
+    try {
+      summary = rawInputAuditSummary(JSON.parse(rawInputSummary))
+    } catch {
+      // A truncated or unreadable legacy summary cannot be safely redacted field by field.
+    }
+  }
+  return { ...payload, toolCall: { ...snapshot, ...(summary === undefined ? {} : { rawInputSummary: summary }) } }
 }
 
 /** The operation fields shared by the review prompt and its audit fingerprint. */
@@ -367,7 +393,8 @@ export type AcpCodeBuddyReviewAuditData = {
 
 export type AiReviewOutcome =
   | { readonly status: 'high' | 'not_high'; readonly reason: string }
-  | { readonly status: 'cancelled' | 'error' | 'timeout' }
+  | { readonly status: 'cancelled' | 'timeout' }
+  | { readonly status: 'error'; readonly failureCode?: ApprovalReviewFailureCode }
 
 /** All phases share the original asked record, which owns the operation summary and its hash. */
 export type AcpAiReviewAuditData = {
@@ -503,7 +530,13 @@ export function createPermissionAskedAudit(init: PermissionAskedAuditInit): AcpP
               ...(location.line == null ? {} : { line: location.line }),
             })),
           }),
-      ...(rawInput === undefined ? {} : { rawInputSummary: rawInput.summary, rawInputHash: rawInput.hash }),
+      ...(rawInput === undefined
+        ? {}
+        : {
+            rawInputSummary: rawInput.summary,
+            rawInputSummaryVersion: RAW_INPUT_SUMMARY_VERSION,
+            rawInputHash: rawInput.hash,
+          }),
     },
     options: init.options.slice(0, ACP_PERMISSION_AUDIT_OPTIONS_MAX).map((option) => ({
       ...option,

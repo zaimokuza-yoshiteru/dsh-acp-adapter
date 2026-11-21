@@ -293,6 +293,72 @@ describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
     }
   })
 
+  it('redacts new and legacy permission inputs across reopen without changing the binding or decision identities', async () => {
+    const id = SessionId('cookie-audit')
+    const rawInput = { headers: { 'Set-Cookie': 'sid=cookie-fixture; note=second-fixture' }, path: 'README' }
+    const asked = createPermissionAskedAudit({
+      requestId: 'request',
+      agentSessionId: BINDING_A.agentSessionId,
+      options: [{ optionId: 'unique-choice', name: 'Allow once', kind: 'allow_once' }],
+      toolCall: { toolCallId: 'call', rawInput },
+    })
+    const healthy = { dshSessionId: id, kind: 'healthy', provider: BINDING_A.provider, updatedAt: TIME_BASE } as const
+    await store.append(id, { kind: 'binding', data: BINDING_A })
+    await store.writeRecoveryState(healthy)
+    await store.append(id, { kind: 'permission', data: asked })
+    const binding = await store.readLatestBinding(id)
+    await store.dispose()
+
+    const db = rawDb()
+    const legacySummary = JSON.stringify(rawInput)
+    const v2 = JSON.stringify({ command: "example -H 'Cookie: <redacted> pref=second-fixture' README" })
+    try {
+      const saved = db.prepare('SELECT payload FROM audit WHERE dsh_session_id = ? AND seq = 2').get(id)
+      expect(saved?.payload).toContain('<redacted>')
+      expect(saved?.payload).not.toMatch(/cookie-fixture|second-fixture/)
+      expect(asked.toolCall.rawInputSummaryVersion).toBe(3)
+      const insert = db.prepare(
+        "INSERT INTO audit (record_id, dsh_session_id, seq, time, kind, payload) VALUES (?, ?, ?, ?, 'permission', ?)",
+      )
+      const historical = [
+        { rawInputSummary: legacySummary },
+        { rawInputSummary: legacySummary.slice(0, -3) + '…(+3 chars)' },
+        { rawInput },
+        { rawInputSummaryVersion: 2, rawInputSummary: v2 },
+        { rawInputSummaryVersion: 2, rawInputSummary: v2.slice(0, -1) + '…(+1 chars)' },
+      ]
+      historical.forEach((input, n) => {
+        const toolCall = { toolCallId: 'call', rawInputHash: asked.toolCall.rawInputHash, ...input }
+        insert.run('legacy-' + n, id, 3 + n, TIME_BASE, JSON.stringify({ ...asked, toolCall }))
+      })
+    } finally {
+      db.close()
+    }
+    store = createAcpSidecar({ root })
+    const entries = await store.listPage(id, 1, 10)
+    expect(entries).toHaveLength(6)
+    for (const [n, entry] of entries.entries()) {
+      expect(entry.data).toMatchObject({
+        requestId: 'request',
+        options: [{ optionId: 'unique-choice' }],
+        toolCall: { toolCallId: 'call', rawInputHash: asked.toolCall.rawInputHash },
+      })
+      const detail = auditTimelineRowOf(entry).detail!
+      expect(detail).not.toMatch(/cookie-fixture|second-fixture/)
+      if (n === 2 || n === 5) expect(detail).not.toContain('rawInputSummary')
+      else expect(detail).toContain('README')
+    }
+    await expect(store.readLatestBinding(id)).resolves.toEqual(binding)
+    await expect(store.readRecoveryState(id)).resolves.toEqual(healthy)
+    const reopenedDb = rawDb()
+    try {
+      const record = reopenedDb.prepare('SELECT payload FROM audit WHERE record_id = ?').get('legacy-3')
+      expect(JSON.parse(String(record?.payload)).toolCall.rawInputSummary).toBe(v2)
+    } finally {
+      reopenedDb.close()
+    }
+  })
+
   it('bounds the optional actual model before opening a dispatch', async () => {
     const id = SessionId('managed-provenance')
     const row = {

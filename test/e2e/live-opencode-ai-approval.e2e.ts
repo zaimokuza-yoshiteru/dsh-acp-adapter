@@ -42,6 +42,13 @@ it.skipIf(process.env.DSH_E2E_LIVE_OPENCODE_AI_APPROVAL !== '1')(
     let stage = 'start'
     const modelCalls: { phase: string; model: string; tools: number; writeTool: boolean }[] = []
     const marker = 'DSH_KEYLESS_' + randomUUID()
+    const cookieValues = Array.from({ length: 4 }, () => randomUUID())
+    const note = [
+      marker,
+      `Cookie: session=${cookieValues[0]}; preference=${cookieValues[1]}`,
+      `Example header: -H 'Cookie: session=${cookieValues[2]}; preference=${cookieValues[3]}'`,
+    ].join('\n')
+    let reviewerReceivedCookie = false
     const reasons = {
       low: 'Routine note in the test workspace.',
       high: 'Proposed access policy exposes internal documents.',
@@ -74,6 +81,7 @@ it.skipIf(process.env.DSH_E2E_LIVE_OPENCODE_AI_APPROVAL !== '1')(
         const writeTool = tools.find((tool) => tool.function.name === 'write')
         modelCalls.push({ phase, model: body.model, tools: tools.length, writeTool: !!writeTool })
         const review = body.model === 'risk'
+        if (review && cookieValues.some((value) => text.includes(value))) reviewerReceivedCookie = true
         if (!review && body.model !== 'business') {
           res.writeHead(400).end()
           return
@@ -96,7 +104,7 @@ it.skipIf(process.env.DSH_E2E_LIVE_OPENCODE_AI_APPROVAL !== '1')(
                   name: 'write',
                   arguments: JSON.stringify({
                     [fileKey]: target,
-                    content: phase !== 'high' ? marker : '{"anonymous_read":true}',
+                    content: phase === 'low' ? note : phase === 'high' ? '{"anonymous_read":true}' : marker,
                   }),
                 },
               },
@@ -231,7 +239,7 @@ it.skipIf(process.env.DSH_E2E_LIVE_OPENCODE_AI_APPROVAL !== '1')(
           await card.getByRole('button', { name: 'Submit', exact: true }).click()
         } else {
           expect(await card.count()).toBe(0)
-          expect(readFileSync(target, 'utf8')).toBe(marker)
+          expect(readFileSync(target, 'utf8')).toBe(note)
         }
         const id = await settled
         if (owner === undefined) owner = id
@@ -257,10 +265,25 @@ it.skipIf(process.env.DSH_E2E_LIVE_OPENCODE_AI_APPROVAL !== '1')(
           optionId: phase === 'low' ? 'once' : 'reject',
           selectedOptionKind: phase === 'low' ? 'allow_once' : 'reject_once',
         })
+        if (phase === 'low') {
+          const summary = required(asked.data.toolCall.rawInputSummary)
+          expect(summary).toContain(marker)
+          for (const value of cookieValues) expect(summary).not.toContain(value)
+          const manager = host.ctx.pluginManager
+          const entry = required(
+            (await manager.listPlugins()).find((p) => p.moduleName === '@zaimokuza/dsh-acp-adapter'),
+          )
+          const routed = () => instance.ctx.llm.listProviders().some((p) => p.id === 'acp-local')
+          expect(await manager.setPluginEnabled(entry.entryId, false)).toMatchObject({ application: 'applied' })
+          await vi.waitFor(() => expect(routed()).toBe(false))
+          expect(await manager.setPluginEnabled(entry.entryId, true)).toMatchObject({ application: 'applied' })
+          await vi.waitFor(() => expect(routed()).toBe(true))
+        }
       }
       const remoteSessions = acpPermissionAudit(host, 'asked').map((row) => row.data.agentSessionId)
       expect(remoteSessions).toHaveLength(3)
       expect(new Set(remoteSessions).size).toBe(1)
+      expect(reviewerReceivedCookie).toBe(false)
       evidence.remoteSession = remoteSessions[0]
       const db = new DatabaseSync(join(required(host.ctx.dshHomePath)('dsh-acp'), 'sidecar.sqlite'), { readOnly: true })
       try {
@@ -288,6 +311,8 @@ it.skipIf(process.env.DSH_E2E_LIVE_OPENCODE_AI_APPROVAL !== '1')(
       Object.assign(evidence, {
         status: 'passed',
         markerWritten: true,
+        cookieValuesRedactedFromReviewAndAudit: true,
+        sameSessionAfterPluginRestart: true,
         deniedWriteAbsent: true,
         disabledWriteRequiredHuman: true,
       })

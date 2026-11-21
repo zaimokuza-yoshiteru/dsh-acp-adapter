@@ -111,11 +111,15 @@ Providers must validate their own rules and deployment order.
 
 ## AI approval
 
-AI approval is off by default in plugin details. Turning it on covers supported local Devin and OpenCode profiles on macOS and Linux. A tool-free reviewer receives the current task and proposed operation. Only after recording its assessment can the plugin choose the original request’s unique one-time grant. You decide if the model flags a request as high risk, the review is inconclusive, or the Agent offers no unique one-time grant. Windows and SSH execution use manual approval. The selected model provider receives the redacted task and operation, which may include file paths and changes.
+AI approval is off by default in plugin details and covers supported local Devin and OpenCode profiles on macOS and Linux. The plugin combines arguments, target paths and changes already supplied for the same tool call in the current turn. A separate process with no tools asks the selected model to review the task and operation. Its provider receives the redacted content, which may include file paths and changes.
+
+When the model rates the operation “not high risk” and the audit is saved, the plugin can select the original request’s unique one-time grant. You decide if the model flags a request as high risk, details are missing, the review fails or the Agent offers no unique one-time grant. Windows and SSH execution use manual approval.
+
+The audit masks credentials such as cookies. When you view older records, input summaries that cannot be safely redacted are hidden. The original session can still resume. Existing database records and backups retain their original contents.
 
 ### Devin
 
-The official CLI `3000.14.30821` is supported. The default review model is `swe-2-high` and can be changed in plugin details. Third-party policies do not answer Devin requests. Organization-enforced extensions or an unverifiable inventory of extensions and MCP servers in the reviewer require a person. The working session can still use its own MCP and Teams tools.
+The official CLI `3000.14.30821` is supported. The default review model is `swe-2-high`. If the selected model is unavailable, you decide on the request and can choose another model in plugin details. Third-party policies do not answer Devin requests. Organization-enforced extensions or an unverifiable inventory of extensions and MCP servers in the reviewer require a person. The working session can still use its own MCP and Teams tools.
 
 ### OpenCode
 

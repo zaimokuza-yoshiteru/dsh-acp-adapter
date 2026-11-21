@@ -5,6 +5,7 @@ import { DevinReviewer } from './devin/reviewer.ts'
 import { OpenCodeReviewer } from './opencode/reviewer.ts'
 import type { ApprovalReviewBackend } from './backend.ts'
 import { isOpenCodeReviewModel, isOpenCodeReviewTool } from '../../contract/opencode-review.ts'
+import { acpDeclaredModelRoute } from '../../contract/model-selection.ts'
 import type { AcpAgentConfig } from '../../contract/agent-config.ts'
 import {
   approvalReviewAgent,
@@ -87,14 +88,21 @@ export class ApprovalReviewScope {
     locale: string | undefined,
     promptSignal: AbortSignal,
     handler: Handler,
+    checkedDevinModels?: readonly { readonly id: string }[],
   ): Promise<acp.RequestPermissionResponse> {
     const active = this.active
     if (!active) return handler({}, promptSignal)
     const signal = AbortSignal.any([promptSignal, active.lifetime.signal])
+    const respond = (settings: ReviewSettings) =>
+      this.track(
+        handler(settings, signal).then((result) =>
+          signal.aborted || !context.current() ? discardPermissionResponse(result) : result,
+        ),
+      )
     const task = context.task()
     const model = active.model || context.sessionModel
     if (context.humanOnly || (active.agent === 'opencode' && !isOpenCodeReviewTool(context.toolCall.name)))
-      return this.track(handler({ humanReviewOnly: true }, signal))
+      return respond({ humanReviewOnly: true })
     if (
       !task ||
       !this.localExecution ||
@@ -104,7 +112,13 @@ export class ApprovalReviewScope {
       !verifiedReviewPeer(active.agent, context.agent) ||
       (active.agent === 'opencode' && (!context.verifiedActorCwd || !isOpenCodeReviewModel(model)))
     )
-      return this.track(handler({ humanReviewOnly: 'review-unavailable' }, signal))
+      return respond({ humanReviewOnly: 'review-unavailable' })
+    if (
+      active.agent === 'devin' &&
+      checkedDevinModels &&
+      !checkedDevinModels.some((m) => m.id === acpDeclaredModelRoute(model))
+    )
+      return respond({ humanReviewOnly: 'review-model-unavailable' })
     const riskReviewer: NonNullable<ReviewSettings['riskReviewer']> = {
       agent: active.agent,
       model,
@@ -124,11 +138,7 @@ export class ApprovalReviewScope {
         })
       },
     }
-    return this.track(
-      handler({ riskReviewer }, signal).then((result) =>
-        signal.aborted || !context.current() ? discardPermissionResponse(result) : result,
-      ),
-    )
+    return respond({ riskReviewer })
   }
 
   async close(): Promise<void> {

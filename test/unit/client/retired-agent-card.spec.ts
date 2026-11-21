@@ -117,9 +117,27 @@ it.each([zh, en])(
     expect(on.panel.setOpenCodeReviewModel).toHaveBeenCalledExactlyOnceWith('work', 'work/fast')
     expect(on.panel.setDevinReviewModel).not.toHaveBeenCalled()
     expect(text(on.tree)).toContain(locale.reviewModelMissing)
-    const missing = renderPanel({ ...snapshot, health: { ...snapshot.health, rows: [] } }, locale)
+    const noCatalog = locale.reviewModelsEmpty.replace('{name}', config.name)
+    expect(text(on.tree)).not.toContain(noCatalog)
+    const emptyDevin = renderPanel(
+      {
+        ...snapshot,
+        settings: { ...snapshot.settings, aiApproval: true },
+        health: { ...snapshot.health, rows: [{ ...row, devinReviewModels: [] }] },
+      },
+      locale,
+    )
+    expect(text(emptyDevin.tree)).toContain(noCatalog)
+    expect(nodes(emptyDevin.tree).some((node) => node.type === 'Menu' && node.props.selectedId !== undefined)).toBe(
+      false,
+    )
+    const missing = renderPanel(
+      { ...snapshot, settings: { ...snapshot.settings, aiApproval: true }, health: { ...snapshot.health, rows: [] } },
+      locale,
+    )
     expect(nodes(missing.tree).filter((node) => node.type === 'Switch')).toHaveLength(1)
     expect(text(missing.tree)).toContain(locale.aiApprovalHelp)
+    expect(text(missing.tree)).not.toContain(noCatalog)
     const unsupported = { ...snapshot.health, rows: [], localReviewUnavailable: true as const }
     expect(text(renderPanel({ ...snapshot, health: unsupported }, locale).tree)).not.toContain(
       locale.aiApprovalUnavailable,

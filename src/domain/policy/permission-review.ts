@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { RequestPermissionRequest, ToolCallUpdate } from '@agentclientprotocol/sdk'
-import type { ApprovalReviewDecision, ReviewAgent } from '../../contract/approval-review.ts'
+import { ApprovalReviewError, type ApprovalReviewDecision, type ReviewAgent } from '../../contract/approval-review.ts'
 import { redactSecretText, permissionOperationHash, type AcpAiReviewAuditData, type AiReviewOutcome } from './events.ts'
 import type { PermissionCopy } from './permission-copy.ts'
 
@@ -60,13 +60,16 @@ export async function reviewPermissionRisk(
   if (current()) {
     try {
       const review = await reviewer.review(toolCall, signal)
-      const reason = reviewText(review.reason)
+      const reason = typeof review?.reason === 'string' ? reviewText(review.reason) : ''
       result =
         reason && (review.risk === 'high' || review.risk === 'not_high')
           ? { status: review.risk, reason }
-          : { status: 'error' }
+          : { status: 'error', failureCode: 'invalid-response' }
     } catch (error) {
-      result = { status: error instanceof Error && error.name === 'TimeoutError' ? 'timeout' : 'error' }
+      result =
+        error instanceof Error && error.name === 'TimeoutError'
+          ? { status: 'timeout' }
+          : { status: 'error', failureCode: error instanceof ApprovalReviewError ? error.code : 'review-unavailable' }
     }
   }
   if (!current()) result = cancelled
@@ -76,8 +79,9 @@ export async function reviewPermissionRisk(
   if (!stored) return auditUnavailable
   if (result.status === 'not_high') return { kind: 'allow', optionId: choices[0]!.optionId }
   if (result.status === 'high') return { kind: 'human', reason: (copy) => copy.reviewHighRisk(result.reason) }
-  return {
-    kind: 'human',
-    reason: (copy) => (result.status === 'timeout' ? copy.reviewTimeout : copy.reviewUnavailable),
+  if (result.status === 'error') {
+    const code = result.failureCode ?? 'review-unavailable'
+    return { kind: 'human', reason: (copy) => copy.reviewFailures[code] }
   }
+  return { kind: 'human', reason: (copy) => copy.reviewTimeout }
 }

@@ -9,6 +9,11 @@ const SLACK = /\bxox[bparsce]-[A-Za-z0-9-]{16,}\b/g
 const GOOGLE_API_KEY = /\bAIza[0-9A-Za-z_-]{35}\b/g
 const GOOGLE_CLIENT_SECRET = /\bGOCSPX-[A-Za-z0-9_-]{20,}\b/g
 const PEM_PRIVATE_KEY = /-----BEGIN ((?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY)-----[\s\S]*?-----END \1-----/g
+const COOKIE_HEADER_LINE = /^([ \t]*(?:set-)?cookie[ \t]*:)[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*/gim
+// Preserve the rest of the command or serialized request, including its destination.
+const QUOTED_COOKIE_HEADER = /(?<!\\)(["'])((?:set-)?cookie[ \t]*:)(?:\\[^\r\n]|(?!\1)[^\\\r\n])*(\1|$)/gim
+const ESCAPED_COOKIE_HEADER = /(\\["'])((?:set-)?cookie[ \t]*:)[^\r\n]*?(\1|$)/gim
+const JSON_COOKIE_HEADER = /("(?:set-)?cookie"\s*:\s*)"(?:\\[\s\S]|[^"\\])*"/gi
 const NUMERIC_USAGE_FIELDS = new Set([
   'inputtokens',
   'outputtokens',
@@ -33,14 +38,25 @@ function isSafeNumericUsageField(key: string, value: unknown): boolean {
   )
 }
 
-/** Shared field policy for structured Activity payloads. */
-export function isSensitiveActivityField(key: string, value: unknown): boolean {
+function isCookieHeaderName(value: unknown): boolean {
+  return typeof value === 'string' && /^(?:set-)?cookie$/i.test(value.trim())
+}
+
+/** Also accept native header tuples and { name, value } entries when the caller has the parent. */
+export function isSensitiveActivityField(key: string, value: unknown, parent?: unknown): boolean {
   if (isSafeNumericUsageField(key, value)) return false
-  return SENSITIVE_FIELD.test(key)
+  if (SENSITIVE_FIELD.test(key)) return true
+  if (Array.isArray(parent)) return Number(key) % 2 === 1 && isCookieHeaderName(parent[Number(key) - 1])
+  if (key !== 'value' || !parent || typeof parent !== 'object') return false
+  return ('name' in parent && isCookieHeaderName(parent.name)) || ('key' in parent && isCookieHeaderName(parent.key))
 }
 
 export function redactSecretText(value: string): string {
   return value
+    .replace(JSON_COOKIE_HEADER, '$1"<redacted>"')
+    .replace(ESCAPED_COOKIE_HEADER, '$1$2 <redacted>$3')
+    .replace(QUOTED_COOKIE_HEADER, '$1$2 <redacted>$3')
+    .replace(COOKIE_HEADER_LINE, '$1 <redacted>')
     .replace(JWT, '<redacted-jwt>')
     .replace(GITHUB, '<redacted-token>')
     .replace(OPENAI, '<redacted-token>')
@@ -52,6 +68,7 @@ export function redactSecretText(value: string): string {
     .replace(BEARER, 'Bearer <redacted>')
     .replace(BASIC, 'Basic <redacted>')
     .replace(SENSITIVE_ASSIGNMENT, (match, key: string, separator: string, secret: string) => {
+      if (secret === '<redacted>\\') return match
       if (NUMERIC_USAGE_FIELDS.has(key.toLowerCase()) && /^\d+$/.test(secret)) return match
       return `${key}${separator}<redacted>`
     })

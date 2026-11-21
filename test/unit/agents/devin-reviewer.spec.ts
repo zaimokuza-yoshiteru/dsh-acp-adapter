@@ -158,24 +158,15 @@ describe.skipIf(!supportsLocalApprovalReview(process.platform))('real ACP transp
     expect(await readFile(join(root, 'login', 'devin', 'credentials.toml'), 'utf8')).toBe('temporary fixture only')
   })
 
-  it('withholds a fenced low verdict on the observed access-expanding configuration', async () => {
-    const task = 'Prepare the access configuration. fixture-fenced-low'
-    const toolCall = {
-      toolCallId: 'access-file',
-      kind: 'edit' as const,
-      rawInput: {
-        file_path: 'public/access-policy.json',
-        content: '{"default_read":"public","anonymous_access":true}',
-      },
-    }
-    await expect(
-      reviewer.review({ profile, model, task, toolCall, locale: 'en', signal: new AbortController().signal }),
-    ).rejects.toThrow(/unavailable/)
+  it('returns the same low-risk decision for bare and fenced model responses', async () => {
+    const bare = await call('Correct a typo')
+    await expect(call('Correct a typo. fixture-fenced-low')).resolves.toEqual(bare)
+    expect(bare.risk).toBe('not_high')
   })
 
   it('never dispatches when the model differs or the business profile uses Devin Cloud', async () => {
     returnedModel = 'unexpected-model'
-    await expect(call('Review model')).rejects.toThrow()
+    await expect(call('Review model')).rejects.toMatchObject({ code: 'model-unavailable' })
     profile.args.push('--cloud')
     await expect(call('Review cloud')).rejects.toThrow()
     expect((await records()).filter((m) => m.method === 'session/prompt')).toHaveLength(0)
@@ -230,7 +221,7 @@ describe.skipIf(!supportsLocalApprovalReview(process.platform))('real ACP transp
     'withholds business prompt when extension evidence is %s',
     async (state) => {
       extensions = state
-      await expect(call('Business request must stay in DSH')).rejects.toThrow(/unavailable/)
+      await expect(call('Business request must stay in DSH')).rejects.toMatchObject({ code: 'unverified-reviewer' })
       const sent = (await records()).filter((m) => m.method === 'session/prompt').map((m) => m.params.prompt[0].text)
       expect(sent).toEqual(state === 'late' || state === 'mcp' ? ['/mcp'] : [])
       expect(existsSync(dirname(spawns[0]!.cwd))).toBe(false)

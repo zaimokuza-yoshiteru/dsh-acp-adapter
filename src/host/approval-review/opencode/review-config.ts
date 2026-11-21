@@ -1,3 +1,4 @@
+import { ApprovalReviewError } from '../../../contract/approval-review.ts'
 import type { AcpAgentConfig } from '../../../contract/agent-config.ts'
 import { constants } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
@@ -6,7 +7,7 @@ import { homedir, userInfo } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import { isReviewEnvironmentKey } from '../subprocess.ts'
 
-const unavailable = () => new Error('Cannot isolate the OpenCode base configuration')
+const unavailable = () => new ApprovalReviewError('unverified-reviewer')
 const absent = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT'
 
 // The native 2.3.2 text transports verified against @opencode/ai's published exports.
@@ -204,8 +205,7 @@ export function reviewEnvironment(config: Record<string, string>) {
     else if (Object.hasOwn(config, key) && /^(?:[A-Z0-9_]+_(?:KEY|TOKEN)|OPENAI_ORG_ID|OPENAI_PROJECT_ID)$/.test(key))
       env[key] = value
     else if (key === 'OPENCODE_CONFIG_PROJECT_DISABLE' && /^(?:0|1|true|false)$/.test(value)) continue
-    else if (/^OPENCODE_(?:TEST_MANAGED|CONFIG|DB|DATABASE|AUTH|CONTROL|POLICY|SERVER)/.test(key))
-      throw new Error('Unsupported OpenCode base configuration')
+    else if (/^OPENCODE_(?:TEST_MANAGED|CONFIG|DB|DATABASE|AUTH|CONTROL|POLICY|SERVER)/.test(key)) throw unavailable()
   }
   env.HOME ??= homedir()
   const configRoot = env.XDG_CONFIG_HOME || join(env.HOME, '.config')
@@ -221,7 +221,7 @@ export function reviewEnvironment(config: Record<string, string>) {
       'OPENCODE_CONFIG_DIR',
     ].some((k) => env[k] && !isAbsolute(env[k]!))
   )
-    throw new Error('Invalid OpenCode base directory')
+    throw unavailable()
   env.OPENCODE_CONFIG_PROJECT_DISABLE = '1'
   return { env, location: env.OPENCODE_CONFIG_DIR || join(configRoot, 'opencode') }
 }

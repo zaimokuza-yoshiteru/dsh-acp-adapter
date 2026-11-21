@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { AcpLocaleKey } from '../../../src/client/ui/locales.ts'
 import type { AcpAuditTimelineEntry } from '../../../src/contract/remote.ts'
 import { auditTimelineRowOf } from '../../../src/host/composition/audit-row.ts'
 import {
@@ -26,18 +27,20 @@ const entry = (partial: Partial<AcpAuditTimelineEntry>): AcpAuditTimelineEntry =
   detail: null,
   ...partial,
 })
+const translate = (key: AcpLocaleKey) => en[key]
 const owns = (provider: string | undefined): boolean => provider === 'acp-codex'
 
 describe('ACP audit header utility behavior', () => {
   it('searches explicit recorded causes and does not fabricate missing or truncated causes', () => {
     const missing = entry({ detail: '{"outcome":"error"}', severity: 'error' })
-    expect(auditRecordedCause(missing)).toBeNull()
+    expect(auditRecordedCause(translate, missing)).toBeNull()
     const recorded = entry({ detail: '{"reason":"not-found"}', severity: 'error' })
-    expect(auditRecordedCause(recorded)).toBe('not-found')
+    expect(auditRecordedCause(translate, recorded)).toBe('not-found')
     expect(auditEntryMatchesQuery((key) => en[key], recorded, 'not-found')).toBe(true)
-    expect(auditRecordedCause(entry({ detail: '{"reason":"unfinished' }))).toBeNull()
+    expect(auditRecordedCause(translate, entry({ detail: '{"reason":"unfinished' }))).toBeNull()
     expect(
       auditRecordedCause(
+        translate,
         entry({ detail: '{"items":[{"reason":"cursor unavailable"},{"reason":"cursor unavailable"}]}' }),
       ),
     ).toBe('cursor unavailable')
@@ -94,10 +97,12 @@ describe('ACP audit header utility behavior', () => {
   })
 
   it('shows explicit permission and recovery causes stored under their original fields', () => {
-    expect(auditRecordedCause(entry({ detail: '{"note":"question-service-unavailable"}' }))).toBe(
+    expect(auditRecordedCause(translate, entry({ detail: '{"note":"question-service-unavailable"}' }))).toBe(
       'question-service-unavailable',
     )
-    expect(auditRecordedCause(entry({ detail: '{"reason":"","cause":"auth-required"}' }))).toBe('auth-required')
+    expect(auditRecordedCause(translate, entry({ detail: '{"reason":"","cause":"auth-required"}' }))).toBe(
+      'auth-required',
+    )
   })
 
   it('localizes structured summary facts and keeps raw summary codes out of the UI', () => {
@@ -161,7 +166,19 @@ describe('ACP audit header utility behavior', () => {
     expect(auditSummaryOf(t, high)).toBe(
       [locale.auditSummaryReviewResult, 'swe-2-high', locale.auditRiskHigh].join(' · '),
     )
-    expect(auditRecordedCause(high)).toBe('May expose private documents')
+    expect(auditRecordedCause(t, high)).toBe('May expose private documents')
+    for (const failureCode of ['model-unavailable', 'invalid-response'] as const) {
+      const failed = entry({
+        summaryCode: 'permission.ai-review-result',
+        status: 'error',
+        detail: JSON.stringify({ failureCode }),
+      })
+      expect(auditRecordedCause(t, failed)).toBe(locale[failureCode])
+      expect(auditEntryMatchesQuery(t, failed, locale[failureCode])).toBe(true)
+    }
+    expect(
+      auditRecordedCause(t, entry({ summaryCode: 'permission.ai-review-result', status: 'error', detail: '{}' })),
+    ).toBeNull()
   })
 
   it('distinguishes a CodeBuddy result block from a data-protection observation in both locales', () => {

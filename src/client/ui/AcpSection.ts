@@ -367,7 +367,12 @@ function Loaded({
       const row = healthRowOf(snapshot.health.rows, id)
       const devin = effectiveRuntimeOf(id, agent) === 'devin'
       const choices = devin ? row?.devinReviewModels : row?.openCodeReviewModels
-      if (!choices || (!choices.length && !agent.openCodeReviewModel)) continue
+      if (!choices) continue
+      if (!choices.length && devin) {
+        modelFields.push(h('p', { key: id, className: css.notice }, t('reviewModelsEmpty', { name: agent.name })))
+        continue
+      }
+      if (!choices.length && !agent.openCodeReviewModel) continue
       modelFields.push(
         h(ReviewModelField, {
           key: id,

@@ -111,11 +111,14 @@ describe('AcpRemoteService current public surface', () => {
       { ...snap, result: { ...snap.result, agentInfo: { ...handshake, version: '3000.14.30820' } } },
       { ...snap, result: { ...snap.result, agentInfo: { ...handshake, version: '3000.14.30822' } } },
       { ...snap, result: { ...snap.result, agentInfo: { ...handshake, name: 'unrecognized' } } },
-      { ...snap, result: { ...snap.result, models: [{ id: ACP_CURRENT_CONFIG_MODEL_ID }] } },
     ]
     for (const snapshot of unavailable) {
       expect((await check(snapshot, true).health()).providers[0]?.devinReviewModels).toBeUndefined()
     }
+    const empty = { ...snap, result: { ...snap.result, models: [{ id: ACP_CURRENT_CONFIG_MODEL_ID }] } }
+    expect((await check(empty, true).health()).providers[0]?.devinReviewModels).toEqual(
+      supportsLocalApprovalReview(process.platform) ? [] : undefined,
+    )
     const remoteHost = await check(snap, false).health()
     expect(remoteHost.localReviewUnavailable).toBe(true)
     expect(remoteHost.providers[0]?.devinReviewModels).toBeUndefined()

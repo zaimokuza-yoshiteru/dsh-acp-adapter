@@ -1,6 +1,7 @@
 export type AcpUiOutcome =
   | 'saved'
   | 'save-failed'
+  | 'permission-audit-failed'
   | 'deleted'
   | 'delete-failed'
   | 'session-option-failed'
@@ -64,12 +65,15 @@ export function followAcpQuestionLimitations(
 ): () => void {
   // api-session/error is a string channel. Recognize only the exact terminal
   // marker emitted by our Host callback; generic Agent errors stay native.
-  const suffixes = [' (ACP_DELEGATED_QUESTION_UNAVAILABLE)', ' (ACP_PERMISSION_POLICY_UNAVAILABLE)']
+  const auditFailure = ' (ACP_PERMISSION_AUDIT_UNAVAILABLE)'
+  const suffixes = [' (ACP_DELEGATED_QUESTION_UNAVAILABLE)', ' (ACP_PERMISSION_POLICY_UNAVAILABLE)', auditFailure]
   return subscribe((sessionId, error) => {
     const suffix = suffixes.find((value) => error.endsWith(value))
     if (sessionId === '' || suffix === undefined) return
     const message = error.slice(0, -suffix.length).trim()
     if (message === '') return
-    feedback.reportQuestionLimitation(message, { id: sessionId, title: titleOf(sessionId) })
+    const source = { id: sessionId, title: titleOf(sessionId) }
+    if (suffix === auditFailure) feedback.report('permission-audit-failed', source)
+    else feedback.reportQuestionLimitation(message, source)
   })
 }

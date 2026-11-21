@@ -101,7 +101,7 @@ export interface AcpNativePermissionBridgeDeps {
   readonly permissionProfile?: string | undefined
   readonly riskReviewer?: PermissionRiskReviewer
   /** The Host user explicitly chose to answer this class of DSH tool requests. */
-  readonly humanReviewOnly?: true | 'review-unavailable'
+  readonly humanReviewOnly?: true | 'review-unavailable' | 'review-model-unavailable'
   readonly getAgent: () => unknown
   readonly locale?: string
   readonly log?: (message: string) => void
@@ -173,7 +173,7 @@ function visibleCommand(value: string): string {
   })
 }
 const commandKeys = ['command', 'cmd', 'CommandLine', 'argv'] as const
-function commandOf(tool: acp.RequestPermissionRequest['toolCall']): string | undefined {
+export function commandOf(tool: acp.RequestPermissionRequest['toolCall']): string | undefined {
   if (typeof tool.rawInput === 'string') return tool.rawInput
   return firstString(recordValue(tool.rawInput), commandKeys)
 }
@@ -563,10 +563,25 @@ export function createAcpNativePermissionHandler(
       try {
         await deps.audit.append({ kind: ACP_PERMISSION_AUDIT_KIND, time: deps.now?.() ?? Date.now(), data })
         return true
-      } catch (error: unknown) {
-        deps.log?.(`dsh-acp native permission audit failed: ${errorMessage(error)}`)
+      } catch {
+        deps.log?.('dsh-acp native permission audit write failed')
         return false
       }
+    }
+    const guardsOwner = evaluate !== undefined || humanCard
+    const current = () => !signal?.aborted && deps.getAgent() === agent
+    const cancelForAuditFailure = async () => {
+      if (!signal?.aborted && (!guardsOwner || current())) {
+        try {
+          await deps.onUnavailable?.({
+            code: 'ACP_PERMISSION_AUDIT_UNAVAILABLE',
+            message: copy.permissionAuditFailed,
+          })
+        } catch {
+          deps.log?.('dsh-acp permission audit failure reporting unavailable')
+        }
+      }
+      return cancelled()
     }
     if (
       !(await append(
@@ -578,13 +593,13 @@ export function createAcpNativePermissionHandler(
         }),
       ))
     )
-      return cancelled()
-    let humanPolicyReason: ((text: PermissionCopy) => string) | undefined =
-      humanCard && deps.humanReviewOnly === 'review-unavailable' ? (text) => text.reviewUnavailable : undefined
+      return cancelForAuditFailure()
+    let humanPolicyReason: ((text: PermissionCopy) => string) | undefined
+    if (humanCard && deps.humanReviewOnly === 'review-unavailable') humanPolicyReason = (text) => text.reviewUnavailable
+    if (humanCard && deps.humanReviewOnly === 'review-model-unavailable')
+      humanPolicyReason = (text) => text.reviewFailures['model-unavailable']
     let denialReason: string | undefined
     let presentation: AcpPermissionPresentation | undefined
-    const guardsOwner = evaluate !== undefined || humanCard
-    const current = () => !signal?.aborted && deps.getAgent() === agent
     const decide = async (
       init: {
         readonly outcome: 'selected' | 'cancelled'
@@ -594,6 +609,7 @@ export function createAcpNativePermissionHandler(
       },
       decisionVia:
         'native-question' | 'native-approval' | 'external-policy' | 'devin-ai' | 'opencode-ai' = 'native-question',
+      writeFailure: 'cancel' | 'ask' = 'cancel',
     ): Promise<acp.RequestPermissionResponse> => {
       const ok = await append(
         createPermissionDecidedAudit({
@@ -605,7 +621,7 @@ export function createAcpNativePermissionHandler(
           ...(presentation === undefined ? {} : { presentation }),
         }),
       )
-      if (!ok) return cancelled()
+      if (!ok) return writeFailure === 'ask' ? cancelled() : cancelForAuditFailure()
       const response: PendingPermissionResponse =
         init.outcome === 'cancelled' ? cancelled() : { outcome: { outcome: 'selected', optionId: init.optionId! } }
       if (init.outcome === 'selected' && deps.audit) {
@@ -710,6 +726,7 @@ export function createAcpNativePermissionHandler(
         const response = await decide(
           { outcome: 'selected', optionId: outcome.optionId, selectedOptionKind: 'allow_once' },
           via,
+          'ask',
         )
         if (response.outcome.outcome === 'selected' || !current()) return response
         humanPolicyReason = (text) => text.reviewAuditUnavailable

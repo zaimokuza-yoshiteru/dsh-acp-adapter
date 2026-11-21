@@ -132,7 +132,9 @@ describe.skipIf(!['linux', 'darwin'].includes(process.platform))('OpenCode state
   it.each(['plugin', 'mcp', 'old', 'location', 'missing-model', 'agent-model', 'invalid', 'late', 'change-origin'])(
     'hands %s off to manual review',
     async (mode) => {
-      await expect(request(mode)).rejects.toThrow()
+      const code =
+        mode === 'invalid' ? 'invalid-response' : mode === 'missing-model' ? 'model-unavailable' : 'unverified-reviewer'
+      await expect(request(mode)).rejects.toMatchObject({ code })
       const calls = await records()
       expect(calls.some((c) => c.body)).toBe(['invalid', 'late', 'change-origin'].includes(mode))
       expect(existsSync(calls[0].cwd)).toBe(false)

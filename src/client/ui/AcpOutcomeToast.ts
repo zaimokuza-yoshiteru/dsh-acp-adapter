@@ -9,6 +9,7 @@ import css from './AcpOutcomeToast.module.css'
 const copy: Record<AcpUiOutcome, AcpLocaleKey> = {
   saved: 'toastProfileSaved',
   'save-failed': 'toastProfileSaveFailed',
+  'permission-audit-failed': 'toastPermissionAuditFailed',
   deleted: 'toastProfileDeleted',
   'delete-failed': 'toastProfileDeleteFailed',
   'session-option-failed': 'actionSaveFailed',

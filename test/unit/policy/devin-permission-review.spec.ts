@@ -1,6 +1,11 @@
 import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
 import { expect, it, vi } from 'vitest'
 import type { PermissionRiskReviewer } from '../../../src/domain/policy/permission-review.ts'
+import {
+  ApprovalReviewError,
+  approvalReviewFailures,
+  permissionAuditFailureMessage,
+} from '../../../src/contract/approval-review.ts'
 import { permissionOperationHash } from '../../../src/domain/policy/events.ts'
 import type { AcpPermissionQuestionService } from '../../../src/domain/policy/elicitation.ts'
 import {
@@ -162,7 +167,8 @@ it.each(['missing-once', 'ambiguous-once', 'manual-policy', 'no-audit'] as const
 it.each(['ai-review-started', 'ai-review-result', 'decided'] as const)(
   'never releases the AI grant when its %s write fails',
   async (phase) => {
-    const f = fixture()
+    const onUnavailable = vi.fn()
+    const f = fixture({ onUnavailable })
     let failed = false
     f.append.mockImplementation(async (record) => {
       if (record.data.phase === phase && !failed) {
@@ -180,22 +186,67 @@ it.each(['ai-review-started', 'ai-review-result', 'decided'] as const)(
       decisionVia: 'native-question',
     })
     expect(f.ask).toHaveBeenCalledTimes(1)
-    expect(f.records.at(-1)!.data).toMatchObject({ decisionVia: 'native-question', selectedOptionKind: 'reject_once' })
+    expect(onUnavailable).not.toHaveBeenCalled()
   },
 )
 
-it.each(['invalid', 'timeout'] as const)(
-  'returns %s review to the human without persisting raw error output',
-  async (mode) => {
-    const f = fixture()
-    if (mode === 'invalid') f.review.mockResolvedValue({ risk: 'not_high', reason: ' ' })
-    else f.review.mockRejectedValue(new DOMException('private upstream text', 'TimeoutError'))
-    await expect(f.handle(request())).resolves.toMatchObject({ outcome: { optionId: 'deny-original-id' } })
-    expect(f.records[2]!.data).toMatchObject({ status: mode === 'timeout' ? 'timeout' : 'error' })
-    expect(JSON.stringify(f.records)).not.toContain('private upstream text')
-    expect(f.ask).toHaveBeenCalledTimes(1)
-  },
-)
+it.each([
+  ['asked', 'en'],
+  ['decided', 'zh'],
+] as const)('reports a terminal %s storage failure once and cancels the original request', async (phase, locale) => {
+  const log = vi.fn()
+  const onUnavailable = vi.fn(async () => {
+    throw Error('notification transport')
+  })
+  const f = fixture({ onUnavailable, log, locale })
+  f.append.mockImplementation(async (record) => {
+    if (record.data.phase === phase) throw Error('private storage detail')
+    f.records.push(record)
+  })
+  await expect(f.handle(request())).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+  expect(f.ask).toHaveBeenCalledTimes(phase === 'asked' ? 0 : 1)
+  expect(f.review).toHaveBeenCalledTimes(phase === 'asked' ? 0 : 1)
+  expect(onUnavailable).toHaveBeenCalledExactlyOnceWith({
+    code: 'ACP_PERMISSION_AUDIT_UNAVAILABLE',
+    message: permissionAuditFailureMessage[locale],
+  })
+  expect(JSON.stringify([f.records, log.mock.calls])).not.toContain('private storage detail')
+})
+
+it('does not report a pending audit failure to a replacement Agent', async () => {
+  const onUnavailable = vi.fn()
+  let owner = {}
+  const f = fixture({ onUnavailable, getAgent: () => owner })
+  f.append.mockImplementationOnce(async () => {
+    owner = {}
+    throw Error('storage unavailable')
+  })
+  await expect(f.handle(request())).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+  expect(onUnavailable).not.toHaveBeenCalled()
+  expect(f.review).not.toHaveBeenCalled()
+})
+
+it.each([
+  'invalid-response',
+  'incomplete-evidence',
+  'unverified-reviewer',
+  'model-unavailable',
+  'review-unavailable',
+  'timeout',
+] as const)('records the safe %s reason and offers one manual decision', async (status) => {
+  const f = fixture({ locale: 'zh' })
+  if (status === 'invalid-response') f.review.mockResolvedValue({ risk: 'not_high', reason: ' ' })
+  else if (status === 'timeout') f.review.mockRejectedValue(new DOMException('private upstream text', 'TimeoutError'))
+  else if (status === 'review-unavailable') f.review.mockRejectedValue(new Error('private upstream text'))
+  else f.review.mockRejectedValue(new ApprovalReviewError(status, 'private upstream text'))
+  await expect(f.handle(request())).resolves.toMatchObject({ outcome: { optionId: 'deny-original-id' } })
+  const expected = status === 'timeout' ? { status: 'timeout' } : { status: 'error', failureCode: status }
+  expect(f.records[2]!.data).toMatchObject(expected)
+  expect(JSON.stringify([f.records, f.ask.mock.calls])).not.toContain('private upstream text')
+  expect(f.ask).toHaveBeenCalledTimes(1)
+  const question = f.ask.mock.calls[0]![0].questions[0]!
+  expect(question.question).toContain(status === 'timeout' ? '审查超时' : approvalReviewFailures.zh[status])
+})
 
 it.each(['ai-review-started', 'ai-review-result', 'decided'] as const)(
   'discards a stale grant while awaiting the %s write',

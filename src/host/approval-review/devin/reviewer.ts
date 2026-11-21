@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto'
 import { realpath } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
-import { supportsLocalApprovalReview, type ApprovalReviewDecision } from '../../../contract/approval-review.ts'
+import {
+  ApprovalReviewError,
+  supportsLocalApprovalReview,
+  type ApprovalReviewDecision,
+} from '../../../contract/approval-review.ts'
 import { isDevinReviewModel, isDevinReviewerAgent, isLocalDevinReviewProfile } from '../../../contract/devin-review.ts'
 import { AcpClientConnection } from '../../../protocol/v1/connection.ts'
 import type { SubprocessSeam } from '../../../runtime/process/subprocess.ts'
@@ -44,7 +48,7 @@ export class DevinReviewer implements ApprovalReviewBackend {
       !isLocalDevinReviewProfile(profile) ||
       !isDevinReviewModel(model)
     )
-      throw new Error('Local Devin review unavailable')
+      throw new ApprovalReviewError('review-unavailable')
     const deadline = AbortSignal.any([signal, this.lifetime.signal, AbortSignal.timeout(15_000)])
     deadline.throwIfAborted()
     const prompt = reviewPrompt(task, toolCall, locale)
@@ -58,10 +62,10 @@ export class DevinReviewer implements ApprovalReviewBackend {
       const decision = await work
       deadline.throwIfAborted()
       return decision
-    } catch {
+    } catch (error) {
       deadline.throwIfAborted()
       // Server errors can quote approval data or include private authentication diagnostics.
-      throw new Error('Devin review unavailable')
+      throw error instanceof ApprovalReviewError ? error : new ApprovalReviewError('review-unavailable')
     } finally {
       this.active.delete(work)
     }
@@ -86,7 +90,7 @@ export class DevinReviewer implements ApprovalReviewBackend {
     signal: AbortSignal,
   ): Promise<Worker> {
     const resolved = await this.subprocess.resolveExecutable(command, env, signal)
-    if (!isAbsolute(resolved)) throw new Error('Invalid Devin executable')
+    if (!isAbsolute(resolved)) throw new ApprovalReviewError('unverified-reviewer')
     const binary = await realpath(resolved)
     signal.throwIfAborted()
     const workspace = await openReviewWorkspace(env)
@@ -115,13 +119,13 @@ export class DevinReviewer implements ApprovalReviewBackend {
         {
           ...(this.onProcessWarn ? { onProcessWarn: this.onProcessWarn } : {}),
           onPermissionRequest: () => {
-            violation.abort()
+            violation.abort(new ApprovalReviewError('unverified-reviewer'))
             return { outcome: { outcome: 'cancelled' } }
           },
         },
       )
       const init = await conn.initialize({ signal })
-      if (!isDevinReviewerAgent(init.agentInfo)) throw new Error('Unsupported Devin reviewer')
+      if (!isDevinReviewerAgent(init.agentInfo)) throw new ApprovalReviewError('unverified-reviewer')
       return { conn, workspace, violation, sessions: new Set() }
     } catch (e) {
       try {
@@ -163,24 +167,17 @@ export class DevinReviewer implements ApprovalReviewBackend {
       const session = await conn.newSession({}, { signal })
       const controls =
         session.configOptions?.filter((option) => option.category === 'model' && option.type === 'select') ?? []
-      if (
-        controls.length !== 1 ||
-        controls[0]?.currentValue !== model ||
-        !session.sessionId ||
-        worker.sessions.has(session.sessionId)
-      )
-        throw new Error('Unverified Devin review session')
+      if (controls.length !== 1 || !session.sessionId || worker.sessions.has(session.sessionId))
+        throw new ApprovalReviewError('unverified-reviewer')
+      if (controls[0]!.currentValue !== model) throw new ApprovalReviewError('model-unavailable')
       worker.sessions.add(session.sessionId)
       const root = worker.workspace.root
       await assertEmptyReviewRegistry(root)
       const mcp = await this.readText(worker, session.sessionId, model, '/mcp', signal)
-      if (mcp.trim() !== 'No MCP servers are configured.') throw new Error('Devin reviewer MCP status unavailable')
+      if (mcp.trim() !== 'No MCP servers are configured.') throw new ApprovalReviewError('unverified-reviewer')
       await assertEmptyReviewRegistry(root)
       signal.throwIfAborted()
-      const decision = readReviewDecision(
-        await this.readText(worker, session.sessionId, model, prompt, signal),
-        'high-only',
-      )
+      const decision = readReviewDecision(await this.readText(worker, session.sessionId, model, prompt, signal))
       await assertEmptyReviewRegistry(root)
       // Release each session before reusing the process. Discard a process that cannot prove session teardown.
       if (conn.agentCapabilities?.sessionCapabilities?.close) {
@@ -189,6 +186,9 @@ export class DevinReviewer implements ApprovalReviewBackend {
       }
       signal.throwIfAborted()
       return decision
+    } catch (error) {
+      worker.violation.signal.throwIfAborted()
+      throw error
     } finally {
       if (reusable && !deadline.aborted && !this.idle.has(key) && worker.sessions.size < 32) {
         const retiring = worker
@@ -224,7 +224,7 @@ export class DevinReviewer implements ApprovalReviewBackend {
         if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
           bytes += Buffer.byteLength(update.content.text)
           if (bytes <= MAX_REVIEW_OUTPUT_BYTES) output += update.content.text
-          else violation.abort()
+          else violation.abort(new ApprovalReviewError('invalid-response'))
         } else if (
           update.sessionUpdate === 'tool_call' ||
           update.sessionUpdate === 'tool_call_update' ||
@@ -233,20 +233,20 @@ export class DevinReviewer implements ApprovalReviewBackend {
           (update.sessionUpdate === 'config_option_update' &&
             update.configOptions.some((opt) => opt.category === 'model' && opt.currentValue !== model))
         ) {
-          violation.abort()
+          violation.abort(new ApprovalReviewError('unverified-reviewer'))
         }
       },
       { signal },
     )
     signal.throwIfAborted()
-    if (result.stopReason !== 'end_turn') throw new Error('Incomplete Devin review')
+    if (result.stopReason !== 'end_turn') throw new ApprovalReviewError('invalid-response')
     return output
   }
 
   private async closeWorker(worker: Worker) {
     try {
       await worker.conn.close()
-      if (!worker.conn.isCleanupConfirmed) throw new Error('Devin reviewer did not stop')
+      if (!worker.conn.isCleanupConfirmed) throw new ApprovalReviewError('unverified-reviewer')
     } finally {
       await worker.workspace.close()
     }

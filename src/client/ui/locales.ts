@@ -1,3 +1,4 @@
+import { approvalReviewFailures, permissionAuditFailureMessage } from '../../contract/approval-review.ts'
 import { acpRouteNames } from '../../contract/model-labels.ts'
 
 /**
@@ -22,6 +23,8 @@ const zh = {
   nativeForkRetryCleanup: '重试清理恢复记录',
   nativeForkRecoveryStorageFailed: '无法更新此页签的恢复记录，尚未执行下一步。请检查浏览器存储后重试。',
   ...acpRouteNames.zh,
+  ...approvalReviewFailures.zh,
+  toastPermissionAuditFailed: permissionAuditFailureMessage.zh,
   managedModelSmallWindow: '切换到 {model}？',
   managedModelWindowDetail: '上次请求用了 {used} token，目标模型的窗口为 {size} token。这段对话可能放不下。',
   managedModelSwitchAnyway: '仍然切换',
@@ -151,6 +154,7 @@ const zh = {
   reviewModelFor: '{name} 审查模型',
   reviewSessionModel: '跟随会话模型',
   reviewModelMissing: '保存的审查模型已不可用，请选择其他模型。',
+  reviewModelsEmpty: '上次检查时，{name} 未提供可选的审查模型。',
   reviewSaveFailed: '无法保存审批设置，请重试。',
   settingsLoading: '正在读取设置…',
   settingsUnavailable: '当前环境无法打开 ACP 设置。',
@@ -498,6 +502,8 @@ const en: Record<AcpLocaleKey, string> = {
   nativeForkRecoveryStorageFailed:
     'This tab’s recovery record could not be updated. No next operation was started. Check browser storage and retry.',
   ...acpRouteNames.en,
+  ...approvalReviewFailures.en,
+  toastPermissionAuditFailed: permissionAuditFailureMessage.en,
   managedModelSmallWindow: 'Switch to {model}?',
   managedModelWindowDetail:
     'The last request used {used} tokens. This model has a {size}-token window and may not fit the conversation.',
@@ -640,6 +646,7 @@ const en: Record<AcpLocaleKey, string> = {
   reviewModelFor: '{name} review model',
   reviewSessionModel: 'Use the session model',
   reviewModelMissing: 'The saved review model is unavailable. Choose another model.',
+  reviewModelsEmpty: '{name} offered no review models at the last check.',
   reviewSaveFailed: 'Could not save approval settings. Please retry.',
   settingsLoading: 'Loading settings…',
   settingsUnavailable: 'ACP settings are unavailable in this environment.',

@@ -1,6 +1,7 @@
 import { constants } from 'node:fs'
 import { open, readdir, realpath } from 'node:fs/promises'
 import { join } from 'node:path'
+import { ApprovalReviewError } from '../../../contract/approval-review.ts'
 
 /**
  * Devin 3000.14.30821 resolves governance plugins during session/new. Even with personal
@@ -8,6 +9,14 @@ import { join } from 'node:path'
  * Absence of a cache is not evidence of an empty result (including when authentication fails).
  */
 export async function assertEmptyReviewRegistry(workspaceRoot: string): Promise<void> {
+  try {
+    await checkRegistry(workspaceRoot)
+  } catch {
+    throw new ApprovalReviewError('unverified-reviewer')
+  }
+}
+
+async function checkRegistry(workspaceRoot: string): Promise<void> {
   const registry = join(workspaceRoot, 'data', 'devin', 'cli', 'plugins_cache')
   if ((await realpath(registry)) !== registry) throw new Error('Untrusted Devin plugin registry')
   const entries = await readdir(registry, { withFileTypes: true })

@@ -17,11 +17,12 @@ import path from 'node:path'
 import { DatabaseSync, type SQLInputValue, type SQLOutputValue, type StatementSync } from 'node:sqlite'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
-import type {
-  AcpDegradationAuditData,
-  AcpPermissionAuditData,
-  AcpTerminalAuditData,
-  AcpSessionForkAuditData,
+import {
+  redactLegacyPermissionInput,
+  type AcpDegradationAuditData,
+  type AcpPermissionAuditData,
+  type AcpTerminalAuditData,
+  type AcpSessionForkAuditData,
 } from '../domain/policy/events.ts'
 import { ACP_SNAPSHOT_TOTAL_BYTES, toOptionsSnapshotRecord, type AcpOptionsSnapshotRecord } from './options-snapshot.ts'
 import { ACP_CONFIG_IDENTIFIER_MAX } from '../contract/config-options.ts'
@@ -3030,6 +3031,7 @@ function rowToEnvelope(row: AuditRow): AcpSidecarEnvelopeV2 | undefined {
     return undefined
   }
   if (!isPlainObject(payload)) return undefined
+  const safePayload = row.kind === 'permission' ? redactLegacyPermissionInput(payload) : payload
   return {
     schemaVersion: ACP_SIDECAR_SCHEMA_VERSION,
     recordId: row.record_id,
@@ -3039,7 +3041,7 @@ function rowToEnvelope(row: AuditRow): AcpSidecarEnvelopeV2 | undefined {
     dshSessionId: row.dsh_session_id,
     ...(row.acp_provider_id === null ? {} : { acpProviderId: row.acp_provider_id }),
     ...(row.acp_session_id === null ? {} : { acpSessionId: row.acp_session_id }),
-    payload: payload as unknown as AcpSidecarEnvelopeV2['payload'],
+    payload: safePayload as unknown as AcpSidecarEnvelopeV2['payload'],
   }
 }
 

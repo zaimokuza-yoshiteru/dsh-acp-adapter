@@ -22,6 +22,7 @@ import { publicAuditStatusLabels } from '../data/audit-status.ts'
 import { includesRoute, type UseRouteOwnership } from '../data/managed-routes.ts'
 import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
 import type { AcpDiagnosticView, AcpRecoveryView } from '../../contract/remote.ts'
+import { isApprovalReviewFailureCode } from '../../contract/approval-review.ts'
 import { matchesDiagnosticView } from '../../contract/diagnostics.ts'
 import { AcpSupportExportError, collectAcpSupportExport, downloadAcpSupportExport } from '../data/acp-support-export.ts'
 import { recoveryText } from './AcpRecoveryDock.ts'
@@ -102,12 +103,12 @@ export function auditEntryMatchesQuery(t: Translate, entry: AcpAuditTimelineEntr
     auditSummaryOf(t, entry),
     entry.subject ?? '',
     entry.status ?? '',
-    auditRecordedCause(entry) ?? '',
+    auditRecordedCause(t, entry) ?? '',
   ].some((value) => value.toLocaleLowerCase().includes(normalized))
 }
 
 /** Display only explicit recorded reasons, never infer a cause from an outcome. */
-export function auditRecordedCause(entry: AcpAuditTimelineEntry): string | null {
+export function auditRecordedCause(t: Translate, entry: AcpAuditTimelineEntry): string | null {
   if (entry.detail === null) return null
   try {
     const value = JSON.parse(entry.detail) as {
@@ -116,7 +117,14 @@ export function auditRecordedCause(entry: AcpAuditTimelineEntry): string | null 
       cause?: unknown
       note?: unknown
       items?: unknown
+      failureCode?: unknown
     } | null
+    if (
+      entry.summaryCode === 'permission.ai-review-result' &&
+      entry.status === 'error' &&
+      isApprovalReviewFailureCode(value?.failureCode)
+    )
+      return t(value.failureCode)
     const reason = [value?.reason, value?.detail, value?.cause, value?.note].find(
       (candidate): candidate is string => typeof candidate === 'string' && candidate.trim() !== '',
     )
@@ -675,7 +683,7 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
               { key: selected.seq, className: css.detailsBody, 'data-audit-detail-scroll': true },
               h('p', { className: css.detailsSummary }, auditSummaryOf(t, selected)),
               selected.severity !== 'info'
-                ? h('p', { className: css.detailsSummary }, auditRecordedCause(selected) ?? t('auditNoCause'))
+                ? h('p', { className: css.detailsSummary }, auditRecordedCause(t, selected) ?? t('auditNoCause'))
                 : null,
               selected.status === 'exit-unverified'
                 ? h('p', { className: css.detailsSummary }, t('auditLegacyExitExplanation'))

@@ -39,7 +39,12 @@ import type {
   StreamChunk,
   UserMessage,
 } from '@deepseek-ai/dsh-llm'
-import { AcpStubAdapter, reasoningInfoFromConfigOptions, supportsNamedModelSwitch } from './llm-stub.ts'
+import {
+  AcpStubAdapter,
+  checkedDevinModels,
+  reasoningInfoFromConfigOptions,
+  supportsNamedModelSwitch,
+} from './llm-stub.ts'
 import type { AcpProbeCacheEntry } from './llm-stub.ts'
 import type { AcpStubAgentConfig } from '../../domain/session/agent-config.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
@@ -4922,8 +4927,11 @@ export class AcpProfileAdapter extends LlmAdapter {
           ...(audit === undefined ? {} : { audit }),
           ...(binding.onUnavailable === undefined ? {} : { onUnavailable: binding.onUnavailable }),
         })(params, lifetime)
-      if (context && signal && this.approvalReview)
-        return this.approvalReview.handle(profile, context, binding.locale, signal, handle)
+      if (context && signal && this.approvalReview?.enabled) {
+        const models =
+          runtime === 'devin' ? checkedDevinModels(profile, this.probeSnapshot(`acp-${this.profileId}`)) : undefined
+        return this.approvalReview.handle(profile, context, binding.locale, signal, handle, models)
+      }
       return handle({}, signal)
     }
     const diagnosticTrace = this.hostRoot?.get('acpLiveDiagnostics', false)

@@ -2,7 +2,11 @@ import { randomBytes } from 'node:crypto'
 import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
-import { supportsLocalApprovalReview, type ApprovalReviewDecision } from '../../../contract/approval-review.ts'
+import {
+  ApprovalReviewError,
+  supportsLocalApprovalReview,
+  type ApprovalReviewDecision,
+} from '../../../contract/approval-review.ts'
 import { isLocalOpenCodeReviewProfile, isOpenCodeReviewModel } from '../../../contract/opencode-review.ts'
 import { stopSubprocess } from '../../../runtime/process/cleanup.ts'
 import type { SubprocessSeam } from '../../../runtime/process/subprocess.ts'
@@ -44,7 +48,7 @@ export class OpenCodeReviewer implements ApprovalReviewBackend {
       !isLocalOpenCodeReviewProfile(profile) ||
       !isOpenCodeReviewModel(model)
     )
-      throw new Error('Unsupported OpenCode reviewer')
+      throw new ApprovalReviewError('review-unavailable')
     const deadline = AbortSignal.any([signal, this.lifetime.signal, AbortSignal.timeout(20_000)])
     deadline.throwIfAborted()
     const prompt = reviewPrompt(task, toolCall, locale)
@@ -54,9 +58,9 @@ export class OpenCodeReviewer implements ApprovalReviewBackend {
       const decision = await work
       deadline.throwIfAborted()
       return decision
-    } catch {
+    } catch (error) {
       deadline.throwIfAborted()
-      throw new Error('OpenCode review unavailable')
+      throw error instanceof ApprovalReviewError ? error : new ApprovalReviewError('review-unavailable')
     } finally {
       this.active.delete(work)
     }
@@ -77,7 +81,7 @@ export class OpenCodeReviewer implements ApprovalReviewBackend {
     const { env, location } = reviewEnvironment(profile.env)
     await verifyOpenCodeActorOrigin(profile, actorCwd)
     const command = await this.subprocess.resolveExecutable(profile.command, profile.env, signal)
-    if (!isAbsolute(command)) throw new Error('Invalid OpenCode executable')
+    if (!isAbsolute(command)) throw new ApprovalReviewError('unverified-reviewer')
     const binary = await realpath(command)
     const cwd = await mkdtemp(join(tmpdir(), 'dsh-acp-opencode-review-'))
     try {
@@ -97,7 +101,7 @@ export class OpenCodeReviewer implements ApprovalReviewBackend {
         const api = localReviewApi(url, password, signal)
         const info = await api('/api/info')
         if (info.version !== '2.3.2' || !Array.isArray(info.urls) || !info.urls.includes(url))
-          throw new Error('Unverified OpenCode server')
+          throw new ApprovalReviewError('unverified-reviewer')
         // Generate binds to global.config, not the process cwd or the business ACP session's directory.
         const base = await realpath(location)
         const scope = `?location%5Bdirectory%5D=${encodeURIComponent(base)}`
@@ -106,9 +110,9 @@ export class OpenCodeReviewer implements ApprovalReviewBackend {
         // Unlike plugin.list, model.list awaits activation. Check the resolved transport before submitting the prompt.
         const models = await api('/api/model' + scope, undefined, 4 * 1024 * 1024)
         if ((models.location as { directory?: unknown } | null)?.directory !== base || !Array.isArray(models.data))
-          throw new Error('Invalid OpenCode model inventory')
+          throw new ApprovalReviewError('unverified-reviewer')
         const matches = models.data.filter((m) => m?.providerID === selected.providerID && m?.id === selected.id)
-        if (matches.length !== 1) throw new Error('Unverified OpenCode model')
+        if (matches.length !== 1) throw new ApprovalReviewError('model-unavailable')
         verifyOpenCodeReviewModel(matches[0])
         const emptyInventory = async () => {
           for (const path of ['/api/plugin', '/api/mcp']) {
@@ -120,7 +124,7 @@ export class OpenCodeReviewer implements ApprovalReviewBackend {
                 ? list.data.length !== 0
                 : list.data.some((plugin: unknown) => !isBundledPlugin(plugin)))
             )
-              throw new Error('OpenCode review extensions are active or unknown')
+              throw new ApprovalReviewError('unverified-reviewer')
           }
         }
         await emptyInventory()
@@ -130,15 +134,15 @@ export class OpenCodeReviewer implements ApprovalReviewBackend {
         })
         const decision = (output.data as { text?: unknown } | null)?.text
         if (typeof decision !== 'string' || Buffer.byteLength(decision) > MAX_REVIEW_OUTPUT_BYTES)
-          throw new Error('Invalid OpenCode reviewer output')
+          throw new ApprovalReviewError('invalid-response')
         await emptyInventory()
         signal.throwIfAborted()
         await verifyOpenCodeActorOrigin(profile, actorCwd)
         signal.throwIfAborted()
-        return readReviewDecision(decision, 'both')
+        return readReviewDecision(decision)
       } finally {
         if (!(await stopSubprocess(handle, { eofGraceMs: 300, exitWaitMs: 2000, warn: this.warn })))
-          throw new Error('OpenCode reviewer did not stop')
+          throw new ApprovalReviewError('unverified-reviewer')
       }
     } finally {
       await rm(cwd, { recursive: true, force: true })

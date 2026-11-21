@@ -1,7 +1,11 @@
 import { supportsLocalApprovalReview } from '../../../src/contract/approval-review.ts'
+import { ACP_CURRENT_CONFIG_MODEL_ID, acpDeclaredModelRoute } from '../../../src/contract/model-selection.ts'
+import { ACP_PROBE_CACHE_OK_TTL_MS, acpProbeConfigKey } from '../../../src/domain/session/agent-config.ts'
+import { checkedDevinModels, type AcpProbeCacheEntry } from '../../../src/host/composition/llm-stub.ts'
 import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { expect, it, vi } from 'vitest'
 import { ApprovalReviewScope, approvalReviewInput } from '../../../src/host/approval-review/scope.ts'
+import { createAcpNativePermissionHandler } from '../../../src/domain/policy/permissions.ts'
 import type { AcpPermissionReviewContext } from '../../../src/runtime/session/session-runtime.ts'
 
 const profile = { name: 'Devin', command: 'devin', args: ['acp'], env: {} }
@@ -17,6 +21,139 @@ const worker = () => ({
   review: vi.fn(async () => ({ risk: 'not_high' as const, reason: 'Reversible edit' })),
   dispose: vi.fn(async () => {}),
 })
+
+it.skipIf(process.platform === 'win32').each([
+  ['review-model-unavailable', 'current'],
+  ['review-model-unavailable', 'replaced'],
+  ['review-model-unavailable', 'aborted'],
+  ['review-unavailable', 'replaced'],
+  [true, 'replaced'],
+] as const)('delivers a manual %s decision only to its live request (%s)', async (reason, state) => {
+  const spawn = vi.fn(worker)
+  const scope = new ApprovalReviewScope('devin', spawn, vi.fn())
+  scope.configure(profile, 'missing-model')
+  const controller = new AbortController()
+  const owner = {}
+  let current = true
+  const request = {
+    ...context,
+    current: () => current,
+    humanOnly: reason === true,
+    task: () => (reason === 'review-unavailable' ? undefined : 'Fix a typo'),
+  }
+  const phases: string[] = []
+  try {
+    const result = await scope.handle(
+      profile,
+      request,
+      'en',
+      controller.signal,
+      async (settings, signal) => {
+        expect(settings).toEqual({ humanReviewOnly: reason })
+        const answer = await createAcpNativePermissionHandler({
+          ...settings,
+          permissionProfile: 'devin',
+          getAgent: () => owner,
+          audit: {
+            append: async (record) => {
+              phases.push(record.data.phase)
+            },
+          },
+          permissionQuestions: {
+            ask: async ({ questions }) => ({ answers: [{ id: questions[0]!.id, selected: ['Allow once'] }] }),
+          },
+        })(
+          {
+            sessionId: 'session',
+            toolCall: request.toolCall,
+            options: [{ optionId: 'once', kind: 'allow_once', name: 'Allow once' }],
+          },
+          signal,
+        )
+        expect(answer.outcome).toEqual({ outcome: 'selected', optionId: 'once' })
+        // The original call can change even after the native card has durably recorded its answer.
+        if (state === 'replaced') current = false
+        if (state === 'aborted') controller.abort()
+        return answer
+      },
+      [],
+    )
+    expect(result).toEqual(state === 'current' ? { outcome: { outcome: 'selected', optionId: 'once' } } : cancel)
+    expect(phases).toEqual(state === 'current' ? ['asked', 'decided'] : ['asked', 'decided', 'decision-withdrawn'])
+    expect(spawn).not.toHaveBeenCalled()
+  } finally {
+    await scope.close()
+  }
+})
+
+it.skipIf(process.platform === 'win32')(
+  'asks a person before starting Devin when its fresh catalog excludes the saved model',
+  async () => {
+    const model = 'dsh-acp:custom'
+    const named = { id: acpDeclaredModelRoute(model), provider: 'acp-devin', name: 'Custom' }
+    const fallback = { id: ACP_CURRENT_CONFIG_MODEL_ID, provider: 'acp-devin', name: 'Current' }
+    const snapshot = {
+      key: acpProbeConfigKey(profile),
+      at: Date.now(),
+      result: {
+        kind: 'ok',
+        agentInfo: context.agent,
+        models: [fallback],
+        authMethods: [],
+        agentCapabilities: undefined,
+        capabilityHash: 'hash',
+        protocolVersion: 1,
+        configOptions: undefined,
+        cleanup: { close: 'done', delete: 'done' },
+      },
+    } satisfies AcpProbeCacheEntry
+    const spawn = vi.fn(worker)
+    const scope = new ApprovalReviewScope('devin', spawn, vi.fn())
+    scope.configure(profile, model)
+    const signal = new AbortController().signal
+    try {
+      await scope.handle(
+        profile,
+        context,
+        'en',
+        signal,
+        async (deps) => {
+          expect(deps).toEqual({ humanReviewOnly: 'review-model-unavailable' })
+          return cancel
+        },
+        checkedDevinModels(profile, snapshot),
+      )
+      expect(spawn).not.toHaveBeenCalled()
+      for (const inconclusive of [
+        undefined,
+        { ...snapshot, key: 'old-launch' },
+        { ...snapshot, at: Date.now() - ACP_PROBE_CACHE_OK_TTL_MS },
+        { ...snapshot, result: { ...snapshot.result, agentInfo: null } },
+      ])
+        expect(checkedDevinModels(profile, inconclusive)).toBeUndefined()
+      for (const catalog of [
+        undefined,
+        checkedDevinModels(profile, { ...snapshot, result: { ...snapshot.result, models: [named] } }),
+      ]) {
+        await scope.handle(
+          profile,
+          context,
+          'en',
+          signal,
+          async (deps) => {
+            expect(deps.riskReviewer?.model).toBe(model)
+            await deps.riskReviewer!.review(context.toolCall, signal)
+            return cancel
+          },
+          catalog,
+        )
+      }
+      expect(spawn).toHaveBeenCalledOnce()
+    } finally {
+      await scope.close()
+    }
+  },
+)
 
 it('enables local approval review only on supported execution platforms', () => {
   expect(supportsLocalApprovalReview('darwin')).toBe(true)

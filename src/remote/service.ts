@@ -1207,7 +1207,7 @@ export class AcpRemoteService extends TypertRemoteService {
           executable,
           version,
           probe: probeRow(matchingSnapshot, referenceVersion, this.resolved.imageInputAvailable),
-          ...(reviewModels?.length && reviewAgent === 'devin' ? { devinReviewModels: reviewModels } : {}),
+          ...(reviewModels && reviewAgent === 'devin' ? { devinReviewModels: reviewModels } : {}),
           ...(reviewModels && reviewAgent === 'opencode' ? { openCodeReviewModels: reviewModels } : {}),
           state: deriveAcpAgentState(hostCompatible, matchingSnapshot?.result),
         }

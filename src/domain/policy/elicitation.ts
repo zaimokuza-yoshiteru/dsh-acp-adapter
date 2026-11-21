@@ -380,7 +380,8 @@ export interface AcpPermissionQuestionService {
 
 /** A host interaction limitation, distinct from a user's rejection or cancellation. */
 export interface AcpNativeQuestionUnavailable {
-  readonly code: 'ACP_DELEGATED_QUESTION_UNAVAILABLE' | 'ACP_PERMISSION_POLICY_UNAVAILABLE'
+  readonly code:
+    'ACP_DELEGATED_QUESTION_UNAVAILABLE' | 'ACP_PERMISSION_POLICY_UNAVAILABLE' | 'ACP_PERMISSION_AUDIT_UNAVAILABLE'
   readonly message: string
 }
 
