@@ -69,6 +69,7 @@ const PINNED_REMOTE_METHODS: readonly string[] = [
   'backendOf',
   'boundSessions',
   'clearAgentPreselection',
+  'createdAgentSessions',
   'handoff',
   'health',
   'ownedProviderRoutes',

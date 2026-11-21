@@ -1,6 +1,7 @@
 /** Live ACP routes derived from native volatile plugin configuration. */
 /// <reference types="node" />
 
+import { installCreateAgentSession } from '../tools/create-agent-session.ts'
 import { currentHostVersionMismatch } from './host-version.ts'
 import { hostLocale } from './host-locale.ts'
 import { installInheritedModelSelection } from './inherited-model-selection.ts'
@@ -271,6 +272,14 @@ export async function installInstalledProfileRegistry(
   let disposed = false
   const log = createAcpLogger(ctx.logger)
   const sidecar = installAcpSidecar(ctx, continuity.uncommittedWithdrawals)
+  const stopCreates =
+    sidecar?.independentSessions &&
+    installCreateAgentSession(
+      ctx,
+      sidecar.independentSessions,
+      () => [...registrations.keys()],
+      (id) => routeGenerations.get(acpRouteId(id))?.identity,
+    )
   const profileAdapters = new Map<string, AcpProfileAdapter>()
   const namedSteps = new NamedModelSteps()
   const canSwitchNamedModel = (provider: string) => {
@@ -536,6 +545,7 @@ export async function installInstalledProfileRegistry(
     const retryLifetime = new AbortController()
     ctx.effect(() => () => retryLifetime.abort())
     new AcpRemoteService(ctx, {
+      createdSessions: (source) => sidecar.independentSessions?.list(source) ?? [],
       restoreHandoffSource: (id, source, target, authorize) => pickerDefault.restore(id, source, target, authorize),
       handoff: (sessionId, command, authorize, principal) =>
         handoffService.action(sessionId, command, authorize, principal),
@@ -887,6 +897,7 @@ export async function installInstalledProfileRegistry(
       ctx.effect(() => async () => {
         disposed = true
         await handoffs?.close()
+        await stopCreates?.()
         await nativeForkRegistrar?.drain()
         externalSubagentProjector = undefined
         const projections = [...projectionOwners].map((projector) => projector.close())

@@ -14,6 +14,7 @@ import {
 import { createHash, randomUUID } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import path from 'node:path'
+import { IndependentSessionRequests, independentSessionSchema } from './independent-session.ts'
 import { DatabaseSync, type SQLInputValue, type SQLOutputValue, type StatementSync } from 'node:sqlite'
 import { handoffRecordSchema, type HandoffRecord } from './handoff.ts'
 import type { Context } from '@deepseek-ai/cordis'
@@ -486,6 +487,7 @@ type StampedEntry = {
  * SQLite 要么库损坏要么不损坏；库无法打开时 open 即 fail loud。
  */
 export interface AcpSidecar {
+  readonly independentSessions?: IndependentSessionRequests
   /** 存储根目录（`<dshHome>/dsh-acp`）。 */
   readonly root: string
   /** Synchronously initialize a durable journal identity; storage failure throws before publication. */
@@ -854,6 +856,7 @@ interface QueuedAudit {
 }
 
 const SCHEMA_SQL = `
+${independentSessionSchema}
 CREATE TABLE IF NOT EXISTS audit (
   record_id TEXT NOT NULL,
   dsh_session_id TEXT NOT NULL,
@@ -1101,6 +1104,7 @@ function copyLegacyActivityRows(db: DatabaseSync): number {
 }
 
 class SidecarStore implements AcpSidecar {
+  readonly independentSessions = new IndependentSessionRequests(() => this.ensureDb())
   readonly root: string
   private readonly now: () => number
   private readonly warn: (message: string) => void

@@ -72,6 +72,8 @@ npx @deepseek-ai/dsh@0.2.2-rc.5 plugin --profile web add @zaimokuza/dsh-acp-adap
 
 **在会话中切换模型**。在模型菜单里直接选择 CodeBuddy 或 OpenCode 的具体模型。插件会在发送前向 Agent 核对所选模型。同一个 Agent 的主会话可以换模型接着聊。跨 Agent 或在 ACP 和 DSH 原生模型间切换时，默认按原模式新建空白会话。要继续手头的工作，选择「交接会话」，编辑来源会话整理的文档后发送。你可以允许目标按需查阅交接前已完成的对话，或只发送文档。草稿留在原处。
 
+你也可以在主会话让 Agent 用指定模型另开会话。`create_agent_session` 支持已安装的 Agent 和具名模型，传入任务后会在新会话启动首轮。原会话中可打开新会话。
+
 ## 使用会话
 
 - **AI 审批**。企业限制 Agent 的自动模式时，可在插件详情页开启 AI 审批，减少重复确认。默认关闭。支持的 Devin 和 OpenCode 请求经审查可允许一次，模型标为高风险或无法判断的请求由你确认，每次判断均可在会话审计中查看。[支持范围](docs/permission-policy.md#ai-审批)

@@ -62,6 +62,7 @@ import {
 } from './ui/AcpTeamManagement.ts'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type {} from '@deepseek-ai/dsh-client-ui-subagent/client'
+import { CreatedAgentSessions } from './ui/CreatedAgentSessions.ts'
 import { AcpTeamApprovals } from './ui/AcpTeamApprovals.ts'
 import type { AcpTeamApprovalActions } from './ui/AcpTeamApprovals.ts'
 import { followNativeSubagentUi } from './ui/native-team-ui-lifecycle.ts'
@@ -134,6 +135,26 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     const access = ctx.get('remoteAccess') as unknown as ClientRemoteAccess | undefined
     return typeof access?.source === 'function' ? access.source('session', sessionId, action) : undefined
   }
+  ctx.slots.inject('conversation.session.header.utilities', () =>
+    ctx.slots.register(
+      {
+        name: 'conversation.session.header.utilities',
+        id: 'dsh-acp-created-sessions',
+        order: 50,
+        locale: 'acpActivity',
+        inject: () => ({
+          access: sessionAccessSource,
+          navigate: (id: SessionId) => openIndependentChild(ctx, id),
+          load: async (source: string) => {
+            const result = await acpRemote.createdAgentSessions(source)
+            if (!result.ok) throw result.error
+            return result.value
+          },
+        }),
+      },
+      CreatedAgentSessions,
+    ),
+  )
   const journalHub = new AcpActivityJournalHub(acpRemote, ctx.remote)
   const sessions = ctx.get('sessions') as unknown as ISessions
   const workspaces = ctx.get('workspaces') as unknown as IWorkspaces

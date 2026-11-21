@@ -39,6 +39,7 @@ afterEach(async () => {
 const actions: readonly RemoteAccessAction[] = [
   'dshAcp/teamMembers',
   'dshAcp/approvalChildren',
+  'dshAcp/createdAgentSessions',
   'dshAcp/teamMemberModels',
   'dshAcp/setTeamMemberModel',
   'dshAcp/health',
@@ -112,6 +113,7 @@ async function fixture(
     },
   ])
   new AcpRemoteService(ctx, {
+    createdSessions: () => [{ sessionId: 'member', agent: 'codex', model: 'target' }],
     registry: { agents: () => new Map(), probeCacheFor: () => undefined },
     nativeFork,
     retryModelSwitchInput,
@@ -426,6 +428,19 @@ describe('ACP resources through the published Gateway and Peer', () => {
     h.hold(['source', 'child'])
     await h.call(h.restricted, 'registerNativeFork', { sessionId: 'child', sourceSessionId: 'source', atSeq: 7 })
     expect(h.nativeFork).toHaveBeenCalledExactlyOnceWith('child', 'source', 7)
+  })
+  it('only links independent chats visible to this source session reader', async () => {
+    const h = await fixture()
+    h.hold(['lead'])
+    await expect(h.call(h.restricted, 'createdAgentSessions', { source: 'lead' })).resolves.toEqual([])
+    h.hold(['member'])
+    await expect(h.call(h.restricted, 'createdAgentSessions', { source: 'lead' })).rejects.toMatchObject({
+      code: 'remote-access/denied',
+    })
+    h.hold(['lead', 'member'])
+    await expect(h.call(h.restricted, 'createdAgentSessions', { source: 'lead' })).resolves.toEqual([
+      { sessionId: 'member', agent: 'codex', model: 'target' },
+    ])
   })
   it('filters child approvals by every current path resource and permits native parent discovery', async () => {
     const h = await fixture()

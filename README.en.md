@@ -72,6 +72,8 @@ Use the selector beside the ACP composer to choose a work or permission mode off
 
 **Switch models within a conversation.** Choose a CodeBuddy or OpenCode model directly in the model menu. The adapter confirms the model with the Agent before sending. You can switch models in the same main conversation. Switching Agents or moving between ACP and native DSH opens a blank chat in the same mode by default. To continue the work, choose **Hand off session**, edit the document prepared by the source conversation, and send it. You can let the new Agent look up completed messages from before the handoff or send just the document. Your original draft stays in place.
 
+From your main chat, you can ask the Agent to open an independent session with a named model from an installed Agent. The `create_agent_session` tool accepts an optional first task. Open the resulting chat from the original conversation.
+
 ## Working in a session
 
 - **AI approval.** If your organization restricts an Agent’s automatic modes, turn on AI approval in plugin details to reduce manual prompts. It is off by default. Eligible Devin and OpenCode requests can be allowed once after review. You decide when the model flags a request as high risk or cannot assess it. Each assessment appears in the session audit. [Supported configurations](docs/permission-policy.en.md#ai-approval)

@@ -511,6 +511,7 @@ describe('AcpRemoteService current public surface', () => {
       'backendOf',
       'boundSessions',
       'clearAgentPreselection',
+      'createdAgentSessions',
       'handoff',
       'health',
       'nativeForkScope',

@@ -38,6 +38,7 @@
 /// <reference types="node" />
 
 import os from 'node:os'
+import type { AcpCreatedAgentSession } from '../contract/created-agent-session.ts'
 import { AccountUsageService } from './account/service.ts'
 import type { AcpHandoffCommand, AcpHandoffTarget, AcpHandoffView } from '../contract/handoff.ts'
 import type { AcpAccountUsageView } from '../contract/account-usage.ts'
@@ -297,6 +298,7 @@ export interface AcpAgentSessionControlLike {
 }
 
 export interface AcpRemoteServiceDeps {
+  createdSessions?: (source: string) => readonly AcpCreatedAgentSession[]
   restoreHandoffSource?: (
     id: string,
     source: AcpHandoffTarget,
@@ -575,6 +577,7 @@ interface ResolvedDeps {
  * 不再经过 HTTP req/res 假件。
  */
 export class AcpRemoteService extends TypertRemoteService {
+  private readonly createdSessions: AcpRemoteServiceDeps['createdSessions']
   private readonly accounts: AccountUsageService
   private readonly resolved: ResolvedDeps
   private readonly recoveryOperations = new Set<string>()
@@ -583,6 +586,7 @@ export class AcpRemoteService extends TypertRemoteService {
     super(ctx, 'dshAcp')
     // seam 解析产物只驱动缺省实现；显式注入的 deps 原样优先（测试全注入假实现）。
     const subprocess = deps.subprocess ?? { ok: false as const, message: ACP_SUBPROCESS_UNAVAILABLE_MESSAGE }
+    this.createdSessions = deps.createdSessions
     this.accounts = new AccountUsageService(
       subprocess,
       () => deps.registry.agents(),
@@ -1612,6 +1616,14 @@ export class AcpRemoteService extends TypertRemoteService {
         ),
       )
     }
+  }
+
+  /** Only show independent destinations the caller can read from this source. */
+  @Remote({ resources: { session: (source) => SessionId(source) } })
+  async createdAgentSessions(source: string): Promise<readonly AcpCreatedAgentSession[]> {
+    validateActivitySessionId(source)
+    if (!this.callerCanReadSession(source)) return []
+    return (this.createdSessions?.(source) ?? []).filter((row) => this.callerCanReadSession(row.sessionId))
   }
 
   /**

@@ -9,6 +9,7 @@ Find installation commands, release dates, and package checksums on [GitHub Rele
 ### 中文
 
 - 跨 Agent 或在 ACP 与 DSH 原生模型间切换时，可选择「交接会话」，编辑交接文档，并决定目标能否查阅此前的对话。新建空白会话仍是默认选项。
+- 可以让 Agent 用指定模型另开独立会话，选择是否附上第一项任务。
 
 - 在专用 ACP 模式下，可以在输入框旁选择 Agent 提供的工作或权限选项。首条消息会等 Agent 确认预选项后再发送。已有会话更改选项时也会核对实际生效值。DSH 工具权限仍可独立调整。
 - 点击模型旁的「套餐」或打开插件详情，可使用已有 CLI 登录查看 Codex 套餐与额度、Devin 套餐，以及 macOS 上的 Antigravity 套餐与配额。套餐气泡会跟随当前会话，编辑消息时保持展开，手动关闭才收起。其他受支持的用量入口链接到对应提供方的指南。
@@ -17,6 +18,7 @@ Find installation commands, release dates, and package checksums on [GitHub Rele
 ### English
 
 - When switching Agents or moving between ACP and native DSH, choose **Hand off session** to edit a handoff document and decide whether the destination can read earlier messages. Opening a blank chat remains the default.
+- Ask an Agent to open an independent chat with a specific model and optional first task.
 
 - In dedicated ACP mode, choose the Agent’s work or permission options beside the composer. Your first message waits for the Agent to confirm your selection. Changes in existing sessions are also checked against the value the Agent returns. DSH tool permissions remain separately adjustable.
 - Open **Usage** beside the model picker or in plugin details to see your Codex plan and quota, Devin plan, or Antigravity plan and quota on macOS using your existing CLI login. The usage panel follows the current chat and stays open while you write until you close it. Other supported usage entries link to the provider’s guide.

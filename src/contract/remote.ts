@@ -14,6 +14,7 @@
  */
 
 export type AcpAccountProvider = 'codex' | 'devin' | 'antigravity'
+export type { AcpCreatedAgentSession } from './created-agent-session.ts'
 export type { AcpHandoffCommand, AcpHandoffTarget, AcpHandoffView } from './handoff.ts'
 
 export interface AcpAccountWindow {

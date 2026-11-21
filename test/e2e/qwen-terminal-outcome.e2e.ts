@@ -1,4 +1,5 @@
 import type { SessionRequestId } from '@deepseek-ai/dsh-api-session-controller'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -88,6 +89,39 @@ it.each(
           }
           return decision
         })
+      const verifyCreationBoundary = name === 'explicit successful terminal'
+      let automaticCreationError: string | undefined
+      if (verifyCreationBoundary)
+        host.ctx.on('agent/pre-step', async (payload, next) => {
+          const decision = await next()
+          if (
+            decision.kind === 'enter' &&
+            payload.agent.id === sessionId &&
+            payload.messages.some((message) => String(message.source.kind) === 'tool-jobs')
+          ) {
+            const toolSet = await host.ctx.tools.resolve(payload)
+            try {
+              const attempted = await host.ctx.tools.execute({
+                agent: payload.agent,
+                signal: payload.signal,
+                toolSet,
+                calls: [
+                  {
+                    type: 'tool-call',
+                    id: ToolCallId('automatic-create'),
+                    name: 'create_agent_session',
+                    arguments: JSON.stringify({ agent: 'qwen', model: 'qwen-fixture' }),
+                  },
+                ],
+              })
+              const result = attempted.results[0]?.result
+              if (result?.isError) automaticCreationError = result.error.message
+            } finally {
+              toolSet.dispose()
+            }
+          }
+          return decision
+        })
       const observedEvents: SessionEvent[] = []
       facts.observedEvents = observedEvents
       host.ctx.on('session/event', (owner, event) => {
@@ -111,6 +145,19 @@ it.each(
         : { kind: 'completed' }
       expect(endings()[0]?.data.reason).toMatchObject({ kind: 'completed' })
       expect(endings()[1]?.data.reason).toMatchObject(expectedAutomaticReason)
+      if (verifyCreationBoundary) {
+        // The Agent keeps the same MCP connection for the user's prompt and the job's automatic continuation.
+        // A background callback can discover the same schema but cannot inherit the user's authority.
+        let catalog: string[] = []
+        const catalogs: string[][] = []
+        for (const event of observedEvents) {
+          if (event.type === 'request/header') catalog = (event.data.header.tools ?? []).map((tool) => tool.name)
+          if (event.type === 'turn/end') catalogs.push(catalog)
+        }
+        expect(catalogs[0]).toContain('create_agent_session')
+        expect(catalogs[1]).toEqual(catalogs[0])
+        expect(automaticCreationError).toContain('ACP_SESSION_OWNER_REQUIRED')
+      }
       if (adoptionDelayMs > 0) expect(facts.delayedNativeWake).toBe(true)
       // Adoption must consume the Agent's existing turn, not replay the task
       // through a second session/prompt even when the terminal reason is bad.
