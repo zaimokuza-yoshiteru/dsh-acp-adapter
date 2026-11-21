@@ -39,6 +39,7 @@
 
 import os from 'node:os'
 import { AccountUsageService } from './account/service.ts'
+import type { AcpHandoffCommand, AcpHandoffTarget, AcpHandoffView } from '../contract/handoff.ts'
 import type { AcpAccountUsageView } from '../contract/account-usage.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import { LlmError } from '@deepseek-ai/dsh-llm'
@@ -296,8 +297,20 @@ export interface AcpAgentSessionControlLike {
 }
 
 export interface AcpRemoteServiceDeps {
+  restoreHandoffSource?: (
+    id: string,
+    source: AcpHandoffTarget,
+    target: AcpHandoffTarget,
+    authorize: () => void,
+  ) => Promise<void>
   /** Read the identity initialized by the Sidecar owner; this callback never writes it. */
   nativeForkScope?: () => string
+  handoff?: (
+    sessionId: string,
+    command: AcpHandoffCommand,
+    authorize: (sessionId: string) => void,
+    principal?: Principal,
+  ) => Promise<AcpHandoffView | null>
   /** Accept an explicit source only after the native child prefix is verified. */
   nativeFork?: (sessionId: string, sourceSessionId: string, atSeq: number) => Promise<void>
   retryModelSwitchInput?: (
@@ -514,6 +527,8 @@ function firstLine(text: string): string | null {
 
 interface ResolvedDeps {
   readonly nativeForkScope: AcpRemoteServiceDeps['nativeForkScope']
+  readonly handoff: AcpRemoteServiceDeps['handoff']
+  readonly restoreHandoffSource: AcpRemoteServiceDeps['restoreHandoffSource']
   readonly nativeFork: AcpRemoteServiceDeps['nativeFork']
   readonly retryModelSwitchInput: AcpRemoteServiceDeps['retryModelSwitchInput']
   readonly approvalChildren: AcpRemoteServiceDeps['approvalChildren']
@@ -577,6 +592,8 @@ export class AcpRemoteService extends TypertRemoteService {
     ctx.effect(() => () => this.accounts.close())
     this.resolved = {
       nativeForkScope: deps.nativeForkScope,
+      handoff: deps.handoff,
+      restoreHandoffSource: deps.restoreHandoffSource,
       nativeFork: deps.nativeFork,
       retryModelSwitchInput: deps.retryModelSwitchInput,
       registry: deps.registry,
@@ -614,6 +631,53 @@ export class AcpRemoteService extends TypertRemoteService {
       localAiReview:
         subprocess.ok && subprocess.seam.localExecution === true && supportsLocalApprovalReview(process.platform),
     }
+  }
+
+  /** Create or reconcile an owner-initiated transfer without exposing unrestricted history. */
+  @Remote({ resources: { session: (sessionId) => SessionId(sessionId) } })
+  async handoff(sessionId: string, command: AcpHandoffCommand): Promise<AcpHandoffView | null> {
+    const principal = principalOf(this.ctx.invocation)
+    const authorize = (id: string) => {
+      if (
+        !this.sessionActionAllowed(id, principal, 'session/prompt') ||
+        !this.sessionActionAllowed(id, principal, 'session/events') ||
+        !this.sessionActionAllowed(id, principal, 'session/selectModel') ||
+        (principal !== undefined &&
+          this.ctx.get('remoteAccess')?.decide({
+            principal,
+            action: 'session/create',
+            resources: [{ kind: 'global' }],
+          }).kind !== 'allow')
+      )
+        throw acpRemoteFailure(
+          'user-rejected',
+          'Session handoff requires permission to create and use both conversations.',
+        )
+    }
+    validateActivitySessionId(sessionId)
+    authorize(sessionId)
+    if (!this.resolved.handoff) throw acpRemoteFailure('config', 'Session handoff is unavailable.')
+    return this.resolved.handoff(sessionId, command, authorize, principal)
+  }
+
+  /** Restore the session after a provisional native cross-provider choice. */
+  @Remote({ resources: { session: (id) => SessionId(id) } })
+  async restoreHandoffSource(id: string, source: AcpHandoffTarget, target: AcpHandoffTarget): Promise<void> {
+    validateActivitySessionId(id)
+    const principal = principalOf(this.ctx.invocation)
+    const authorize = () => {
+      if (
+        !this.sessionActionAllowed(id, principal, 'session/selectModel') ||
+        (principal !== undefined &&
+          this.ctx
+            .get('remoteAccess')
+            ?.decide({ principal, action: 'settings/mutate', resources: [{ kind: 'global' }] }).kind !== 'allow')
+      )
+        throw acpRemoteFailure('user-rejected', 'Restoring this selection requires access to the model preference.')
+    }
+    authorize()
+    if (!this.resolved.restoreHandoffSource) throw acpRemoteFailure('config', 'Session restoration is unavailable.')
+    await this.resolved.restoreHandoffSource(id, source, target, authorize)
   }
 
   /** Global account metadata is visible only to a caller who can manage Host settings. */
@@ -1111,7 +1175,12 @@ export class AcpRemoteService extends TypertRemoteService {
   private sessionActionAllowed(
     sessionId: string,
     principal: Principal | undefined,
-    action: 'session/prompt' | 'session/selectModel' | 'dshAcp/setAgentSessionOption' | 'dshAcp/clearAgentPreselection',
+    action:
+      | 'session/prompt'
+      | 'session/events'
+      | 'session/selectModel'
+      | 'dshAcp/setAgentSessionOption'
+      | 'dshAcp/clearAgentPreselection',
   ): boolean {
     if (!this.callerCanReadSession(sessionId)) return false
     if (principal === undefined) return true

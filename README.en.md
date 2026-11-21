@@ -70,7 +70,7 @@ Choose the optional **ACP** mode to let the Agent manage conversation context. T
 
 Use the selector beside the ACP composer to choose a work or permission mode offered by the current Agent. You can choose before your first message. The adapter waits for the Agent to confirm before sending. Use `/permission` to change permissions for DSH bridge tools.
 
-**Switch models within a conversation.** Choose a CodeBuddy or OpenCode model directly in the model menu. The adapter confirms the model with the Agent before sending. You can switch models in the same main conversation. Switching to another Agent or a native DSH model opens a separate chat in the same mode. Your history and draft stay in the original chat.
+**Switch models within a conversation.** Choose a CodeBuddy or OpenCode model directly in the model menu. The adapter confirms the model with the Agent before sending. You can switch models in the same main conversation. Switching Agents or moving between ACP and native DSH opens a blank chat in the same mode by default. To continue the work, choose **Hand off session**, edit the document prepared by the source conversation, and send it. You can let the new Agent look up completed messages from before the handoff or send just the document. Your original draft stays in place.
 
 ## Working in a session
 

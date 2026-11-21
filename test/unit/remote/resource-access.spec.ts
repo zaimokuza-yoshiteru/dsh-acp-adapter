@@ -43,6 +43,7 @@ const actions: readonly RemoteAccessAction[] = [
   'dshAcp/setTeamMemberModel',
   'dshAcp/health',
   'dshAcp/accountUsage',
+  'dshAcp/handoff',
   'dshAcp/projectedSubagentIds',
   'dshAcp/backendOf',
   'dshAcp/registerNativeFork',
@@ -86,6 +87,10 @@ async function fixture(
   const backend = vi.fn(async () => 'acp-test')
   const nativeFork = vi.fn(async () => {})
   const retryModelSwitchInput = vi.fn<NonNullable<AcpRemoteServiceDeps['retryModelSwitchInput']>>(async () => {})
+  const handoff = vi.fn<NonNullable<AcpRemoteServiceDeps['handoff']>>(async (_id, _command, authorize) => {
+    authorize('destination')
+    return null
+  })
   const nativeForkScope = vi.fn(() => '11111111-1111-4111-8111-111111111111')
   const approvalChildren = vi.fn(async (): Promise<readonly AcpApprovalChildView[]> => [
     {
@@ -110,6 +115,7 @@ async function fixture(
     registry: { agents: () => new Map(), probeCacheFor: () => undefined },
     nativeFork,
     retryModelSwitchInput,
+    handoff,
     nativeForkScope,
     ...(options.agentSessionControl && { agentSessionControl: options.agentSessionControl }),
     checkExecutable: async () => true,
@@ -127,7 +133,7 @@ async function fixture(
   })
   const owner: PeerScope = new Connection.Peer(ctx, { principal: { kind: 'owner' } })
   const restricted: PeerScope = new Connection.Peer(ctx, { principal: { kind: 'acp-resource-test' } })
-  const hold = (sessions: readonly string[], global = false, sessionActions = actions) => {
+  const hold = (sessions: readonly string[], global = false, sessionActions = actions, globalActions = actions) => {
     held = [
       ...sessions.map((id): RemoteAccessBinding => ({
         role: { name: 'acp-test-session', resource: 'session', actions: sessionActions },
@@ -136,7 +142,7 @@ async function fixture(
       ...(global
         ? [
             {
-              role: { name: 'acp-test-global', resource: 'global' as const, actions },
+              role: { name: 'acp-test-global', resource: 'global' as const, actions: globalActions },
               resource: { kind: 'global' as const },
             },
           ]
@@ -158,6 +164,7 @@ async function fixture(
     backend,
     bindings,
     retryModelSwitchInput,
+    handoff,
     nativeFork,
     nativeForkScope,
   }
@@ -218,6 +225,20 @@ describe('ACP resources through the published Gateway and Peer', () => {
     beforeCommit = () => request.abort()
     await expect(clear()).rejects.toThrow()
     expect(applied).toEqual([3])
+  })
+
+  it('requires independent creation authority and permission to use both ends of a handoff', async () => {
+    const h = await fixture()
+    const args = { sessionId: 'original', command: { kind: 'status' } }
+    const grant = [...actions, 'session/prompt', 'session/events', 'session/selectModel'] as const
+    h.hold(['original', 'destination'], false, grant)
+    await expect(h.call(h.restricted, 'handoff', args)).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
+    expect(h.handoff).not.toHaveBeenCalled()
+    h.hold(['original'], true, grant, ['session/create'])
+    await expect(h.call(h.restricted, 'handoff', args)).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
+    h.hold(['original', 'destination'], true, grant, ['session/create'])
+    await expect(h.call(h.restricted, 'handoff', args)).resolves.toBeNull()
+    await expect(h.call(h.owner, 'handoff', args)).resolves.toBeNull()
   })
 
   it('requires both retry and native prompt grants on the same session and passes the actual caller', async () => {

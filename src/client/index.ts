@@ -37,6 +37,8 @@ import { AcpUiFeedback, followAcpQuestionLimitations, type AcpUiOutcome } from '
 import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import { UnroutedHistoryDock } from './ui/UnroutedHistoryDock.ts'
 import { UnsentModelSwitchInput } from './ui/UnsentModelSwitchInput.ts'
+import { SessionHandoffClient } from './coordinator/session-handoff.ts'
+import { HandoffComposer, HandoffDock } from './ui/SessionHandoff.ts'
 import { CrossBackendCoordinator } from './coordinator/cross-backend-coordinator.ts'
 import { AcpNativeForkCoordinator, type NativeForkFailure } from './coordinator/native-fork.ts'
 import { createNativeForkJournal } from './coordinator/native-fork-journal.ts'
@@ -103,6 +105,7 @@ export const inject = [
   'sessions',
   'workspaces',
   'uiWorkspace',
+  'layout',
   'sidebarRight',
   'configForms',
   'remote.settings',
@@ -339,7 +342,72 @@ async function registerUi(ctx: ClientContext): Promise<void> {
       AcpActivityNode,
     ),
   )
-  const coordinator = new CrossBackendCoordinator(ctx, managedRoutes.store)
+  const openHandoffSession = (id: string) => openIndependentChild(ctx, id as SessionId)
+  const handoffs = new SessionHandoffClient(
+    (session, command) => acpRemote.handoff(session, command),
+    (source, destination) => {
+      if (
+        ctx.sidebarRight.mounted.getSnapshot() === source &&
+        document.visibilityState !== 'hidden' &&
+        !document.activeElement?.closest('[data-sidebar-right-session]') &&
+        sessionAccessSource(destination, 'session/follow')?.getSnapshot()
+      )
+        openHandoffSession(destination)
+    },
+    () => ctx.layout.beginNavigation(),
+  )
+  ctx.on('connection/reset', () => handoffs.resetNavigation())
+  ctx.effect(() => () => handoffs.dispose(), 'dsh-acp: session handoffs')
+  const coordinator = new CrossBackendCoordinator(ctx, managedRoutes.store, handoffs)
+  ctx.slots.inject('conversation.input.dock', () =>
+    ctx.slots.register(
+      {
+        name: 'conversation.input.dock',
+        id: 'dsh-acp-session-handoff',
+        order: 88,
+        locale: 'acpActivity',
+        inject: () => ({ client: handoffs, openSession: openHandoffSession }),
+      },
+      HandoffDock,
+    ),
+  )
+  ctx.slots.inject('conversation.composer', () => {
+    const mounted = new Map<string, () => void>()
+    const sync = () => {
+      const drafts = new Set(handoffs.draftDestinations())
+      for (const [id, dispose] of mounted) {
+        if (!drafts.has(id)) {
+          dispose()
+          mounted.delete(id)
+        }
+      }
+      for (const id of drafts) {
+        if (mounted.has(id)) continue
+        const access = ctx.get('remoteAccess') as unknown as ClientRemoteAccess | undefined
+        if (!access) continue
+        const unmount = access.whenResourceAccess('session', id, 'dshAcp/handoff', () =>
+          ctx.slots.register(
+            {
+              name: 'conversation.composer',
+              priority: -2,
+              locale: 'acpActivity',
+              select: (owner: ComposerChainProps) =>
+                owner.sessionId === id && !owner.pendingInteraction ? true : null,
+              inject: () => ({ client: handoffs, openSession: openHandoffSession }),
+            },
+            HandoffComposer,
+          ),
+        )
+        mounted.set(id, unmount)
+      }
+    }
+    const unsubscribe = handoffs.subscribe(sync)
+    sync()
+    return () => {
+      unsubscribe()
+      for (const dispose of mounted.values()) dispose()
+    }
+  })
   // The native catalog owns discovery/navigation; ACP contributes only its settings action.
   ctx.inject(['remote.subagents', 'uiSession'], (teamCtx) => {
     const loadMembers = async (sessionId: SessionId) => {
@@ -534,6 +602,8 @@ async function registerUi(ctx: ClientContext): Promise<void> {
         inject: () => ({
           coordinator,
           ...transitionModelLabels,
+          sessionAccessSource,
+          language: (): 'zh' | 'en' => (ctx.locale.resolveText({ en: 'en', zh: 'zh' }) === 'zh' ? 'zh' : 'en'),
         }),
       },
       CrossBackendModal,

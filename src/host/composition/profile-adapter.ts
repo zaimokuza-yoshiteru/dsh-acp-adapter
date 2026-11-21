@@ -2003,6 +2003,17 @@ export class AcpProfileAdapter extends LlmAdapter {
         if (error instanceof AcpAdmissionError) throw LlmError.fromFailure({ message: error.message, code: error.code })
         throw error
       }
+      // The route ID can survive replacement of the CLI between pre-step and prepareCall.
+      // Verify the immutable generation before acquiring a transport or sending any context.
+      if (
+        messages.some(
+          (message) => message.source.kind === 'acp-handoff' && message.source.launchIdentity !== generation?.id,
+        )
+      )
+        throw LlmError.fromFailure({
+          message: 'The Agent selected for this handoff changed.',
+          code: 'ACP_PROMPT_NOT_DISPATCHED',
+        })
       const sessionFacts = session?.facts
       const firstTurnDraft =
         sessionFacts?.firstTurnOptions?.provider === options.provider ? sessionFacts.firstTurnOptions : undefined

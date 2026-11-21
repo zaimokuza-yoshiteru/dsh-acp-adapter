@@ -15,6 +15,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync, type SQLInputValue, type SQLOutputValue, type StatementSync } from 'node:sqlite'
+import { handoffRecordSchema, type HandoffRecord } from './handoff.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import {
@@ -489,6 +490,8 @@ export interface AcpSidecar {
   readonly root: string
   /** Synchronously initialize a durable journal identity; storage failure throws before publication. */
   initializeNativeForkScope(): string
+  readHandoff(sessionId: string, id?: string, destinationOnly?: boolean): HandoffRecord | undefined
+  writeHandoff(record: HandoffRecord): HandoffRecord
   /** Record one verified ordinary native fork; retries agree exactly or fail. */
   recordNativeFork(source: AcpNativeForkSource): Promise<void>
   /** Durable explicit source; absence never licenses guessing from copied events. */
@@ -939,6 +942,11 @@ CREATE TABLE IF NOT EXISTS native_fork_scope (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   scope_id TEXT NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS session_handoffs (
+  id TEXT PRIMARY KEY, source TEXT NOT NULL, destination TEXT UNIQUE,
+  revision INTEGER NOT NULL, payload TEXT NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS session_handoffs_source ON session_handoffs(source);
 CREATE TABLE IF NOT EXISTS dispatch_ledger (
   dsh_session_id TEXT NOT NULL,
   dispatch_key TEXT NOT NULL,
@@ -2356,6 +2364,55 @@ class SidecarStore implements AcpSidecar {
     if (typeof row?.scope_id !== 'string' || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(row.scope_id))
       throw new Error('ACP native fork scope is malformed')
     return row.scope_id
+  }
+
+  readHandoff(sessionId: string, id?: string, destinationOnly = false): HandoffRecord | undefined {
+    assertSafeSessionId(sessionId)
+    const db = this.openIfExists()
+    if (!db) return undefined
+    const row = destinationOnly
+      ? db.prepare('SELECT payload FROM session_handoffs WHERE destination = ?').get(sessionId)
+      : id === undefined
+        ? db
+            .prepare(
+              `SELECT payload FROM session_handoffs WHERE source = ? OR destination = ?
+            ORDER BY CASE WHEN json_extract(payload, '$.phase') IN ('summarizing','draft','queued') THEN 0
+                          WHEN destination = ? THEN 1 ELSE 2 END, rowid DESC LIMIT 1`,
+            )
+            .get(sessionId, sessionId, sessionId)
+        : db
+            .prepare('SELECT payload FROM session_handoffs WHERE id = ? AND (source = ? OR destination = ?)')
+            .get(id, sessionId, sessionId)
+    return row ? handoffRecordSchema.parse(JSON.parse(String(row.payload))) : undefined
+  }
+
+  writeHandoff(record: HandoffRecord): HandoffRecord {
+    const next = handoffRecordSchema.parse({ ...record, revision: record.revision + 1 })
+    const db = this.ensureDb()
+    if (record.revision === 0) {
+      db.prepare('INSERT INTO session_handoffs(id, source, destination, revision, payload) VALUES (?, ?, ?, ?, ?)').run(
+        next.id,
+        next.sourceSessionId,
+        next.destinationSessionId,
+        next.revision,
+        JSON.stringify(next),
+      )
+    } else {
+      const { changes } = db
+        .prepare(
+          'UPDATE session_handoffs SET destination = ?, revision = ?, payload = ? WHERE id = ? AND source = ? AND revision = ?',
+        )
+        .run(
+          next.destinationSessionId,
+          next.revision,
+          JSON.stringify(next),
+          next.id,
+          next.sourceSessionId,
+          record.revision,
+        )
+      if (!changes) throw new Error('The handoff changed. Reload its current state.')
+    }
+    return next
   }
 
   readNativeFork(sessionId: SessionId): Promise<AcpNativeForkSource | undefined> {

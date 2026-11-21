@@ -1,12 +1,13 @@
 import { createElement as h, useEffect, useState, useSyncExternalStore } from 'react'
-import type { ReactNode } from 'react'
-import { Button, DisclosureRow, IconInfoOutlineMedium, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { HTMLAttributes, ReactNode } from 'react'
+import { Button, DisclosureRow, IconInfoOutlineMedium, Modal, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { CrossBackendPhase } from '../data/cross-backend-controller.ts'
 import type { CrossBackendModelSelection } from '../data/cross-backend-controller.ts'
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
 import { isAcpAgentManagedModel, isAcpCurrentConfigModel } from '../../contract/model-selection.ts'
 import type { CrossBackendCoordinator } from '../coordinator/cross-backend-coordinator.ts'
 import type { AcpLocaleKey } from './locales.ts'
+import { useSessionActionAccess, type SessionAccessSource } from './session-action-access.ts'
 import css from './CrossBackendModal.module.css'
 
 type Translate = (key: AcpLocaleKey, params?: Record<string, string | number>) => string
@@ -27,13 +28,57 @@ export function crossBackendSelectionLabel(
   return `${provider} · ${model}`
 }
 
+function HandoffButton({
+  sessionId,
+  accessSource,
+  hint,
+  label,
+  disabled,
+  begin,
+}: {
+  sessionId: string
+  accessSource: SessionAccessSource
+  hint: string
+  label: string
+  disabled: boolean
+  begin(): void
+}): ReactNode {
+  const access = useSessionActionAccess(accessSource, [sessionId], 'dshAcp/handoff')
+  if (!access.allows(sessionId)) return null
+  return h(Tooltip, {
+    side: 'top',
+    portal: true,
+    label: hint,
+    children: h<HTMLAttributes<HTMLSpanElement>>(
+      'span',
+      {},
+      h(
+        Button,
+        {
+          variant: 'outline',
+          disabled,
+          'aria-description': hint,
+          onClick: () => {
+            if (access.allows(sessionId)) begin()
+          },
+        },
+        label,
+      ),
+    ),
+  })
+}
+
 export function CrossBackendModal({
   coordinator,
   loadModelCatalog,
   profileName,
+  sessionAccessSource,
+  language,
   t,
 }: {
   coordinator: CrossBackendCoordinator
+  language: () => 'zh' | 'en'
+  sessionAccessSource: SessionAccessSource
   loadModelCatalog: () => Promise<ModelCatalog | null>
   profileName: (provider: string) => string | undefined
   t: Translate
@@ -67,9 +112,11 @@ export function CrossBackendModal({
   const source = pending.ticket.sourceSelection
   const target = pending.ticket.targetSelection
   const modelSwitch = pending.reason === 'model-switch'
+  const canHandoff = pending.canHandoff === true && pending.failure === null
+  const targetName = crossBackendSelectionLabel(target, catalog, profileName(target.provider), t)
   const description = modelSwitch
     ? t('crossBackendModelSwitchDescription', {
-        target: crossBackendSelectionLabel(target, catalog, profileName(target.provider), t),
+        target: targetName,
       })
     : pending.ticket.sourceUnavailable
       ? t('crossBackendSourceUnavailable')
@@ -77,8 +124,8 @@ export function CrossBackendModal({
         ? t('crossBackendExistingHistory')
         : `${t('crossBackendFromTo', {
             source: crossBackendSelectionLabel(source, catalog, profileName(source.provider), t),
-            target: crossBackendSelectionLabel(target, catalog, profileName(target.provider), t),
-          })} ${t('crossBackendDescription')}`
+            target: targetName,
+          })} ${t(canHandoff ? 'handoffSwitchDescription' : 'crossBackendDescription')}`
   const phaseKey: Record<CrossBackendPhase, AcpLocaleKey> = {
     'create-unknown': 'independentCreationUnknown',
     'preset-unavailable': 'independentPresetUnavailable',
@@ -97,7 +144,9 @@ export function CrossBackendModal({
       ? t(phaseKey[pending.failure.phase])
       : pending.blockingReason === 'no-location'
         ? t('crossBackendNoLocation')
-        : null
+        : pending.handoffError
+          ? t(pending.handoffError)
+          : null
   return h(
     Modal,
     {
@@ -125,6 +174,21 @@ export function CrossBackendModal({
           },
           t(modelSwitch ? 'crossBackendKeepModel' : 'crossBackendCancel'),
         ),
+        ...(canHandoff
+          ? [
+              h(HandoffButton, {
+                key: 'handoff',
+                sessionId: pending.ticket.sourceSessionId,
+                accessSource: sessionAccessSource,
+                label: t('handoffStart'),
+                hint: t('handoffHint', { target: targetName }),
+                disabled: pending.busy || !pending.confirmable,
+                begin: () => {
+                  void coordinator.beginHandoff(pending.ticket.key, language())
+                },
+              }),
+            ]
+          : []),
         h(
           Button,
           {
@@ -145,7 +209,9 @@ export function CrossBackendModal({
                       ? 'unroutedHistoryOpen'
                       : modelSwitch
                         ? 'crossBackendNewModelSession'
-                        : 'crossBackendContinue',
+                        : canHandoff
+                          ? 'handoffBlank'
+                          : 'crossBackendContinue',
               ),
         ),
       ),

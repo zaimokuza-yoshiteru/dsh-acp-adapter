@@ -37,6 +37,8 @@ import { AcpSessionFacts, acpSessionView, sessionFactsReader } from './session-f
 import type { DispatchLedgerStore } from '../../runtime/session/dispatch-ledger.ts'
 import { resolveSubprocessSeam } from './subprocess.ts'
 import { AcpRemoteService } from '../../remote/service.ts'
+import { AcpHandoffs } from '../handoff/service.ts'
+import { HandoffPickerDefault } from '../handoff/picker-default.ts'
 import { auditTimelineRowOf } from './audit-row.ts'
 import { installAcpBackendGuard } from './backend-guard.ts'
 import { NamedModelSteps } from './named-model-compaction.ts'
@@ -513,7 +515,14 @@ export async function installInstalledProfileRegistry(
   }
   let nativeForkRegistrar: ReturnType<typeof createNativeForkRegistrar> | undefined
   let initializeNativeForkScope: (() => void) | undefined
+  let handoffs: AcpHandoffs | undefined
   if (options.installRemote === true && canRegisterRemote && sidecar !== undefined && existingRemote === undefined) {
+    const handoffService = (handoffs = new AcpHandoffs(
+      ctx,
+      sidecar,
+      (provider) => routeGenerations.get(provider)?.identity ?? null,
+    ))
+    const pickerDefault = new HandoffPickerDefault(ctx, ownsProvider)
     const registrar = (nativeForkRegistrar = createNativeForkRegistrar(ctx, sidecar))
     let nativeForkScope:
       { readonly ok: true; readonly value: string } | { readonly ok: false; readonly error: unknown } | undefined
@@ -527,6 +536,9 @@ export async function installInstalledProfileRegistry(
     const retryLifetime = new AbortController()
     ctx.effect(() => () => retryLifetime.abort())
     new AcpRemoteService(ctx, {
+      restoreHandoffSource: (id, source, target, authorize) => pickerDefault.restore(id, source, target, authorize),
+      handoff: (sessionId, command, authorize, principal) =>
+        handoffService.action(sessionId, command, authorize, principal),
       retryModelSwitchInput: (id, seq, principal, authorized, signal, canSelectModel) =>
         retryModelSwitchInput(
           ctx,
@@ -874,6 +886,7 @@ export async function installInstalledProfileRegistry(
     yield own(
       ctx.effect(() => async () => {
         disposed = true
+        await handoffs?.close()
         await nativeForkRegistrar?.drain()
         externalSubagentProjector = undefined
         const projections = [...projectionOwners].map((projector) => projector.close())

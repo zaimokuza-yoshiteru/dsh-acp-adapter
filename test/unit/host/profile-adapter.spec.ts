@@ -1,7 +1,7 @@
 import { withSessionFacts } from '../../support/session-facts.ts'
 import { describe, expect, it } from 'vitest'
 import { BlockAssembler, createUserMessage, markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
-import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions, UserMessage } from '@deepseek-ai/dsh-llm'
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
@@ -25,7 +25,7 @@ const profile = (command = 'agent', env: Record<string, string> = {}): AcpAgentC
 const user = (text: string) => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
 const request = (sessionId: string, messages: GenerateOptions['messages']) =>
   markAgentLoopRequest({ provider: 'acp-test', model: 'model-a', sessionId: sessionId as never, messages })
-const session = (message: ReturnType<typeof user>, seq = 2) =>
+const session = (message: UserMessage, seq = 2) =>
   withSessionFacts({
     header: { cwd: '/workspace' },
     inheritedEventCount: 0,
@@ -67,6 +67,33 @@ const durableSidecar = {
 } as unknown as AcpSidecar
 
 describe('AcpProfileAdapter generation and dispatch boundaries', () => {
+  it('refuses handoff content before connecting when the prepared CLI generation differs from the approved one', async () => {
+    const message = createUserMessage({
+      source: { kind: 'acp-handoff', operationId: 'handoff', part: 'delivery', launchIdentity: 'replaced' },
+      content: [{ type: 'text', text: 'private document' }],
+    })
+    let spawned = false
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => profile(),
+      seam(),
+      () => session(message),
+      new Ledger(),
+      undefined,
+      () => {
+        spawned = true
+        throw new Error('unexpected transport')
+      },
+      durableSidecar,
+    )
+    await expect(
+      adapter
+        .stream(request('transfer', [message]))
+        [Symbol.asyncIterator]()
+        .next(),
+    ).rejects.toThrow('selected for this handoff changed')
+    expect(spawned).toBe(false)
+  })
   it('shares one profile probe cache between picker and health, including recheck', async () => {
     const current = profile('shared-agent')
     let snapshot: unknown

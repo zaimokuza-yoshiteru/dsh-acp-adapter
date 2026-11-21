@@ -82,8 +82,18 @@ function fixture(
     providers: ['acp-codex', 'acp-devin'],
     historicalProviders: [] as string[],
   })
+  const select = vi.fn(
+    async (_request: {
+      sessionId: string
+      provider: string
+      model: string
+    }): Promise<{ ok: boolean; error?: { message: string }; value?: unknown }> => ({ ok: true }),
+  )
   const remote = {
     dshAcp: {
+      restoreHandoffSource: vi.fn((sessionId: string, source: { provider: string; model: string }) =>
+        select({ sessionId, ...source }),
+      ),
       ownedProviderRoutes: vi.fn(async () => ({ ok: true, value: routes.getSnapshot() })),
       agentSessionSnapshot: vi.fn(async () => ({
         ok: true,
@@ -105,9 +115,7 @@ function fixture(
         }> => ({ ok: true, value: { items: [] } }),
       ),
       projections: vi.fn(async () => ({ ok: true, value: null })),
-      selectModel: vi.fn(async (): Promise<{ ok: boolean; error?: { message: string }; value?: unknown }> => ({
-        ok: true,
-      })),
+      selectModel: vi.fn((request: Parameters<typeof select>[0]) => select(request)),
     },
   }
   const modelDirectories = vi.fn(() => {
@@ -132,6 +140,7 @@ function fixture(
     ctx,
     main,
     childReadable,
+    select,
     remote,
     modelDirectories,
     sessions,
@@ -177,14 +186,14 @@ describe('cross-backend coordinator', () => {
         sourceUnavailable: true,
         targetSelection: next,
       })
-      expect(f.remote.session.selectModel).not.toHaveBeenCalled()
+      expect(f.select).not.toHaveBeenCalled()
       await f.coordinator[action]()
       if (action === 'confirm') {
-        expect(f.remote.session.selectModel).toHaveBeenCalledExactlyOnceWith({ sessionId: 'destination', ...next })
+        expect(f.select).toHaveBeenCalledExactlyOnceWith({ sessionId: 'destination', ...next })
         expect(f.sessions.open).toHaveBeenCalledOnce()
       } else {
         expect(f.sessions.create).not.toHaveBeenCalled()
-        expect(f.remote.session.selectModel).not.toHaveBeenCalled()
+        expect(f.select).not.toHaveBeenCalled()
       }
       f.routes.set(history)
       f.projection.set({ lastUsed: previous, next })
@@ -214,7 +223,7 @@ describe('cross-backend coordinator', () => {
     proof.resolve({ ok: true, value: { state: 'established', provider: previous.provider, acpBinding: true } })
     await settle()
     expect(f.coordinator.getSnapshot().pending).toBeNull()
-    expect(f.remote.session.selectModel).not.toHaveBeenCalled()
+    expect(f.select).not.toHaveBeenCalled()
     expect(f.sessions.create).not.toHaveBeenCalled()
     stop()
   })
@@ -243,7 +252,8 @@ describe('cross-backend coordinator', () => {
       await confirming
       expect(f.coordinator.getSnapshot().pending).toBeNull()
       expect(f.sessions.create).toHaveBeenCalledTimes(phase === 'while creating' ? 1 : 0)
-      expect(f.remote.session.selectModel).toHaveBeenCalledExactlyOnceWith({
+      expect(f.remote.session.selectModel).not.toHaveBeenCalled()
+      expect(f.select).toHaveBeenCalledExactlyOnceWith({
         sessionId: 'session-1',
         provider: 'native',
         model: 'model-a',
@@ -280,9 +290,9 @@ describe('cross-backend coordinator', () => {
     })
     await settle()
     const select = Promise.withResolvers<{ ok: boolean }>()
-    f.remote.session.selectModel.mockReturnValueOnce(select.promise)
+    f.select.mockReturnValueOnce(select.promise)
     const confirming = f.coordinator.confirm()
-    await vi.waitFor(() => expect(f.remote.session.selectModel).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(f.select).toHaveBeenCalledTimes(2))
     f.routes.set({ ...f.routes.getSnapshot(), generations: { 'acp-devin': 'replacement' } })
     expect(f.coordinator.getSnapshot()).toMatchObject({
       pending: null,
@@ -341,7 +351,7 @@ describe('cross-backend coordinator', () => {
     f.childReadable.set(true)
     await f.coordinator.confirm()
     expect(f.sessions.create).toHaveBeenCalledOnce()
-    expect(f.remote.session.selectModel).toHaveBeenCalledTimes(2)
+    expect(f.select).toHaveBeenCalledTimes(2)
     expect(f.sessions.open).toHaveBeenCalledExactlyOnceWith('destination')
     stop()
   })
@@ -384,7 +394,7 @@ describe('cross-backend coordinator', () => {
   it('does not display a stale decision after restoring the source', async () => {
     const f = fixture()
     const restored = Promise.withResolvers<{ ok: boolean }>()
-    f.remote.session.selectModel.mockReturnValueOnce(restored.promise)
+    f.select.mockReturnValueOnce(restored.promise)
     const stop = f.coordinator.start()
     f.projection.set({
       lastUsed: { provider: 'native', model: 'model-a' },
@@ -429,12 +439,12 @@ describe('cross-backend coordinator', () => {
     expect(pending?.ticket.sourceAlreadyRestored).toBeUndefined()
     expect(pending?.ticket.targetSelection).toEqual({ provider: 'acp-codex', model: 'gpt' })
     expect(pending?.confirmable).toBe(true)
-    expect(f.remote.session.selectModel).not.toHaveBeenCalled()
+    expect(f.select).not.toHaveBeenCalled()
 
     await f.coordinator.confirm()
 
     expect(f.sessions.create).toHaveBeenCalledTimes(1)
-    expect(f.remote.session.selectModel).toHaveBeenCalledWith({
+    expect(f.select).toHaveBeenCalledWith({
       sessionId: 'destination',
       provider: 'acp-codex',
       model: 'gpt',
@@ -461,11 +471,11 @@ describe('cross-backend coordinator', () => {
     )
     await f.coordinator.confirm()
     expect(f.coordinator.getSnapshot().pending?.failure?.phase).toBe('ungrouped-destination')
-    expect(f.remote.session.selectModel).not.toHaveBeenCalled()
+    expect(f.select).not.toHaveBeenCalled()
     expect(f.sessions.open).not.toHaveBeenCalled()
     await f.coordinator.confirm()
     expect(f.sessions.create).toHaveBeenCalledOnce()
-    expect(f.remote.session.selectModel).toHaveBeenCalledExactlyOnceWith({
+    expect(f.select).toHaveBeenCalledExactlyOnceWith({
       sessionId: 'ungrouped',
       provider: 'acp-codex',
       model: 'gpt',
@@ -487,7 +497,7 @@ describe('cross-backend coordinator', () => {
 
       const key = f.coordinator.getSnapshot().pending!.ticket.key
       if (failConfirm) {
-        f.remote.session.selectModel.mockResolvedValueOnce({
+        f.select.mockResolvedValueOnce({
           ok: false,
           error: { message: 'destination selection failed' },
         })
@@ -499,7 +509,7 @@ describe('cross-backend coordinator', () => {
 
       expect(f.coordinator.getSnapshot().pending).toBeNull()
       expect(transactionStatesOf(f.coordinator).has(key)).toBe(false)
-      expect(f.remote.session.selectModel).toHaveBeenCalledTimes(failConfirm ? 1 : 0)
+      expect(f.select).toHaveBeenCalledTimes(failConfirm ? 1 : 0)
       expect(f.sessions.create).toHaveBeenCalledTimes(failConfirm ? 1 : 0)
       expect(f.sessions.open).not.toHaveBeenCalled()
       expect(f.projection.getSnapshot().next).toEqual({ provider: 'acp-codex', model: 'gpt' })
@@ -517,7 +527,7 @@ describe('cross-backend coordinator', () => {
     const stop = f.coordinator.start()
     await settle()
     expect(f.coordinator.getSnapshot().pending?.reason).toBe('model-switch')
-    expect(f.remote.session.selectModel).toHaveBeenCalledWith({
+    expect(f.select).toHaveBeenCalledWith({
       sessionId: 'session-1',
       provider: 'acp-codex',
       model: 'old',
@@ -525,9 +535,7 @@ describe('cross-backend coordinator', () => {
     expect(f.sessions.create).not.toHaveBeenCalled()
     await f.coordinator.confirm()
     expect(f.sessions.create).toHaveBeenCalledTimes(1)
-    expect(f.remote.session.selectModel).toHaveBeenLastCalledWith(
-      expect.objectContaining({ provider: 'acp-codex', model: 'new' }),
-    )
+    expect(f.select).toHaveBeenLastCalledWith(expect.objectContaining({ provider: 'acp-codex', model: 'new' }))
     expect(f.sessions.open).toHaveBeenCalledTimes(1)
     stop()
   })
@@ -545,12 +553,12 @@ describe('cross-backend coordinator', () => {
     f.projection.set({ lastUsed: used, next })
     await settle()
     expect(f.coordinator.getSnapshot().pending).toBeNull()
-    expect(f.remote.session.selectModel).not.toHaveBeenCalled()
+    expect(f.select).not.toHaveBeenCalled()
     expect(f.sessions.create).not.toHaveBeenCalled()
     f.projection.set({ lastUsed: used, next: other })
     await settle()
     expect(f.coordinator.getSnapshot().pending?.ticket).toMatchObject({ sourceSelection: next, targetSelection: other })
-    expect(f.remote.session.selectModel).toHaveBeenCalledWith({ sessionId: 'session-1', ...next })
+    expect(f.select).toHaveBeenCalledWith({ sessionId: 'session-1', ...next })
     stop()
   })
 
@@ -581,11 +589,11 @@ describe('cross-backend coordinator', () => {
         f.projection.set({ lastUsed: source, next: target })
         await settle()
         expect(f.coordinator.getSnapshot().pending).toBeNull()
-        expect(f.remote.session.selectModel).not.toHaveBeenCalled()
+        expect(f.select).not.toHaveBeenCalled()
         f.projection.set({ lastUsed: source, next: { provider: 'native', model: 'native' } })
         await settle()
         expect(f.coordinator.getSnapshot().pending?.ticket.sourceSelection).toEqual(target)
-        expect(f.remote.session.selectModel).toHaveBeenCalledWith({ sessionId: 'session-1', ...target })
+        expect(f.select).toHaveBeenCalledWith({ sessionId: 'session-1', ...target })
         stop()
       }
     },
@@ -609,12 +617,12 @@ describe('cross-backend coordinator', () => {
         confirmed ? { provider: source.provider, model: 'large' } : undefined,
       )
       if (confirmed)
-        expect(f.remote.session.selectModel).toHaveBeenCalledWith({
+        expect(f.select).toHaveBeenCalledWith({
           sessionId: 'session-1',
           provider: source.provider,
           model: 'large',
         })
-      else expect(f.remote.session.selectModel).not.toHaveBeenCalled()
+      else expect(f.select).not.toHaveBeenCalled()
       stop()
     },
   )
@@ -637,7 +645,7 @@ describe('cross-backend coordinator', () => {
     await settle()
     expect(f.remote.dshAcp.ownedProviderRoutes).toHaveBeenCalledOnce()
     expect(f.coordinator.getSnapshot().pending).toBeNull()
-    expect(f.remote.session.selectModel).not.toHaveBeenCalled()
+    expect(f.select).not.toHaveBeenCalled()
     stop()
   })
 
@@ -653,7 +661,7 @@ describe('cross-backend coordinator', () => {
     f.projection.set({ lastUsed: source, next: target })
     await settle()
     expect(f.coordinator.getSnapshot().pending?.reason).toBe('model-switch')
-    expect(f.remote.session.selectModel).toHaveBeenCalledWith({ sessionId: 'session-1', ...source })
+    expect(f.select).toHaveBeenCalledWith({ sessionId: 'session-1', ...source })
     stop()
   })
 
@@ -716,7 +724,7 @@ describe('cross-backend coordinator', () => {
       reasoningEffort: 'medium',
     })
     await f.coordinator.cancel()
-    expect(f.remote.session.selectModel).toHaveBeenCalledWith({
+    expect(f.select).toHaveBeenCalledWith({
       sessionId: 'session-1',
       provider: 'acp-codex',
       model: 'GPT-5.4-Mini',
@@ -738,7 +746,7 @@ describe('cross-backend coordinator', () => {
     await settle()
     const pending = f.coordinator.getSnapshot().pending
     expect(pending?.ticket.sourceSessionId).toBe('session-1')
-    expect(f.remote.session.selectModel).toHaveBeenCalledWith({
+    expect(f.select).toHaveBeenCalledWith({
       sessionId: 'session-1',
       provider: 'native',
       model: 'old',
@@ -775,7 +783,7 @@ describe('cross-backend coordinator', () => {
     expect(f.coordinator.getSnapshot().pending?.confirmable).toBe(false)
     await f.coordinator.confirm()
     expect(f.sessions.create).not.toHaveBeenCalled()
-    expect(f.remote.session.selectModel).toHaveBeenCalledWith({
+    expect(f.select).toHaveBeenCalledWith({
       sessionId: 'session-1',
       provider: 'native',
       model: 'old',
@@ -790,7 +798,7 @@ describe('cross-backend coordinator', () => {
         next: { provider: 'acp-codex', model: 'new' },
       },
     })
-    const selectModel = f.remote.session.selectModel
+    const selectModel = f.select
     selectModel.mockResolvedValueOnce({ ok: false, error: { message: 'rollback failed' } })
     const stop = f.coordinator.start()
     await settle()
@@ -815,7 +823,7 @@ describe('cross-backend coordinator', () => {
     })
     if (failedStep === 'create') f.sessions.create.mockRejectedValueOnce(new Error('CREATE_DIAGNOSTIC'))
     if (failedStep === 'select')
-      f.remote.session.selectModel
+      f.select
         .mockResolvedValueOnce({ ok: true })
         .mockResolvedValueOnce({ ok: false, error: { message: 'SELECT_DIAGNOSTIC' } })
     if (failedStep === 'open')
@@ -847,12 +855,12 @@ describe('cross-backend coordinator', () => {
       next: { provider: 'acp-codex', model: 'parent-new' },
     })
     await settle()
-    expect(f.remote.session.selectModel).toHaveBeenCalledWith({
+    expect(f.select).toHaveBeenCalledWith({
       sessionId: 'child',
       provider: 'native',
       model: 'child-old',
     })
-    expect(f.remote.session.selectModel).toHaveBeenCalledWith({
+    expect(f.select).toHaveBeenCalledWith({
       sessionId: 'session-1',
       provider: 'native',
       model: 'model-a',
@@ -869,7 +877,7 @@ describe('cross-backend coordinator', () => {
   it('does not reopen a released sidebar or publish a late decision from its old binding', async () => {
     const f = fixture()
     let restore!: (value: { ok: boolean }) => void
-    f.remote.session.selectModel.mockImplementationOnce(
+    f.select.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           restore = resolve
@@ -889,7 +897,7 @@ describe('cross-backend coordinator', () => {
       lastUsed: { provider: 'native', model: 'model-a' },
       next: { provider: 'acp-devin', model: 'another' },
     })
-    expect(f.remote.session.selectModel).toHaveBeenCalledTimes(1)
+    expect(f.select).toHaveBeenCalledTimes(1)
     stop()
   })
 })

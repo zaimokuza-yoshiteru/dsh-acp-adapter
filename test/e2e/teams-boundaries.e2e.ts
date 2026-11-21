@@ -385,17 +385,10 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
     diagnostics.stage('continuation-plan')
     continuation.finish()
     diagnostics.stage('cross-agent-restore-dialog')
-    const selectModel = host.ctx.sessionController.selectModel.bind(host.ctx.sessionController)
-    let failSourceRestore = true
+    const service = host.ctx.get('dshAcp') as AcpRemoteService
     const failedSourceRestore = vi
-      .spyOn(host.ctx.sessionController, 'selectModel')
-      .mockImplementation(async (request) => {
-        if (request.provider === 'acp-devin' && failSourceRestore) {
-          failSourceRestore = false
-          throw new Error('E2E_CROSS_BACKEND_RESTORE_RAW')
-        }
-        return selectModel(request)
-      })
+      .spyOn(service, 'restoreHandoffSource')
+      .mockRejectedValueOnce(new Error('E2E_CROSS_BACKEND_RESTORE_RAW'))
     await page.getByRole('button', { name: /^Select model/ }).click()
     await page.getByRole('menuitem', { name: /^Model/ }).click()
     await page
@@ -439,7 +432,7 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
       .getByLabel('Fixture codex · ACP', { exact: true })
       .getByRole('menuitemradio', { name: 'Mock Model B', exact: true })
       .click()
-    await dialog.getByRole('button', { name: 'Create an independent session', exact: true }).click()
+    await dialog.getByRole('button', { name: 'Start a blank session', exact: true }).click()
     await send('E2E_MESSAGE')
     diagnostics.stage('cross-agent-new-session-done')
     await page.getByText('E2E_DONE mock-model-b', { exact: true }).waitFor()

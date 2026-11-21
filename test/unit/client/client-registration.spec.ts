@@ -14,6 +14,7 @@ describe('client contribution', () => {
       'sessions',
       'workspaces',
       'uiWorkspace',
+      'layout',
       'sidebarRight',
       'configForms',
       'remote.settings',

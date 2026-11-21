@@ -94,6 +94,7 @@ function layerOf(srcRel: string): Layer | undefined {
   if (srcRel.startsWith('remote/')) return 'remote'
   if (srcRel.startsWith('host/approval-review/')) return 'hostApprovalReview'
   if (srcRel.startsWith('host/composition/')) return 'hostComposition'
+  if (srcRel.startsWith('host/handoff/')) return 'hostComposition'
   if (srcRel.startsWith('host/subagent/')) return 'hostComposition'
   if (srcRel.startsWith('host/teams/')) return 'hostComposition'
   if (srcRel.startsWith('host/tools/')) return 'hostComposition'
