@@ -101,11 +101,11 @@ Registrations belong to the provider's Cordis fiber. Removing a registration pre
 
 ## Preserved routes and boundaries
 
-- Binary permission requests use native approval when no binary rule applies. Ordinary Antigravity interactive questions stay with their question owner.
+- Binary permission requests use native approval when neither a policy nor AI approval answers the request. Ordinary Antigravity interactive questions stay with their question owner.
 - The DSH tool bridge verifies identity and current catalog membership. Matching a tool grants no permission. Execution still passes through the host’s `tools.execute` checks.
 - The parent page only presents the original child's request. Replies, execution identity, and audit remain with that child. Cancellation, Agent replacement, and late decisions cannot authorize an invalidated request.
 - The two ACP permission events handle requests sent by the Agent. The Antigravity pre-execution event above covers its native command tool. ACP client-provided file and terminal operations retain their separate control paths.
-- Without a matching rule and an online human, the request still waits. Browser connectivity cannot imply permission. This does not promise universal unattended execution or recovery of an unfinished machine policy call after a Host crash.
+- A request that needs a person waits until someone can answer. Browser connectivity cannot imply permission. This does not promise universal unattended execution or recovery of an unfinished machine policy call after a Host crash.
 
 Providers must validate their own rules and deployment order.
 
@@ -119,7 +119,7 @@ The audit masks credentials such as cookies. When you view older records, input 
 
 ### Devin
 
-The official CLI `3000.14.30821` is supported. The default review model is `swe-2-high`. If the selected model is unavailable, you decide on the request and can choose another model in plugin details. Third-party policies do not answer Devin requests. Organization-enforced extensions or an unverifiable inventory of extensions and MCP servers in the reviewer require a person. The working session can still use its own MCP and Teams tools.
+The official CLI `3000.14.30821` is supported. The default review model is `swe-2-high`. If the selected model is unavailable, you decide on the request and can choose another model in plugin details. Third-party policies do not answer Devin requests. Organization-enforced extensions or an unverifiable inventory of extensions and MCP servers in the reviewer require a person. The working session can still use its own MCP and Teams tools. When Devin asks to use a DSH tool, AI approval can grant Devin’s request once if the bridge verifies the tool’s identity and registration in the current session. DSH checks the session’s tool rules at execution time and can still deny the call.
 
 ### OpenCode
 

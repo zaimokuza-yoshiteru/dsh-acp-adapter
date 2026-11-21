@@ -124,9 +124,6 @@ export async function discardPermissionResponse(
 function cancelled(): acp.RequestPermissionResponse {
   return { outcome: { outcome: 'cancelled' } }
 }
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
 function assertBounds(toolCallId: string, options: readonly acp.PermissionOption[]): void {
   if (Buffer.byteLength(toolCallId, 'utf8') > ACP_PERMISSION_ID_MAX_BYTES)
     throw new Error('toolCallId exceeds ACP permission identity limit')
@@ -554,8 +551,8 @@ export function createAcpNativePermissionHandler(
         reviewCall = reviewer?.toolCall === undefined ? params.toolCall : structuredClone(reviewer.toolCall)
         if (team !== undefined) params.toolCall = withDshTeamPermissionPresentation(params.toolCall, team)
       }
-    } catch (error: unknown) {
-      deps.log?.(`dsh-acp native permission rejected by bounds: ${errorMessage(error)}`)
+    } catch {
+      deps.log?.('dsh-acp native permission rejected by bounds')
       return cancelled()
     }
     const append = async (data: AcpPermissionAuditRecord['data']): Promise<boolean> => {
@@ -564,7 +561,15 @@ export function createAcpNativePermissionHandler(
         await deps.audit.append({ kind: ACP_PERMISSION_AUDIT_KIND, time: deps.now?.() ?? Date.now(), data })
         return true
       } catch {
-        deps.log?.('dsh-acp native permission audit write failed')
+        try {
+          deps.log?.(
+            data.phase === 'decision-withdrawn'
+              ? 'dsh-acp: failed to persist a confirmed permission withdrawal'
+              : 'dsh-acp native permission audit write failed',
+          )
+        } catch {
+          // The Host logger can retire with the original Agent. Cancellation must still reach ACP.
+        }
         return false
       }
     }
@@ -634,6 +639,10 @@ export function createAcpNativePermissionHandler(
               agentSessionId: params.sessionId,
               toolCallId: params.toolCall.toolCallId,
               outcome: 'cancelled',
+            }).then((stored) => {
+              // Other delivery guards share this attempt, and can retry a failed durable write.
+              if (!stored) withdrawal = undefined
+              return stored
             })),
         })
       }
@@ -765,8 +774,8 @@ export function createAcpNativePermissionHandler(
             'native-approval',
           )
         return decide({ outcome: 'cancelled', note: outcome }, 'native-approval')
-      } catch (error: unknown) {
-        deps.log?.(`dsh-acp native approval unavailable: ${errorMessage(error)}`)
+      } catch {
+        deps.log?.('dsh-acp native approval unavailable')
         // Continue to the generic native question only when it is available;
         // this preserves uncommon ACP option vocabularies without reviving a
         // plugin-owned permission surface.
@@ -841,12 +850,12 @@ export function createAcpNativePermissionHandler(
               ? copy.delegatedQuestionUnavailable
               : copy.delegatedPermissionUnavailable,
           })
-        } catch (reportError: unknown) {
-          deps.log?.(`dsh-acp unavailable permission reporting failed: ${errorMessage(reportError)}`)
+        } catch {
+          deps.log?.('dsh-acp unavailable permission reporting failed')
         }
         return decide({ outcome: 'cancelled', note: 'delegated-question-unavailable' })
       }
-      deps.log?.(`dsh-acp native permission question cancelled: ${errorMessage(error)}`)
+      deps.log?.('dsh-acp native permission question cancelled')
       return decide({ outcome: 'cancelled', note: 'question-error' })
     }
   }

@@ -8,14 +8,16 @@ Find installation commands, release dates, and package checksums on [GitHub Rele
 
 ### 中文
 
-- 插件详情新增默认关闭的 AI 审批。支持的本地 Devin 和 OpenCode 请求可经模型审查后允许一次，模型标为高风险或无法判断的请求由你确认。旧的 DSH 工具自动审批已移除，升级后无需迁移设置；桥接工具的授权请求由你或已接入的策略处理。
+- 插件详情新增默认关闭的 AI 审批。支持的本地 Devin 和 OpenCode 请求可经模型审查后允许一次，模型标为高风险或无法判断的请求由你确认。旧的 DSH 工具自动审批设置已移除，升级后无需迁移。Devin 请求使用当前会话中已核实的 DSH 桥接工具时，AI 也可代答这次 Devin 授权。实际调用仍须通过 DSH 的工具权限检查。
+- 审查请求和审批审计会遮盖 HTTP 凭据，查看旧记录时也会过滤。授权在送达前撤回时，审计会保留取消结果，已写入的撤回可在重启后补记。
 - 从目录添加 Antigravity 时，插件会预填 Google 官方的 `agy acp` 命令，并提供安装指南。使用自定义 CLI 路径时，可直接复制对应的登录命令。已保存的 Agent 配置可以继续使用。
 - CodeBuddy CLI 即使未在连接时报告名称，模型菜单也能显示各模型支持的思考档位。在普通模式停止首轮回复后，可以用已选模型在原会话继续，包括手动添加的 `codebuddy --acp`。
 - 消息尚未发出时点停止，下一条消息仍可沿用原 Agent 会话。两个 DSH 实例同时升级旧会话数据库时，也能继续读取已有记录。
 
 ### English
 
-- Plugin details now offer opt-in AI approval for supported local Devin and OpenCode requests. The review model can allow a request once. You decide when the model flags a request as high risk or cannot assess it. The previous DSH tool auto-approval setting has been removed. You or a configured policy now handle permission requests for bridged tools.
+- Plugin details now offer opt-in AI approval for supported local Devin and OpenCode requests. The review model can allow a request once. You decide when the model flags a request as high risk or cannot assess it. The old DSH tool auto-approval setting is gone and requires no migration. AI approval can also answer Devin’s own request to use a DSH bridge tool verified for the current session. DSH still enforces its tool permissions when Devin invokes the tool.
+- Review requests and approval audits redact HTTP credentials, including when you view older records. If an approval is withdrawn before delivery, the audit records the cancellation. A saved withdrawal can be reconciled after a restart.
 - Adding Antigravity from the catalog now prefills Google's official `agy acp` command and links to the installation guide. If you set a custom CLI path, you can copy a sign-in command that uses it. Existing Agent configurations still work.
 - The model picker shows each CodeBuddy model's reasoning options even when the CLI omits its name during connection. After stopping the first reply in standard mode, you can continue with the selected model in the same chat, including when you added `codebuddy --acp` manually.
 - Stopping a message before it is sent keeps the Agent session available for the next message. Two DSH instances can also open existing session records while upgrading the same database.

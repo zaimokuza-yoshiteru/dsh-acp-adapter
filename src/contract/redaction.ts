@@ -9,11 +9,7 @@ const SLACK = /\bxox[bparsce]-[A-Za-z0-9-]{16,}\b/g
 const GOOGLE_API_KEY = /\bAIza[0-9A-Za-z_-]{35}\b/g
 const GOOGLE_CLIENT_SECRET = /\bGOCSPX-[A-Za-z0-9_-]{20,}\b/g
 const PEM_PRIVATE_KEY = /-----BEGIN ((?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY)-----[\s\S]*?-----END \1-----/g
-const COOKIE_HEADER_LINE = /^([ \t]*(?:set-)?cookie[ \t]*:)[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*/gim
-// Preserve the rest of the command or serialized request, including its destination.
-const QUOTED_COOKIE_HEADER = /(?<!\\)(["'])((?:set-)?cookie[ \t]*:)(?:\\[^\r\n]|(?!\1)[^\\\r\n])*(\1|$)/gim
-const ESCAPED_COOKIE_HEADER = /(\\["'])((?:set-)?cookie[ \t]*:)[^\r\n]*?(\1|$)/gim
-const JSON_COOKIE_HEADER = /("(?:set-)?cookie"\s*:\s*)"(?:\\[\s\S]|[^"\\])*"/gi
+const SENSITIVE_FIELD = /(?:token|secret|password|passwd|authorization|api[_-]?key|cookie|credential|private[_-]?key)/i
 const NUMERIC_USAGE_FIELDS = new Set([
   'inputtokens',
   'outputtokens',
@@ -21,7 +17,15 @@ const NUMERIC_USAGE_FIELDS = new Set([
   'cachereadtokens',
   'cachewritetokens',
 ])
-const SENSITIVE_FIELD = /(?:token|secret|password|passwd|authorization|api[_-]?key|cookie|credential|private[_-]?key)/i
+const HEADER_FIELD_NAME = String.raw`(?!(?:${[...NUMERIC_USAGE_FIELDS].join('|')})[ \t]*:)[a-z0-9_.-]*${SENSITIVE_FIELD.source}[a-z0-9_.-]*`
+const HEADER_LINE = new RegExp(String.raw`^([ \t]*${HEADER_FIELD_NAME}[ \t]*:)[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*`, 'gim')
+// Stop at the closing quote so the following shell arguments and destination remain visible.
+const QUOTED_HEADER = new RegExp(
+  String.raw`(?<!\\)(["'])(${HEADER_FIELD_NAME}[ \t]*:)(?:\\[^\r\n]|(?!\1)[^\\\r\n])*(\1|$)`,
+  'gim',
+)
+const ESCAPED_HEADER = new RegExp(String.raw`(\\["'])(${HEADER_FIELD_NAME}[ \t]*:)[^\r\n]*?(\1|$)`, 'gim')
+const JSON_HEADER = new RegExp(String.raw`("${HEADER_FIELD_NAME}"\s*:\s*)"(?:\\[\s\S]|[^"\\])*"`, 'gi')
 // A preceding label such as "Agent error:" must not consume the following key/value pair.
 const SENSITIVE_ASSIGNMENT = new RegExp(
   String.raw`\b((?=[a-z])[a-z0-9_-]*${SENSITIVE_FIELD.source}[a-z0-9_-]*)\b(["']?\s*[=:]\s*["']?)([^\s"',}{\[]+)`,
@@ -38,25 +42,46 @@ function isSafeNumericUsageField(key: string, value: unknown): boolean {
   )
 }
 
-function isCookieHeaderName(value: unknown): boolean {
-  return typeof value === 'string' && /^(?:set-)?cookie$/i.test(value.trim())
+// Only a field name can label a neighbouring value. URLs and command text may also contain "token" or "cookie".
+function isSensitiveHeaderName(name: unknown, value: unknown): boolean {
+  if (typeof name !== 'string') return false
+  const field = name.trim()
+  return (
+    /^[!#$%&'*+.^_`|~a-zA-Z0-9-]+$/.test(field) && SENSITIVE_FIELD.test(field) && !isSafeNumericUsageField(field, value)
+  )
 }
 
-/** Also accept native header tuples and { name, value } entries when the caller has the parent. */
-export function isSensitiveActivityField(key: string, value: unknown, parent?: unknown): boolean {
-  if (isSafeNumericUsageField(key, value)) return false
-  if (SENSITIVE_FIELD.test(key)) return true
-  if (Array.isArray(parent)) return Number(key) % 2 === 1 && isCookieHeaderName(parent[Number(key) - 1])
-  if (key !== 'value' || !parent || typeof parent !== 'object') return false
-  return ('name' in parent && isCookieHeaderName(parent.name)) || ('key' in parent && isCookieHeaderName(parent.key))
+export function isSensitiveActivityField(key: string, value: unknown): boolean {
+  return SENSITIVE_FIELD.test(key) && !isSafeNumericUsageField(key, value)
+}
+
+/** Track header collections during one JSON traversal. Positional arguments can include filenames like "secrets.md". */
+export function createSensitiveFieldMatcher() {
+  const headerArrays = new WeakSet<unknown[]>()
+  return (key: string, value: unknown, parent: unknown): boolean => {
+    const inHeaders = Array.isArray(parent) && headerArrays.has(parent)
+    if (Array.isArray(value) && (inHeaders || /headers?$/i.test(key))) headerArrays.add(value)
+    if (isSensitiveActivityField(key, value)) return true
+    if (Array.isArray(parent)) {
+      const name = parent[Number(key) - 1]
+      if (Number(key) % 2 !== 1 || !isSensitiveHeaderName(name, value)) return false
+      // Standalone pairs also occur without a containing "headers" property.
+      return inHeaders || /^(?:(?:set-)?cookie|(?:proxy-)?authorization|api[_-]?key|x-[a-z0-9_-]+)$/i.test(name.trim())
+    }
+    if (key !== 'value' || !parent || typeof parent !== 'object') return false
+    return (
+      ('name' in parent && isSensitiveHeaderName(parent.name, value)) ||
+      ('key' in parent && isSensitiveHeaderName(parent.key, value))
+    )
+  }
 }
 
 export function redactSecretText(value: string): string {
   return value
-    .replace(JSON_COOKIE_HEADER, '$1"<redacted>"')
-    .replace(ESCAPED_COOKIE_HEADER, '$1$2 <redacted>$3')
-    .replace(QUOTED_COOKIE_HEADER, '$1$2 <redacted>$3')
-    .replace(COOKIE_HEADER_LINE, '$1 <redacted>')
+    .replace(JSON_HEADER, '$1"<redacted>"')
+    .replace(ESCAPED_HEADER, '$1$2 <redacted>$3')
+    .replace(QUOTED_HEADER, '$1$2 <redacted>$3')
+    .replace(HEADER_LINE, '$1 <redacted>')
     .replace(JWT, '<redacted-jwt>')
     .replace(GITHUB, '<redacted-token>')
     .replace(OPENAI, '<redacted-token>')

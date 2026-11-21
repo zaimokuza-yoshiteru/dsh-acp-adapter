@@ -103,17 +103,29 @@ describe('AcpRemoteService current public surface', () => {
       expect(local.devinReviewModels).toBeUndefined()
     }
     expect(rows.find((row) => row.id === 'remote')!.devinReviewModels).toBeUndefined()
+    expect(local.reviewVersionUnsupported).toBeUndefined()
     const unavailable: Array<AcpProbeSnapshotLike | undefined> = [
       undefined,
       { ...snap, key: 'another-profile' },
       { ...snap, result: { kind: 'error', failureKind: 'auth-required', error: { message: 'Check login' } } },
       { ...snap, result: { kind: 'ok', models: snap.result.models } },
-      { ...snap, result: { ...snap.result, agentInfo: { ...handshake, version: '3000.14.30820' } } },
-      { ...snap, result: { ...snap.result, agentInfo: { ...handshake, version: '3000.14.30822' } } },
+      { ...snap, result: { ...snap.result, agentInfo: { ...handshake, version: '' } } },
+      { ...snap, result: { ...snap.result, agentInfo: { ...handshake, version: 'unknown' } } },
+      { ...snap, result: { ...snap.result, agentInfo: { ...handshake, title: 'Other', version: '1.0.0' } } },
       { ...snap, result: { ...snap.result, agentInfo: { ...handshake, name: 'unrecognized' } } },
     ]
     for (const snapshot of unavailable) {
-      expect((await check(snapshot, true).health()).providers[0]?.devinReviewModels).toBeUndefined()
+      const row = (await check(snapshot, true).health()).providers[0]
+      expect(row?.devinReviewModels).toBeUndefined()
+      expect(row?.reviewVersionUnsupported).toBeUndefined()
+    }
+    for (const version of ['3000.14.30820', '3000.14.30822']) {
+      const mismatch = { ...snap, result: { ...snap.result, agentInfo: { ...handshake, version } } }
+      const row = (await check(mismatch, true).health()).providers[0]
+      expect(row?.probe.status).toBe('ok')
+      expect(row?.devinReviewModels).toBeUndefined()
+      expect(row?.reviewVersionUnsupported).toBe(supportsLocalApprovalReview(process.platform) ? true : undefined)
+      expect((await check(mismatch, false).health()).providers[0]?.reviewVersionUnsupported).toBeUndefined()
     }
     const empty = { ...snap, result: { ...snap.result, models: [{ id: ACP_CURRENT_CONFIG_MODEL_ID }] } }
     expect((await check(empty, true).health()).providers[0]?.devinReviewModels).toEqual(
@@ -149,6 +161,8 @@ describe('AcpRemoteService current public surface', () => {
     expect(one?.openCodeReviewModels).toEqual(
       supportsLocalApprovalReview(process.platform) ? [{ id: 'work/fast', name: 'work/fast' }] : undefined,
     )
+    expect(one?.reviewVersionUnsupported).toBeUndefined()
+    expect(two?.reviewVersionUnsupported).toBe(supportsLocalApprovalReview(process.platform) ? true : undefined)
     expect(two?.openCodeReviewModels).toBeUndefined()
     expect(one?.devinReviewModels).toBeUndefined()
     expect(JSON.stringify([one, two])).not.toContain('test-secret')

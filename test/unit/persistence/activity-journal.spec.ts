@@ -1,9 +1,11 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import { createAcpSidecar, type AcpSidecar } from '../../../src/persistence/sidecar.ts'
+import { ACP_SIDECAR_DB_FILENAME, createAcpSidecar, type AcpSidecar } from '../../../src/persistence/sidecar.ts'
+import { activityRawDetail } from '../../../src/host/composition/notification-activities.ts'
 import { AcpActivityJournalStore } from '../../../src/client/data/activity-journal.ts'
 
 const roots: string[] = []
@@ -305,6 +307,45 @@ describe('ACP activity journal', () => {
     )
     expect(plain.rawDetail).not.toContain('plain-secret-value')
     expect(plain.rawDetail).not.toContain('sk-abcdefghijklmnopqrstuvwxyz123456')
+  })
+
+  it('protects structured HTTP credentials at activity capture, persistence and historical detail reads', async () => {
+    const { root, sidecar } = store()
+    const rawInput = {
+      headers: [['X-Api-Key', 'private-fixture']],
+      'password=private-fixture': 'value-fixture',
+      file_path: 'README',
+    }
+    const tool = { toolKind: 'read', rawInput }
+    const raw = JSON.stringify(tool)
+    const incomplete = '{"rawInput":{"headers":[{"value":"private-fixture"… [truncated]'
+    const clippedOutput = raw.slice(0, -1) + ',"rawOutput":"private-fixture… [truncated]'
+    expect(activityRawDetail(tool)).not.toContain('private-fixture')
+    for (const id of ['new', 'complete', 'incomplete', 'clipped-output'])
+      await sidecar.upsertActivity(activity(id, undefined, { rawDetail: raw }))
+    await sidecar.dispose()
+
+    const db = new DatabaseSync(path.join(root, ACP_SIDECAR_DB_FILENAME))
+    try {
+      const saved = db.prepare('SELECT raw_detail FROM activity_journal WHERE activity_id = ?').get('new')
+      expect(saved?.raw_detail).toBe(activityRawDetail(tool))
+      const update = db.prepare('UPDATE activity_journal SET raw_detail = ? WHERE activity_id = ?')
+      update.run(raw, 'complete')
+      update.run(incomplete, 'incomplete')
+      update.run(clippedOutput, 'clipped-output')
+    } finally {
+      db.close()
+    }
+    const reopened = createAcpSidecar({ root })
+    sidecars.push(reopened)
+    const rows = await reopened.activitySnapshot(SessionId('session-1'))
+    expect(rows).toHaveLength(4)
+    for (const row of rows) {
+      expect(row.rawDetail).not.toContain('private-fixture')
+      if (row.activityId !== 'incomplete') expect(row.rawDetail).toContain('README')
+      if (row.activityId === 'clipped-output' || row.activityId === 'incomplete')
+        expect(row.rawDetail).toContain('[truncated]')
+    }
   })
 
   it('filters snapshots, revisions, and heads by owner and prompt anchor', async () => {

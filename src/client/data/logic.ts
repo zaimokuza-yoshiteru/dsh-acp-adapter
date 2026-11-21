@@ -417,6 +417,7 @@ export type AcpProbePhase = 'initialize' | 'session'
 
 /** One provider row of the dshAcp Remote `health` view (src/contract/remote.ts). */
 export interface AcpProviderHealth {
+  reviewVersionUnsupported?: true
   openCodeReviewModels?: readonly { id: string; name: string }[]
   devinReviewModels?: readonly { id: string; name: string }[]
   id: string
@@ -502,6 +503,8 @@ function decodeHealthRow(raw: unknown): AcpProviderHealth | undefined {
     choices === undefined ||
     (Array.isArray(choices) &&
       choices.every((choice) => isPlainObject(choice) && valid(choice['id']) && typeof choice['name'] === 'string'))
+  const reviewVersionUnsupported = raw['reviewVersionUnsupported']
+  if (reviewVersionUnsupported !== undefined && reviewVersionUnsupported !== true) return undefined
   const choices = raw['devinReviewModels']
   const openCodeChoices = raw['openCodeReviewModels']
   if (!validChoices(choices, isDevinReviewModel) || !validChoices(openCodeChoices, isOpenCodeReviewModel))
@@ -516,6 +519,7 @@ function decodeHealthRow(raw: unknown): AcpProviderHealth | undefined {
     version,
     state: state as AcpAgentConfigState,
     probe: probeRow,
+    ...(reviewVersionUnsupported ? { reviewVersionUnsupported } : {}),
     ...(choices === undefined ? {} : { devinReviewModels: choices }),
     ...(openCodeChoices === undefined ? {} : { openCodeReviewModels: openCodeChoices }),
     ...(unavailableReason === undefined ? {} : { unavailableReason }),

@@ -1,3 +1,4 @@
+import { reviewPeerStatus } from './review-peer.ts'
 import type { AcpAgentConfig } from './agent-config.ts'
 import { ACP_CONFIG_IDENTIFIER_MAX } from './config-options.ts'
 
@@ -16,10 +17,8 @@ export function isLocalOpenCodeReviewProfile(profile: Pick<AcpAgentConfig, 'comm
   )
 }
 
-export function isOpenCodeReviewerAgent(
-  info: { readonly name: string; readonly version: string } | null | undefined,
-): boolean {
-  return info?.name === 'OpenCode' && info.version === '2.3.2'
+export function isOpenCodeReviewerAgent(info: Parameters<typeof reviewPeerStatus>[1]): boolean {
+  return reviewPeerStatus('opencode', info) === 'verified'
 }
 
 /** A model explicitly chosen from the native catalog; OpenRouter IDs may include another slash. */

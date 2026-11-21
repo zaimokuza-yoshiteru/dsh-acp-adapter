@@ -1,3 +1,4 @@
+import { reviewPeerStatus } from '../../contract/review-peer.ts'
 import type * as acp from '@agentclientprotocol/sdk'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { APPROVAL_REVIEW_POLICY_VERSION } from './decision.ts'
@@ -7,12 +8,7 @@ import type { ApprovalReviewBackend } from './backend.ts'
 import { isOpenCodeReviewModel, isOpenCodeReviewTool } from '../../contract/opencode-review.ts'
 import { acpDeclaredModelRoute } from '../../contract/model-selection.ts'
 import type { AcpAgentConfig } from '../../contract/agent-config.ts'
-import {
-  approvalReviewAgent,
-  supportsLocalApprovalReview,
-  verifiedReviewPeer,
-  type ReviewAgent,
-} from '../../contract/approval-review.ts'
+import { approvalReviewAgent, supportsLocalApprovalReview, type ReviewAgent } from '../../contract/approval-review.ts'
 import { discardPermissionResponse, type AcpNativePermissionBridgeDeps } from '../../domain/policy/permissions.ts'
 import { profileLaunchIdentityHash } from '../../domain/session/launch-fingerprint.ts'
 import type { SubprocessSeam } from '../../runtime/process/subprocess.ts'
@@ -109,7 +105,7 @@ export class ApprovalReviewScope {
       !supportsLocalApprovalReview(process.platform) ||
       profileLaunchIdentityHash(this.id, profile) !== active.identity ||
       !model ||
-      !verifiedReviewPeer(active.agent, context.agent) ||
+      reviewPeerStatus(active.agent, context.agent) !== 'verified' ||
       (active.agent === 'opencode' && (!context.verifiedActorCwd || !isOpenCodeReviewModel(model)))
     )
       return respond({ humanReviewOnly: 'review-unavailable' })

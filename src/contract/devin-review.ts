@@ -1,3 +1,4 @@
+import { reviewPeerStatus } from './review-peer.ts'
 import type { AcpAgentConfig } from './agent-config.ts'
 import { ACP_CONFIG_IDENTIFIER_MAX } from './config-options.ts'
 
@@ -35,8 +36,6 @@ export function isLocalDevinReviewProfile(config: Pick<AcpAgentConfig, 'command'
 }
 
 /** Only this CLI build's extension-registry layout and session/new timing have been verified. */
-export function isDevinReviewerAgent(
-  info: { readonly name: string; readonly title?: string | null; readonly version: string } | null | undefined,
-): boolean {
-  return info?.name === 'affogato' && info.title === 'Devin Agent' && info.version === '3000.14.30821'
+export function isDevinReviewerAgent(info: Parameters<typeof reviewPeerStatus>[1]): boolean {
+  return reviewPeerStatus('devin', info) === 'verified'
 }

@@ -27,8 +27,9 @@ import {
 import { ACP_SNAPSHOT_TOTAL_BYTES, toOptionsSnapshotRecord, type AcpOptionsSnapshotRecord } from './options-snapshot.ts'
 import { ACP_CONFIG_IDENTIFIER_MAX } from '../contract/config-options.ts'
 import { isAcpModelRouteWithinBounds } from '../contract/model-selection.ts'
-import { isSensitiveActivityField, redactSecretText } from '../domain/observability/redaction.ts'
+import { redactActivityValue, redactSecretText } from '../domain/observability/redaction.ts'
 import { nativeForkSourceSchema, type AcpNativeForkSource } from './native-fork-source.ts'
+import { UncommittedWithdrawals, type PermissionWithdrawal } from './uncommitted-withdrawals.ts'
 
 /** sidecar 记录格式版本（envelope 的 `schemaVersion`）。 */
 export const ACP_SIDECAR_SCHEMA_VERSION = 2 as const
@@ -636,6 +637,7 @@ export interface AcpSidecar {
 
 /** {@link createAcpSidecar} 的构造项。 */
 export interface AcpSidecarOptions {
+  readonly uncommittedWithdrawals?: UncommittedWithdrawals
   /** 存储根目录（调用方负责选址；生产为 `dshHomePath('dsh-acp')`）。 */
   readonly root: string
   /** 时钟（`time` 缺省补齐用；默认 `Date.now`，测试注入确定性）。 */
@@ -862,6 +864,14 @@ CREATE TABLE IF NOT EXISTS audit (
   PRIMARY KEY (dsh_session_id, record_id)
 ) STRICT;
 CREATE UNIQUE INDEX IF NOT EXISTS audit_session_seq ON audit(dsh_session_id, seq);
+CREATE TABLE IF NOT EXISTS pending_permission_withdrawals (
+  dsh_session_id TEXT NOT NULL,
+  acp_session_id TEXT NOT NULL,
+  tool_call_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  time INTEGER NOT NULL,
+  PRIMARY KEY (dsh_session_id, acp_session_id, tool_call_id, request_id)
+) STRICT;
 CREATE TABLE IF NOT EXISTS managed_model_turns (
   dsh_session_id TEXT NOT NULL,
   binding_key TEXT NOT NULL,
@@ -1117,6 +1127,7 @@ class SidecarStore implements AcpSidecar {
   private stmtGetMemberModelSelection: StatementSync | undefined
   private stmtUpsertMemberModelSelection: StatementSync | undefined
   private queue: QueuedAudit[] = []
+  private readonly uncommittedWithdrawals: UncommittedWithdrawals
   private queueDrainScheduled = false
   private queueFullWarned = false
   private droppedEntries = 0
@@ -1131,13 +1142,14 @@ class SidecarStore implements AcpSidecar {
 
   constructor(options: AcpSidecarOptions) {
     this.root = options.root
+    this.uncommittedWithdrawals = options.uncommittedWithdrawals ?? new UncommittedWithdrawals()
     this.now = options.now ?? ((): number => Date.now())
     this.warn = options.warn ?? ((): void => undefined)
     this.queueLimit = options.queueLimit ?? ACP_SIDECAR_AUDIT_QUEUE_LIMIT
   }
 
   private get dbPath(): string {
-    return path.join(this.root, ACP_SIDECAR_DB_FILENAME)
+    return path.resolve(this.root, ACP_SIDECAR_DB_FILENAME)
   }
 
   /**
@@ -1329,6 +1341,7 @@ class SidecarStore implements AcpSidecar {
       this.warn(`dsh-acp sidecar: failed to chmod 0600 on ${this.dbPath} (${errorMessage(error)})`)
     }
     this.chmodWalFiles()
+    this.replayAllPermissionWithdrawals(db)
     return db
   }
 
@@ -1393,6 +1406,71 @@ class SidecarStore implements AcpSidecar {
 
   private insertSync(sessionId: string, entry: StampedEntry): void {
     this.transaction(() => this.insertInTransaction(sessionId, entry))
+  }
+
+  /** Only the final permission guard can confirm withdrawal. A process exit by itself proves nothing. */
+  private recordPermissionWithdrawal(sessionId: string, time: number, data: PermissionWithdrawal): void {
+    this.uncommittedWithdrawals.retain(this.dbPath, sessionId, time, data, () => this.dispose())
+    this.persistUncommittedWithdrawals(sessionId)
+    this.drainQueue()
+    this.replayPermissionWithdrawals(this.ensureDb(), sessionId)
+  }
+
+  private persistUncommittedWithdrawals(sessionId?: string): void {
+    this.uncommittedWithdrawals.persist(this.dbPath, sessionId, () => this.ensureDb())
+  }
+
+  private replayAllPermissionWithdrawals(db: DatabaseSync): void {
+    for (const row of db.prepare('SELECT DISTINCT dsh_session_id FROM pending_permission_withdrawals').all())
+      this.replayPermissionWithdrawals(db, row.dsh_session_id as string)
+  }
+
+  private replayPermissionWithdrawals(db: DatabaseSync, sessionId: string): boolean {
+    const pending = 'FROM pending_permission_withdrawals WHERE dsh_session_id = ?'
+    try {
+      if (!db.prepare(`SELECT 1 ${pending} LIMIT 1`).get(sessionId)) return true
+      this.transaction(() => {
+        const selected = db.prepare(
+          "SELECT 1 FROM audit WHERE dsh_session_id = ? AND dedupe_key = ? AND acp_session_id = ? AND json_valid(payload) AND json_extract(payload, '$.toolCallId') = ? AND json_extract(payload, '$.outcome') = 'selected'",
+        )
+        // Re-read under the write lock: another sidecar may have replayed the same request.
+        const rows = db.prepare(`SELECT * ${pending} ORDER BY rowid`).all(sessionId) as {
+          acp_session_id: string
+          tool_call_id: string
+          request_id: string
+          time: number
+        }[]
+        for (const row of rows) {
+          // A cleared audit must not be re-created from an orphaned journal entry.
+          const decisionKey = `decided:${row.acp_session_id}:${row.tool_call_id}:${row.request_id}`
+          if (!selected.get(sessionId, decisionKey, row.acp_session_id, row.tool_call_id)) continue
+          this.insertInTransaction(sessionId, {
+            kind: 'permission',
+            time: row.time,
+            data: {
+              phase: 'decision-withdrawn',
+              requestId: row.request_id,
+              agentSessionId: row.acp_session_id,
+              toolCallId: row.tool_call_id,
+              outcome: 'cancelled',
+            },
+          })
+        }
+        db.prepare(`DELETE ${pending}`).run(sessionId)
+      })
+      return true
+    } catch {
+      this.warn('dsh-acp: failed to reconcile the permission withdrawal journal')
+      return false
+    }
+  }
+
+  /** A read must not present a superseded grant while its confirmed cancellation is pending. */
+  private openAudit(sessionId: SessionId): DatabaseSync | undefined {
+    this.persistUncommittedWithdrawals(sessionId)
+    const db = this.openIfExists()
+    if (db && !this.replayPermissionWithdrawals(db, sessionId)) throw new Error('ACP_PERMISSION_AUDIT_UNAVAILABLE')
+    return db
   }
 
   /** Allocate audit identities and update the binding index under the caller's SQLite write lock. */
@@ -1670,7 +1748,9 @@ class SidecarStore implements AcpSidecar {
       data: entry.data,
     } as StampedEntry
     try {
-      if (ACP_SIDECAR_SYNC_KINDS.includes(entry.kind)) {
+      if (stamped.kind === 'permission' && stamped.data.phase === 'decision-withdrawn') {
+        this.recordPermissionWithdrawal(sessionId, stamped.time, stamped.data)
+      } else if (ACP_SIDECAR_SYNC_KINDS.includes(entry.kind)) {
         if (this.queue.length > 0) this.drainQueue()
         this.insertSync(sessionId as string, stamped)
       } else this.enqueueAudit(sessionId as string, stamped)
@@ -1908,7 +1988,10 @@ class SidecarStore implements AcpSidecar {
       record.display === undefined
         ? undefined
         : boundedActivityPresentation(activityPresentationSchema.parse(record.display))
-    const rawDetail = boundedActivityText(redactActivityDetail(record.rawDetail), ACP_ACTIVITY_RAW_MAX)
+    const rawDetail =
+      record.rawDetail === undefined
+        ? undefined
+        : boundedActivityText(redactActivityDetail(record.rawDetail), ACP_ACTIVITY_RAW_MAX)
     const rawDetailRef = boundedActivityText(record.rawDetailRef, ACP_ACTIVITY_REF_MAX)
     const db = this.ensureDb()
     db.exec('BEGIN IMMEDIATE')
@@ -2214,6 +2297,8 @@ class SidecarStore implements AcpSidecar {
 
   flush(): Promise<void> {
     try {
+      this.persistUncommittedWithdrawals()
+      if (this.db) this.replayAllPermissionWithdrawals(this.db)
       this.drainQueue()
       this.checkpoint('PASSIVE')
       return Promise.resolve()
@@ -2224,12 +2309,17 @@ class SidecarStore implements AcpSidecar {
 
   dispose(): Promise<void> {
     try {
-      this.activitySubscribers.clear()
-      this.drainQueue()
-      this.checkpoint('TRUNCATE')
-      if (this.db !== undefined) {
-        this.db.close()
-        this.db = undefined
+      try {
+        this.activitySubscribers.clear()
+        this.persistUncommittedWithdrawals()
+        if (this.db) this.replayAllPermissionWithdrawals(this.db)
+        this.drainQueue()
+        this.checkpoint('TRUNCATE')
+      } finally {
+        if (this.db !== undefined) {
+          this.db.close()
+          this.db = undefined
+        }
       }
       return Promise.resolve()
     } catch (error: unknown) {
@@ -2414,7 +2504,7 @@ class SidecarStore implements AcpSidecar {
     assertSafeSessionId(sessionId)
     try {
       this.drainQueue()
-      const db = this.openIfExists()
+      const db = this.openAudit(sessionId)
       if (db === undefined) return Promise.resolve([])
       const rows = (this.stmtList?.all(sessionId) ?? []) as unknown as AuditRow[]
       const entries: AcpSidecarEntry[] = []
@@ -2449,7 +2539,7 @@ class SidecarStore implements AcpSidecar {
       throw new TypeError('dsh-acp sidecar: audit snapshot head is invalid')
     try {
       this.drainQueue()
-      const db = this.openIfExists()
+      const db = this.openAudit(sessionId)
       if (db === undefined) return Promise.resolve([])
       const rows =
         throughSeq === undefined
@@ -2494,7 +2584,7 @@ class SidecarStore implements AcpSidecar {
     if (!Number.isSafeInteger(throughSeq) || throughSeq < afterSeq)
       throw new TypeError('dsh-acp sidecar: audit snapshot head is invalid')
     this.drainQueue()
-    const db = this.openIfExists()
+    const db = this.openAudit(sessionId)
     if (db === undefined)
       return { entries: [], scannedThrough: afterSeq, scannedRecords: 0, unreadableRecords: 0, hasMore: false }
     const rows = db
@@ -2520,8 +2610,8 @@ class SidecarStore implements AcpSidecar {
 
   async auditHead(sessionId: SessionId): Promise<number> {
     assertSafeSessionId(sessionId)
-    await this.flush()
-    const db = this.openIfExists()
+    this.drainQueue()
+    const db = this.openAudit(sessionId)
     if (db === undefined) return 0
     const row = this.stmtMaxSeq?.get(sessionId) as { max_seq?: number | bigint | null } | undefined
     return Number(row?.max_seq ?? 0)
@@ -2942,24 +3032,32 @@ function boundedActivityText(value: string | undefined, max: number): string | u
 }
 
 /** Defense in depth for callers other than the built-in adapter. */
-function redactActivityDetail(value: string | undefined): string | undefined {
-  if (value === undefined) return undefined
+function redactActivityDetail(value: string): string {
   try {
-    const parsed = JSON.parse(value) as unknown
-    const redact = (item: unknown, depth: number): unknown => {
-      if (depth > 5) return '[nested value omitted]'
-      if (Array.isArray(item)) return item.slice(0, 64).map((entry) => redact(entry, depth + 1))
-      if (typeof item === 'string') return redactSecretText(item)
-      if (isPlainObject(item)) {
-        const output: Record<string, unknown> = {}
-        for (const [key, entry] of Object.entries(item).slice(0, 128))
-          output[key] = isSensitiveActivityField(key, entry) ? '[redacted]' : redact(entry, depth + 1)
-        return output
-      }
-      return item
-    }
-    return JSON.stringify(redact(parsed, 0))
+    return JSON.stringify(redactActivityValue(JSON.parse(value)))
   } catch {
+    if (/^\s*[[{]/.test(value)) {
+      // In a clipped tool activity, the complete input can precede the unfinished output.
+      // Only project the independently parseable input and its tool identity.
+      if (value.endsWith('… [truncated]')) {
+        for (const key of [',"rawOutput":', ',"content":']) {
+          const end = value.indexOf(key)
+          if (end < 0) continue
+          try {
+            const prefix: unknown = JSON.parse(value.slice(0, end) + '}')
+            if (isPlainObject(prefix) && isPlainObject(prefix.rawInput)) {
+              const { toolKind, toolName, rawInput } = prefix
+              const safe = JSON.stringify(redactActivityValue({ toolKind, toolName, rawInput }))
+              return safe.slice(0, -1) + key + '… [truncated]'
+            }
+          } catch {
+            // This key was nested inside the incomplete value.
+          }
+        }
+        return '… [truncated]'
+      }
+      return '[activity detail unavailable]'
+    }
     return redactSecretText(value)
   }
 }
@@ -3012,7 +3110,9 @@ function rowToActivity(row: ActivityRow): AcpActivityRecord | undefined {
     kind: row.kind,
     status: row.status,
     presentation: row.presentation,
-    ...(row.raw_detail === undefined || row.raw_detail === null ? {} : { rawDetail: row.raw_detail }),
+    ...(row.raw_detail === undefined || row.raw_detail === null
+      ? {}
+      : { rawDetail: redactActivityDetail(row.raw_detail) }),
     ...(row.raw_detail_ref === undefined || row.raw_detail_ref === null ? {} : { rawDetailRef: row.raw_detail_ref }),
   }
 }
@@ -3173,7 +3273,10 @@ export function createAcpSidecar(options: AcpSidecarOptions): AcpSidecar {
  * host composition 的 `getCtxSlot`（slot 的 Context 增强声明住在
  * app-boot，本包不依赖它编译）。
  */
-export function installAcpSidecar(ctx: Context): AcpSidecar | undefined {
+export function installAcpSidecar(
+  ctx: Context,
+  uncommittedWithdrawals?: UncommittedWithdrawals,
+): AcpSidecar | undefined {
   const holder = ctx as Context & { get(name: string, strict?: boolean): unknown }
   if (typeof holder.get !== 'function') {
     ctx.logger.warn('dsh-acp: Context has no get() slot accessor; sidecar storage unavailable')
@@ -3187,6 +3290,7 @@ export function installAcpSidecar(ctx: Context): AcpSidecar | undefined {
     return undefined
   }
   return createAcpSidecar({
+    ...(uncommittedWithdrawals && { uncommittedWithdrawals }),
     // 数据目录命名空间同 ACP_SETTINGS_NS：不随 npm 包名改（改名会丢下既有 sidecar）。
     root: dshHomePath('dsh-acp'),
     warn: (message) => {

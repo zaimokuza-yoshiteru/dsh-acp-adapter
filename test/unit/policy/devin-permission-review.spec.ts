@@ -10,6 +10,7 @@ import { permissionOperationHash } from '../../../src/domain/policy/events.ts'
 import type { AcpPermissionQuestionService } from '../../../src/domain/policy/elicitation.ts'
 import {
   createAcpNativePermissionHandler,
+  discardPermissionResponse,
   NO_EXTERNAL_POLICY,
   type AcpPermissionAuditRecord,
   type AcpNativePermissionBridgeDeps,
@@ -224,6 +225,20 @@ it('does not report a pending audit failure to a replacement Agent', async () =>
   await expect(f.handle(request())).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
   expect(onUnavailable).not.toHaveBeenCalled()
   expect(f.review).not.toHaveBeenCalled()
+})
+
+it('shares concurrent withdrawal writes and can retry if the store could not retain the outcome', async () => {
+  const log = vi.fn()
+  const f = fixture({ log })
+  const selected = await f.handle(request())
+  f.append.mockRejectedValueOnce(new Error('private storage detail'))
+  const cancel = { outcome: { outcome: 'cancelled' } }
+  const discard = () => discardPermissionResponse(selected)
+  await expect(Promise.all([discard(), discard()])).resolves.toEqual([cancel, cancel])
+  expect(log).toHaveBeenCalledExactlyOnceWith('dsh-acp: failed to persist a confirmed permission withdrawal')
+  await expect(Promise.all([discard(), discard()])).resolves.toEqual([cancel, cancel])
+  expect(f.records.filter((record) => record.data.phase === 'decision-withdrawn')).toHaveLength(1)
+  expect(f.append.mock.calls.filter(([record]) => record.data.phase === 'decision-withdrawn')).toHaveLength(2)
 })
 
 it.each([

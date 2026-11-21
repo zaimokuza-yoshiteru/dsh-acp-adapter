@@ -27,7 +27,41 @@ it.each([
   expect(rawInput).toEqual(prior)
 })
 
-it('keeps the target and other arguments when a command or JSON text embeds a Cookie header', () => {
+it.each([
+  { headers: { 'X-Api-Key': 'private-fixture', Accept: 'text/plain' } },
+  {
+    headers: [
+      ['Authorization', 'private-fixture'],
+      ['Accept', 'text/plain'],
+    ],
+  },
+  { rawHeaders: ['Accept', 'text/plain', 'x-aPi-kEy', 'private-fixture'] },
+  {
+    headers: [
+      { name: 'Proxy-Authorization', value: 'private-fixture' },
+      { name: 'Accept', value: 'text/plain' },
+    ],
+  },
+  {
+    headers: [
+      { key: 'X-Auth-Token', value: 'private-fixture' },
+      { key: 'Accept', value: 'text/plain' },
+    ],
+  },
+])('masks credentials in HTTP header collections and preserves the other operation evidence', (headers) => {
+  const url = 'https://docs.example.invalid/token/usage'
+  const rawInput = { url, ...headers, references: [url, 'usage-guide', 'secrets.md', 'changes.md'] }
+  const prompt = reviewPrompt('Read the documentation', { toolCallId: 'fetch', name: 'fetch', rawInput }, 'en')
+  const { summary } = summarizeRawInputForAudit(rawInput)
+  for (const text of [prompt, summary]) {
+    expect(text).not.toContain('private-fixture')
+    expect(text).toContain('<redacted>')
+    expect(text).toContain('text/plain')
+    expect(text).toContain(JSON.stringify(rawInput.references))
+  }
+})
+
+it('keeps the target and other arguments when a command or JSON text embeds a credential header', () => {
   const target = 'https://cookie.example.invalid/set-cookie/documentation'
   const publicArgs = ' --output fixture.txt'
   for (const [input, expected] of [
@@ -36,6 +70,9 @@ it('keeps the target and other arguments when a command or JSON text embeds a Co
     ['fetch -H "Cookie: sid=\\"private-fixture\\"; pref=second-fixture"', 'fetch -H "Cookie: <redacted>"'],
     ['fetch -H \\"Cookie: sid=private-fixture; pref=second-fixture\\"', 'fetch -H \\"Cookie: <redacted>\\"'],
     ['{"headers":{"Cookie":"sid=private-fixture; pref=second-fixture"}}', '{"headers":{"Cookie":"<redacted>"}}'],
+    ["fetch -H 'Authorization: Custom private-fixture second-fixture'", "fetch -H 'Authorization: <redacted>'"],
+    ['fetch -H "X-Api-Key: private-fixture second-fixture"', 'fetch -H "X-Api-Key: <redacted>"'],
+    ['{"headers":{"X-Api-Key":"private-fixture second-fixture"}}', '{"headers":{"X-Api-Key":"<redacted>"}}'],
     ['fetch -H "X-Example: cookie documentation"', 'fetch -H "X-Example: cookie documentation"'],
   ] as const) {
     const rawInput = { command: input + ' ' + target + publicArgs }
@@ -50,6 +87,27 @@ it('keeps the target and other arguments when a command or JSON text embeds a Co
     expect(JSON.parse(summary)).toEqual(sanitized)
     expect(legacy.toolCall).toEqual({ rawInputSummary: JSON.stringify(sanitized) })
   }
+})
+
+it('masks a complete HTTP credential field and retains the next public field and URL', () => {
+  const rawInput = {
+    url: 'https://example.invalid/guide',
+    headers:
+      'Authorization: Custom private-fixture second-fixture\r\nAccept: text/plain\r\nX-Api-Key: first part\r\n second-fixture\r\nX-Request-Id: public-id',
+  }
+  const prompt = reviewPrompt('Read the guide', { toolCallId: 'fetch', name: 'fetch', rawInput }, 'en')
+  const audit = summarizeRawInputForAudit(rawInput)
+  const expected = 'Authorization: <redacted>\r\nAccept: text/plain\r\nX-Api-Key: <redacted>\r\nX-Request-Id: public-id'
+  expect(prompt).toContain(JSON.stringify(expected))
+  expect(JSON.parse(audit.summary)).toEqual({ ...rawInput, headers: expected })
+})
+
+it('omits a credential-bearing field name from the audit and hands an obscured operation to the user', () => {
+  const rawInput = { 'password=private-fixture': 'value-fixture', url: 'https://example.invalid/guide' }
+  expect(JSON.parse(summarizeRawInputForAudit(rawInput).summary)).toEqual({ url: rawInput.url })
+  expect(() => reviewPrompt('Read the guide', { toolCallId: 'fetch', name: 'fetch', rawInput }, 'en')).toThrow(
+    /redaction/,
+  )
 })
 
 it.each([

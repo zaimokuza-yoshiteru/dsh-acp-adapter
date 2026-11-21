@@ -36,6 +36,8 @@ import {
   type AcpPermissionAuditData,
 } from '../../../src/domain/policy/events.ts'
 import { auditTimelineRowOf } from '../../../src/host/composition/audit-row.ts'
+import { createAcpNativePermissionHandler } from '../../../src/domain/policy/permissions.ts'
+import { UncommittedWithdrawals } from '../../../src/persistence/uncommitted-withdrawals.ts'
 import { matchesDiagnosticView } from '../../../src/contract/diagnostics.ts'
 
 const TIME_BASE = 1_700_000_000_000
@@ -295,7 +297,15 @@ describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
 
   it('redacts new and legacy permission inputs across reopen without changing the binding or decision identities', async () => {
     const id = SessionId('cookie-audit')
-    const rawInput = { headers: { 'Set-Cookie': 'sid=cookie-fixture; note=second-fixture' }, path: 'README' }
+    const rawInput = {
+      headers: [
+        ['X-Api-Key', 'api-fixture'],
+        { name: 'Authorization', value: 'authorization-fixture' },
+        { key: 'Set-Cookie', value: 'sid=cookie-fixture; note=second-fixture' },
+        ['Accept', 'text/plain'],
+      ],
+      path: 'README',
+    }
     const asked = createPermissionAskedAudit({
       requestId: 'request',
       agentSessionId: BINDING_A.agentSessionId,
@@ -315,8 +325,8 @@ describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
     try {
       const saved = db.prepare('SELECT payload FROM audit WHERE dsh_session_id = ? AND seq = 2').get(id)
       expect(saved?.payload).toContain('<redacted>')
-      expect(saved?.payload).not.toMatch(/cookie-fixture|second-fixture/)
-      expect(asked.toolCall.rawInputSummaryVersion).toBe(3)
+      expect(saved?.payload).not.toMatch(/cookie-fixture|second-fixture|api-fixture|authorization-fixture/)
+      expect(asked.toolCall.rawInputSummaryVersion).toBe(4)
       const insert = db.prepare(
         "INSERT INTO audit (record_id, dsh_session_id, seq, time, kind, payload) VALUES (?, ?, ?, ?, 'permission', ?)",
       )
@@ -326,6 +336,9 @@ describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
         { rawInput },
         { rawInputSummaryVersion: 2, rawInputSummary: v2 },
         { rawInputSummaryVersion: 2, rawInputSummary: v2.slice(0, -1) + '…(+1 chars)' },
+        { rawInputSummaryVersion: 2, rawInputSummary: legacySummary },
+        { rawInputSummaryVersion: 3, rawInputSummary: legacySummary },
+        { rawInputSummaryVersion: 3, rawInputSummary: legacySummary.slice(0, -1) + '…(+1 chars)' },
       ]
       historical.forEach((input, n) => {
         const toolCall = { toolCallId: 'call', rawInputHash: asked.toolCall.rawInputHash, ...input }
@@ -336,7 +349,7 @@ describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
     }
     store = createAcpSidecar({ root })
     const entries = await store.listPage(id, 1, 10)
-    expect(entries).toHaveLength(6)
+    expect(entries).toHaveLength(9)
     for (const [n, entry] of entries.entries()) {
       expect(entry.data).toMatchObject({
         requestId: 'request',
@@ -344,8 +357,9 @@ describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
         toolCall: { toolCallId: 'call', rawInputHash: asked.toolCall.rawInputHash },
       })
       const detail = auditTimelineRowOf(entry).detail!
-      expect(detail).not.toMatch(/cookie-fixture|second-fixture/)
-      if (n === 2 || n === 5) expect(detail).not.toContain('rawInputSummary')
+      expect(JSON.stringify(entry.data)).not.toMatch(/cookie-fixture|second-fixture|api-fixture|authorization-fixture/)
+      expect(detail).not.toMatch(/cookie-fixture|second-fixture|api-fixture|authorization-fixture/)
+      if ([2, 5, 8].includes(n)) expect(detail).not.toContain('rawInputSummary')
       else expect(detail).toContain('README')
     }
     await expect(store.readLatestBinding(id)).resolves.toEqual(binding)
@@ -978,26 +992,117 @@ describe('reconciliation kind', () => {
 })
 
 describe('permission decided 重连重放去重（/ dedupe_key）', () => {
-  it('keeps the withdrawn grant and its final cancellation in order after restart', async () => {
+  it('replays only confirmed withdrawals after the final audit insert fails and the sidecar restarts', async () => {
     const sid = SessionId('work')
-    const ids = { requestId: 'ai-1', agentSessionId: 'main', toolCallId: 'read-1' }
-    const decision = {
-      ...ids,
-      phase: 'decided',
-      outcome: 'selected',
-      optionId: 'once',
-      decisionVia: 'opencode-ai',
-      selectedOptionKind: 'allow_once',
-    } as const
-    const withdrawal = { ...ids, phase: 'decision-withdrawn', outcome: 'cancelled' } as const
-    for (const data of [decision, withdrawal, withdrawal]) await store.append(sid, { kind: 'permission', data })
+    const owner = {}
+    const stop = new AbortController()
+    let withdraw = false
+    const handle = createAcpNativePermissionHandler({
+      getAgent: () => owner,
+      permissionProfile: 'devin',
+      riskReviewer: {
+        agent: 'devin',
+        model: 'swe-2-high',
+        policyVersion: 'v1',
+        review: async () => ({ risk: 'not_high', reason: 'Read only' }),
+      },
+      audit: {
+        append: async (record) => {
+          await store.append(sid, record)
+          if (withdraw && record.data.phase === 'decided') stop.abort()
+        },
+      },
+    })
+    const request = {
+      sessionId: 'main',
+      toolCall: { toolCallId: 'read-1', kind: 'read' as const },
+      options: [{ optionId: 'once', name: 'Allow once', kind: 'allow_once' as const }],
+    }
+    // An earlier request with exactly the same Agent and tool-call ID really was allowed.
+    await expect(handle(request)).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'once' } })
+    const db = rawDb()
+    try {
+      db.exec(`CREATE TRIGGER fail_withdrawal BEFORE INSERT ON audit
+        WHEN NEW.kind = 'permission' AND json_extract(NEW.payload, '$.phase') = 'decision-withdrawn'
+        BEGIN SELECT RAISE(ABORT, 'private error detail'); END`)
+      withdraw = true
+      const response = await handle(request, stop.signal)
+      expect(response).toEqual({ outcome: { outcome: 'cancelled' } })
+      expect(warns).toContain('dsh-acp: failed to reconcile the permission withdrawal journal')
+      await expect(store.listPage(sid, 0, 10)).rejects.toThrow('ACP_PERMISSION_AUDIT_UNAVAILABLE')
+      expect(await store.list(SessionId('other-session'))).toEqual([])
+      const pending = db.prepare('SELECT request_id, time FROM pending_permission_withdrawals').all()
+      expect(pending).toHaveLength(1)
+      await store.dispose()
+      db.exec('DROP TRIGGER fail_withdrawal')
+      store = createAcpSidecar({ root })
+      // Any ordinary startup read opens SQLite and replays the journal before the audit UI asks for it.
+      await store.readLatestBinding(sid)
+      expect(db.prepare('SELECT request_id FROM pending_permission_withdrawals').all()).toEqual([])
+      const entries = await store.list(sid)
+      const withdrawal = entries.at(-1)!
+      expect(withdrawal).toMatchObject({
+        time: pending[0]!.time,
+        data: { phase: 'decision-withdrawn', requestId: pending[0]!.request_id, outcome: response.outcome.outcome },
+      })
+      const selected = entries.filter((e) => e.kind === 'permission' && e.data.phase === 'decided')
+      expect(selected).toHaveLength(2)
+      expect(selected[0]).not.toMatchObject({ data: { requestId: pending[0]!.request_id } })
+      expect(selected[1]).toMatchObject({ data: { requestId: pending[0]!.request_id, decisionVia: 'devin-ai' } })
+      expect(entries.slice(-2).map(auditTimelineRowOf)).toMatchObject([
+        { summaryCode: 'permission.ai-decided', status: 'allow_once' },
+        { summaryCode: 'permission.decision-withdrawn', status: 'cancelled' },
+      ])
+      if (withdrawal.kind !== 'permission') throw new Error('expected a permission withdrawal')
+      await store.append(sid, { kind: 'permission', data: withdrawal.data })
+      expect(await store.list(sid)).toEqual(entries)
+    } finally {
+      db.close()
+    }
+  })
+
+  it('retains withdrawals across live sidecars when even the journal is unwritable and skips cleared history', async () => {
     await store.dispose()
-    store = createAcpSidecar({ root })
-    const rows = (await store.list(sid)).map(auditTimelineRowOf)
-    expect(rows).toMatchObject([
-      { summaryCode: 'permission.opencode-ai-decided', status: 'allow_once' },
-      { summaryCode: 'permission.decision-withdrawn', status: 'cancelled' },
-    ])
+    const uncommittedWithdrawals = new UncommittedWithdrawals()
+    store = createAcpSidecar({ root, uncommittedWithdrawals })
+    const next = createAcpSidecar({ root, uncommittedWithdrawals })
+    extraStores.push(next)
+    const kept = SessionId('kept')
+    const cleared = SessionId('cleared')
+    const withdrawal = {
+      phase: 'decision-withdrawn',
+      requestId: 'one',
+      agentSessionId: 'agent-session-1',
+      toolCallId: 'tc-1',
+      outcome: 'cancelled',
+    } as const
+    for (const id of [kept, cleared]) await store.append(id, { kind: 'permission', data: decidedData('one') })
+    await next.readLatestBinding(kept)
+    const db = rawDb()
+    try {
+      db.exec(`CREATE TRIGGER fail_journal BEFORE INSERT ON pending_permission_withdrawals
+        BEGIN SELECT RAISE(ABORT, 'private journal detail'); END`)
+      for (const id of [kept, cleared]) {
+        await expect(store.append(id, { kind: 'permission', time: 21, data: withdrawal })).rejects.toThrow(
+          'ACP_PERMISSION_AUDIT_UNAVAILABLE',
+        )
+      }
+      await expect(next.auditHead(kept)).rejects.toThrow('ACP_PERMISSION_AUDIT_UNAVAILABLE')
+      expect(await next.auditHead(SessionId('unaffected'))).toBe(0)
+      await expect(store.dispose()).rejects.toThrow('ACP_PERMISSION_AUDIT_UNAVAILABLE')
+      await expect(next.dispose()).rejects.toThrow('ACP_PERMISSION_AUDIT_UNAVAILABLE')
+      db.prepare('DELETE FROM audit WHERE dsh_session_id = ?').run(cleared)
+      db.exec('DROP TRIGGER fail_journal')
+      await uncommittedWithdrawals.close()
+      store = createAcpSidecar({ root })
+      expect(await store.list(kept)).toMatchObject([
+        { data: { phase: 'decided', outcome: 'selected' } },
+        { time: 21, data: withdrawal },
+      ])
+      expect(await store.list(cleared)).toEqual([])
+    } finally {
+      db.close()
+    }
   })
 
   it('persists independently correlated AI attempts and projects their phases after reopening', async () => {

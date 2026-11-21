@@ -168,6 +168,8 @@ Devin 真实浏览器共享任务验收使用 `live-agents.e2e.ts`，显式设�
 
 验证 Devin AI 审批可使用 [live-devin-ai-review.e2e.ts](live-devin-ai-review.e2e.ts)。设置 `DSH_E2E_LIVE_DEVIN_AI_APPROVAL=1` 和 `DSH_E2E_ADAPTER_DIRECTORY`（解包后的候选包目录），配合上述 Electron 和 RC.5 scaffold 运行该文件。它使用本机已有 Devin 登录，默认模型为 `swe-2-high`；可通过 `DSH_E2E_LIVE_DEVIN_MODEL` 指定当前 ACP 目录中的精确模型 ID。用例验证普通会话自动写入、Teams 成员高风险写入经刷新后人工拒绝，以及关闭 AI 审批后人工取消。最后停启整个插件，核对审计并在同一会话恢复写入。截图和审计保存在 `.local/devin-ai-review-desktop/`。
 
+运行 `pnpm test:e2e test/e2e/review-version-settings.e2e.ts` 可验证 AI 审批的版本提示。该用例在临时工作区启动 OpenCode 协议夹具，核对探测成功、开关默认关闭、打开后的中英文说明及再次关闭后的状态，无需账户。宽屏英文和 390 px 中文截图写入 `.local/review-version-settings/`，可用 `DSH_E2E_EVIDENCE_DIR` 指定目录。
+
 仅验证中英文设置页时，使用 `DSH_E2E_LIVE_DEVIN_REVIEW_SETTINGS=1` 运行 [live-devin-review-settings.e2e.ts](live-devin-review-settings.e2e.ts)，同样指定已解包的候选包和 Electron。此用例读取本机 Devin 模型目录，在英文界面选择模型，重新打开中文界面确认设置仍然生效，最后关闭开关。截图保存在 `.local/devin-review-settings/`。
 
 OpenCode 的两项验收共用 RC.5 Electron、解包后的候选包，以及 `DSH_E2E_LIVE_OPENCODE_COMMAND` 指定的 OpenCode 2.3.2。用 `DSH_E2E_LIVE_OPENCODE_REVIEW_SETTINGS=1` 运行 [中英文设置页](live-opencode-review-settings.e2e.ts)，核对单一开关、两个配置的模型选择和重新打开后的状态。用 `DSH_E2E_LIVE_OPENCODE_AI_APPROVAL=1` 运行 [业务审批](live-opencode-ai-approval.e2e.ts)，从 DSH 输入框发起写入，核对一次放行、高风险人工拒绝、关闭开关后的人工确认与审计。测试使用隔离配置和本机固定模型应答，无需付费推理。

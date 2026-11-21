@@ -268,7 +268,7 @@ export async function installInstalledProfileRegistry(
   const toolBridgeKey = createDshToolBridgeKey(readToolAdmission)
   let disposed = false
   const log = createAcpLogger(ctx.logger)
-  const sidecar = installAcpSidecar(ctx)
+  const sidecar = installAcpSidecar(ctx, continuity.uncommittedWithdrawals)
   const profileAdapters = new Map<string, AcpProfileAdapter>()
   const namedSteps = new NamedModelSteps()
   const canSwitchNamedModel = (provider: string) => {

@@ -5,12 +5,15 @@
 }
 
 .card {
+  --acp-question-inset: 24px;
+  --acp-question-row-inset: 8px;
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   width: 100%;
   max-width: var(--dsh-chat-content-width);
   max-height: min(70vh, 640px);
-  padding: 0 0 10px;
+  padding: 0 0 16px;
   overflow: hidden;
   border: 0;
   --dsw-elevation-stroke-color: var(--dsw-alias-border-l2-darkmode-thin);
@@ -33,7 +36,7 @@
   max-height: min(24vh, 240px);
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 16px 16px 8px 24px;
+  padding: 16px var(--acp-question-inset) 8px;
 }
 
 .heading {
@@ -63,12 +66,12 @@
   gap: 12px;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0 12px 4px;
+  padding: 0 calc(var(--acp-question-inset) - var(--acp-question-row-inset)) 4px;
 }
 
 .detail {
   min-width: 0;
-  margin-left: 12px;
+  margin-inline: var(--acp-question-row-inset);
 }
 
 .detail [data-disclosure-row] {
@@ -111,7 +114,7 @@
   align-items: flex-start;
   justify-content: flex-start;
   gap: 8px;
-  padding: 8px 12px 8px 8px;
+  padding: 8px var(--acp-question-row-inset);
   border: 0.5px solid transparent;
   border-radius: var(--dsw-radius-md);
   background: transparent;
@@ -184,7 +187,7 @@
   flex: 0 0 auto;
   align-items: center;
   gap: 12px;
-  padding: 8px 16px 0;
+  padding: 8px var(--acp-question-inset) 0;
 }
 
 .status {
@@ -211,18 +214,21 @@
     padding-left: calc(var(--dsh-composer-side-clearance) + 8px);
   }
 
-  .header {
-    padding-left: 16px;
+  .card {
+    --acp-question-inset: 16px;
   }
+}
 
-  .detail {
-    margin-left: 4px;
-  }
-
+/* In the smallest composer, feedback needs the full line to keep both actions in place. */
+@container (max-width: 18rem) {
   .footer {
-    align-items: stretch;
     flex-direction: column;
-    gap: 8px;
+    align-items: stretch;
+    gap: 4px;
+  }
+
+  .status {
+    min-height: 1lh;
   }
 
   .actions > button {

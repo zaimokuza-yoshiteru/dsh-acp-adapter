@@ -1,11 +1,11 @@
 import type { ToolCallUpdate } from '@agentclientprotocol/sdk'
 import { ApprovalReviewError, type ApprovalReviewDecision } from '../../contract/approval-review.ts'
-import { isSensitiveActivityField } from '../../contract/redaction.ts'
+import { createSensitiveFieldMatcher } from '../../contract/redaction.ts'
 import { permissionOperationEvidence, redactSecretText } from '../../domain/policy/events.ts'
 import { commandOf } from '../../domain/policy/permissions.ts'
 
 /** Audit version of the review prompt, evidence selection and decision schema. */
-export const APPROVAL_REVIEW_POLICY_VERSION = '4'
+export const APPROVAL_REVIEW_POLICY_VERSION = '5'
 
 const MAX_EVIDENCE_BYTES = 64 * 1024
 export const MAX_REVIEW_OUTPUT_BYTES = 4096
@@ -59,8 +59,11 @@ export function reviewPrompt(task: string, call: ToolCallUpdate, locale: string 
   // A terminal stream or embedded resource can carry the operation's actual target or content.
   if (op.content?.some((item) => item.type === 'unavailable'))
     throw new ApprovalReviewError('incomplete-evidence', 'Incomplete ACP approval evidence')
+  const sensitive = createSensitiveFieldMatcher()
   const action = JSON.stringify(op, function (this: unknown, key, value: unknown) {
-    if (isSensitiveActivityField(key, value, this)) return '<redacted>'
+    if (redactSecretText(key) !== key)
+      throw new ApprovalReviewError('incomplete-evidence', 'ACP approval field obscured by redaction')
+    if (sensitive(key, value, this)) return '<redacted>'
     if (typeof value !== 'string') return value
     const safe = redactSecretText(value)
     if (safe !== value && /^\s*<redacted(?:-[^>]+)?>\s*$/i.test(safe))

@@ -165,7 +165,9 @@ export type AcpProbePhaseView = 'initialize' | 'session'
  * **密钥边界** 只回显 command/args/loginHint，env 永不在响应里（钉版）。
  */
 export interface AcpProviderHealth {
-  /** Present when this Host can isolate a local Devin reviewer. Choices come from the existing probe. */
+  /** A successful probe identified a local review candidate with an unsupported CLI version. */
+  readonly reviewVersionUnsupported?: true
+  /** Available review models from a verified local peer. */
   readonly openCodeReviewModels?: readonly { readonly id: string; readonly name: string }[]
   readonly devinReviewModels?: readonly { readonly id: string; readonly name: string }[]
   readonly id: string

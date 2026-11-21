@@ -365,6 +365,19 @@ function Loaded({
     for (const id of ids) {
       const agent = agents[id]!
       const row = healthRowOf(snapshot.health.rows, id)
+      if (row?.reviewVersionUnsupported && row.probe.status === 'ok' && row.probe.agentInfo) {
+        modelFields.push(
+          h(
+            'p',
+            { key: id, className: css.notice },
+            t('reviewVersionUnsupported', {
+              name: agent.name,
+              version: row.probe.agentInfo.version,
+            }),
+          ),
+        )
+        continue
+      }
       const devin = effectiveRuntimeOf(id, agent) === 'devin'
       const choices = devin ? row?.devinReviewModels : row?.openCodeReviewModels
       if (!choices) continue

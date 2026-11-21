@@ -1,3 +1,11 @@
+import { fileURLToPath } from 'node:url'
+import { AcpSessionRuntime } from '../../../src/runtime/session/session-runtime.ts'
+import { ApprovalReviewScope } from '../../../src/host/approval-review/scope.ts'
+import { reviewPrompt } from '../../../src/host/approval-review/decision.ts'
+import type { ApprovalReviewRequest } from '../../../src/host/approval-review/backend.ts'
+import { supportsLocalApprovalReview } from '../../../src/contract/approval-review.ts'
+import { createAcpNativePermissionHandler } from '../../../src/domain/policy/permissions.ts'
+import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
@@ -146,6 +154,114 @@ async function fixture(mode: 'native' | 'ptc' = 'native') {
 }
 
 describe('Host admission reaches the MCP executor', () => {
+  it.skipIf(!supportsLocalApprovalReview(process.platform))(
+    'answers the verified Devin bridge permission once and enforces the Host guard on the ensuing MCP call',
+    async () => {
+      const f = await fixture()
+      const body = vi.fn(async () => 'Synthetic ticket title')
+      f.ctx.tools.register(
+        defineTool({
+          name: 'ticket_title',
+          description: 'Read one ticket title.',
+          parameters: { issueKey: { type: 'string', required: true } },
+          output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+          execute: body,
+        }),
+      )
+      const guard = vi.fn(() => 'Session policy denies this ticket')
+      f.ctx.tools.guard(guard)
+      const task = 'Read the title of ticket DEMO-1'
+      const input = { task: () => task }
+      const review = vi.fn(async (request: ApprovalReviewRequest) => {
+        expect(reviewPrompt(request.task, request.toolCall, 'en')).toContain('DEMO-1')
+        return { risk: 'not_high' as const, reason: 'Read a single ticket title.' }
+      })
+      const profile = { name: 'Devin', command: 'devin', args: ['acp'], env: {} }
+      const scope = new ApprovalReviewScope('devin', () => ({ review, dispose: async () => {} }), vi.fn())
+      scope.configure(profile, 'swe-2-high')
+      cleanups.push(() => scope.close())
+      const inspect = vi.fn(async () => {})
+      const ask = vi.fn(async () => ({ answers: [] }))
+      const append = vi.fn(async (_record: { data: { phase: string } }) => {})
+      const received: unknown[] = []
+      const { seam } = await sharedTestSubprocess()
+      const argv = [process.execPath, fileURLToPath(new URL('../../fixtures/devin-bridge-review.mjs', import.meta.url))]
+      f.adapter.run = async (options) => {
+        const runtime = new AcpSessionRuntime({
+          profileId: 'devin',
+          config: profile,
+          subprocess: seam,
+          cwd: process.cwd(),
+          prepareLaunch: async () => ({ argv, env: {}, spawnPlan: { argv, env: {} } }),
+          createMcpLease: (capabilities) =>
+            createDshToolBridge(f.ctx, f.agent.id, capabilities, 'devin', options.tools, f.readAdmission),
+          onPermissionCheck: inspect,
+          onPermissionRequest: async (params, signal, _onDenial, context) => {
+            if (!signal || !context) throw new Error('Missing active permission review context')
+            return scope.handle(profile, context, 'en', signal, (settings, lifetime) =>
+              createAcpNativePermissionHandler({
+                ...settings,
+                permissionProfile: 'devin',
+                getAgent: () => (context.current() ? f.agent : undefined),
+                audit: { append },
+                permissionQuestions: { ask },
+              })(params, lifetime),
+            )
+          },
+        })
+        try {
+          await runtime.prompt(
+            [{ type: 'text', text: task }],
+            ({ update }) => {
+              if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text')
+                received.push(JSON.parse(update.content.text))
+            },
+            options.signal,
+            undefined,
+            undefined,
+            undefined,
+            { reviewInput: () => input },
+          )
+        } finally {
+          await runtime.close()
+        }
+      }
+      await f.send()
+      expect(inspect).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: 'approval-required',
+          identitySource: 'devin-title',
+          toolName: 'ticket_title',
+        }),
+        expect.anything(),
+      )
+      expect(review).toHaveBeenCalledTimes(1)
+      expect(ask).not.toHaveBeenCalled()
+      expect(append.mock.calls.map(([record]) => record.data.phase)).toEqual([
+        'asked',
+        'ai-review-started',
+        'ai-review-result',
+        'decided',
+      ])
+      expect(append.mock.lastCall?.[0].data).toMatchObject({
+        decisionVia: 'devin-ai',
+        selectedOptionKind: 'allow_once',
+        optionId: 'this-call',
+      })
+      expect(received).toMatchObject([
+        {
+          permission: { outcome: 'selected', optionId: 'this-call' },
+          call: {
+            isError: true,
+            content: [{ type: 'text', text: expect.stringContaining('Session policy denies this ticket') }],
+          },
+        },
+      ])
+      expect(guard).toHaveBeenCalledOnce()
+      expect(body).not.toHaveBeenCalled()
+    },
+  )
+
   it.each(['native', 'ptc'] as const)(
     'borrows the exact %s step admission without repeating conditions or restarting a stable directory',
     async (mode) => {

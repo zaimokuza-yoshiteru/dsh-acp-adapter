@@ -47,7 +47,7 @@ function renderPanel(snapshot: AcpPanelSnapshot, locale = en) {
   }
   const tree = expand(
     AcpSection({
-      t: (key, params) => locale[key].replace('{name}', String(params?.name ?? '')),
+      t: (key, params) => locale[key].replace(/\{(\w+)\}/g, (_, name: string) => String(params?.[name] ?? '')),
       useStore: (selector) => selector(snapshot),
       panel,
     }),
@@ -138,6 +138,34 @@ it.each([zh, en])(
     expect(nodes(missing.tree).filter((node) => node.type === 'Switch')).toHaveLength(1)
     expect(text(missing.tree)).toContain(locale.aiApprovalHelp)
     expect(text(missing.tree)).not.toContain(noCatalog)
+    const mismatch: AcpPanelSnapshot['health'] = {
+      ...snapshot.health,
+      rows: [
+        {
+          ...row,
+          reviewVersionUnsupported: true,
+          probe: {
+            status: 'ok',
+            at: 1,
+            modelCount: 1,
+            authMethods: [],
+            agentInfo: { name: 'affogato', version: '3000.14.30822' },
+            capabilities: null,
+            cleanup: null,
+            capabilityHash: null,
+            protocolVersion: 1,
+            versionCompatibility: null,
+            matrix: [],
+          },
+        },
+      ],
+    }
+    const notice = locale.reviewVersionUnsupported.replace('{name}', config.name).replace('{version}', '3000.14.30822')
+    expect(text(renderPanel({ ...snapshot, health: mismatch }, locale).tree)).not.toContain(notice)
+    expect(
+      text(renderPanel({ settings: { ...snapshot.settings, aiApproval: true }, health: mismatch }, locale).tree),
+    ).toContain(notice)
+    expect(text(missing.tree)).not.toContain(notice)
     const unsupported = { ...snapshot.health, rows: [], localReviewUnavailable: true as const }
     expect(text(renderPanel({ ...snapshot, health: unsupported }, locale).tree)).not.toContain(
       locale.aiApprovalUnavailable,

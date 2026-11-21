@@ -53,7 +53,8 @@ import {
 import { ACP_CONFIG_IDENTIFIER_MAX } from '../contract/config-options.ts'
 import { isDevinReviewModel } from '../contract/devin-review.ts'
 import { isOpenCodeReviewModel } from '../contract/opencode-review.ts'
-import { approvalReviewAgent, supportsLocalApprovalReview, verifiedReviewPeer } from '../contract/approval-review.ts'
+import { approvalReviewAgent, supportsLocalApprovalReview } from '../contract/approval-review.ts'
+import { reviewPeerStatus } from '../contract/review-peer.ts'
 import { acpModelSelection, isAcpModelRouteWithinBounds } from '../contract/model-selection.ts'
 import { acpProbeConfigKey, acpVersionCompatibility, catalogIdOf } from '../domain/session/agent-config.ts'
 import { registryVersionOf } from '../domain/session/registry-versions.ts'
@@ -1186,13 +1187,15 @@ export class AcpRemoteService extends TypertRemoteService {
         const referenceVersion = registryVersionOf(catalogIdOf(id, config))
         const result = matchingSnapshot?.result
         const candidate = approvalReviewAgent(id, config)
-        const reviewAgent =
-          candidate && result?.kind === 'ok' && verifiedReviewPeer(candidate, result.agentInfo) ? candidate : undefined
+        const reviewStatus =
+          candidate && this.resolved.localAiReview && hostCompatible && executable && result?.kind === 'ok'
+            ? reviewPeerStatus(candidate, result.agentInfo)
+            : undefined
         const reviewModels =
-          this.resolved.localAiReview && hostCompatible && executable && reviewAgent && result?.kind === 'ok'
+          reviewStatus === 'verified' && result?.kind === 'ok'
             ? result.models.flatMap((model) => {
                 const selected = acpModelSelection(model.id)
-                const validModel = reviewAgent === 'devin' ? isDevinReviewModel : isOpenCodeReviewModel
+                const validModel = candidate === 'devin' ? isDevinReviewModel : isOpenCodeReviewModel
                 return selected.kind === 'declared-model' && validModel(selected.value)
                   ? [{ id: selected.value, name: model.name || selected.value }]
                   : []
@@ -1207,8 +1210,9 @@ export class AcpRemoteService extends TypertRemoteService {
           executable,
           version,
           probe: probeRow(matchingSnapshot, referenceVersion, this.resolved.imageInputAvailable),
-          ...(reviewModels && reviewAgent === 'devin' ? { devinReviewModels: reviewModels } : {}),
-          ...(reviewModels && reviewAgent === 'opencode' ? { openCodeReviewModels: reviewModels } : {}),
+          ...(reviewStatus === 'unsupported-version' ? { reviewVersionUnsupported: true as const } : {}),
+          ...(reviewModels && candidate === 'devin' ? { devinReviewModels: reviewModels } : {}),
+          ...(reviewModels && candidate === 'opencode' ? { openCodeReviewModels: reviewModels } : {}),
           state: deriveAcpAgentState(hostCompatible, matchingSnapshot?.result),
         }
       }),

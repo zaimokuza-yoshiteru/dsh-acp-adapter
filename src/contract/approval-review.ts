@@ -1,9 +1,9 @@
-import type { Implementation } from '@agentclientprotocol/sdk'
 import { effectiveRuntimeOf, type AcpAgentConfig } from './agent-config.ts'
-import { isLocalDevinReviewProfile, isDevinReviewerAgent } from './devin-review.ts'
-import { isLocalOpenCodeReviewProfile, isOpenCodeReviewerAgent } from './opencode-review.ts'
+import { isLocalDevinReviewProfile } from './devin-review.ts'
+import { isLocalOpenCodeReviewProfile } from './opencode-review.ts'
 
-export type ReviewAgent = 'devin' | 'opencode'
+import type { ReviewAgent } from './review-peer.ts'
+export type { ReviewAgent } from './review-peer.ts'
 
 /** Stable, content-free reasons shared by native approval cards and audit details. */
 export const approvalReviewFailures = {
@@ -55,10 +55,6 @@ export function approvalReviewAgent(id: string, profile: AcpAgentConfig): Review
   if (runtime === 'devin' && isLocalDevinReviewProfile(profile)) return 'devin'
   if (runtime === undefined && isLocalOpenCodeReviewProfile(profile)) return 'opencode'
   return undefined
-}
-
-export function verifiedReviewPeer(agent: ReviewAgent, info: Implementation | null | undefined): boolean {
-  return agent === 'devin' ? isDevinReviewerAgent(info) : isOpenCodeReviewerAgent(info)
 }
 
 export function supportsLocalApprovalReview(platform: string): boolean {

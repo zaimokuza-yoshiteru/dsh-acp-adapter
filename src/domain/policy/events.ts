@@ -21,7 +21,7 @@
 import { createHash } from 'node:crypto'
 import type { ApprovalReviewFailureCode } from '../../contract/approval-review.ts'
 import type { AcpPermissionCheck } from './permission-check.ts'
-import { isSensitiveActivityField, redactSecretText as redactCommonSecretText } from '../observability/redaction.ts'
+import { createSensitiveFieldMatcher, redactSecretText as redactCommonSecretText } from '../observability/redaction.ts'
 import type { PermissionOption, ToolCallLocation, ToolCallUpdate } from '@agentclientprotocol/sdk'
 
 /** 审批审计 entry 在 sidecar 里的 `kind`（src/persistence/sidecar.ts entry 联合的判别值之一）。 */
@@ -111,7 +111,7 @@ export interface AcpDegradationAuditData {
 /** Legacy approval outcome retained only to decode older permission audit rows. */
 export type AcpApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
 
-const RAW_INPUT_SUMMARY_VERSION = 3
+const RAW_INPUT_SUMMARY_VERSION = 4
 
 /**
  * The tool-call snapshot persisted in the `asked` phase: id/title/kind/
@@ -130,7 +130,7 @@ export interface AcpPermissionToolCallSnapshot {
   readonly locations?: readonly ToolCallLocation[]
   /** rawInput 的字段级脱敏、有界单行摘要（{@link summarizeRawInputForAudit}；agent 未发 rawInput 时缺席）。 */
   readonly rawInputSummary?: string
-  /** Earlier summaries could retain Cookie headers and need filtering when read. */
+  /** Earlier summaries could retain credential header values and need filtering when read. */
   readonly rawInputSummaryVersion?: typeof RAW_INPUT_SUMMARY_VERSION
   /** rawInput canonical JSON 的 sha256 前 16 hex（agent 未发 rawInput 时缺席）。 */
   readonly rawInputHash?: string
@@ -176,7 +176,11 @@ const SECRET_HEADER_PATTERN = new RegExp(
 export function redactSecretText(value: string): string {
   return redactCommonSecretText(value)
     .replace(SECRET_HEADER_PATTERN, '$1<redacted>')
-    .replace(SECRET_JSON_PROPERTY_PATTERN, '$1<redacted>')
+    .replace(SECRET_JSON_PROPERTY_PATTERN, (match, prefix: string) => {
+      const first = match[prefix.length]
+      const quote = first === '"' || first === "'" ? first : ''
+      return `${prefix}${quote}<redacted>${quote}`
+    })
     .replace(SECRET_ENV_ASSIGNMENT_PATTERN, '$1=<redacted>')
     .replace(SECRET_OPTION_PATTERN, '$1=<redacted>')
 }
@@ -186,7 +190,7 @@ function isPlainObjectValue(value: unknown): value is Record<string, unknown> {
 }
 
 /** 递归脱敏：secret 词表命中的键值换 `<redacted>`；深度/数组/字符串各有界。 */
-function redactForAudit(value: unknown, depth: number): unknown {
+function redactForAudit(value: unknown, depth: number, sensitive = createSensitiveFieldMatcher()): unknown {
   if (depth > REDACT_DEPTH_MAX) return '…'
   if (typeof value === 'string') {
     const redacted = redactSecretText(value)
@@ -196,7 +200,7 @@ function redactForAudit(value: unknown, depth: number): unknown {
     const items: unknown[] = value
       .slice(0, REDACT_ARRAY_MAX)
       .map((item, index) =>
-        isSensitiveActivityField(String(index), item, value) ? '<redacted>' : redactForAudit(item, depth + 1),
+        sensitive(String(index), item, value) ? '<redacted>' : redactForAudit(item, depth + 1, sensitive),
       )
     if (value.length > REDACT_ARRAY_MAX) items.push(`… +${String(value.length - REDACT_ARRAY_MAX)} items`)
     return items
@@ -204,7 +208,8 @@ function redactForAudit(value: unknown, depth: number): unknown {
   if (isPlainObjectValue(value)) {
     const out: Record<string, unknown> = Object.create(null)
     for (const key of Object.keys(value)) {
-      out[key] = isSensitiveActivityField(key, value[key], value) ? '<redacted>' : redactForAudit(value[key], depth + 1)
+      if (redactSecretText(key) !== key) continue
+      out[key] = sensitive(key, value[key], value) ? '<redacted>' : redactForAudit(value[key], depth + 1, sensitive)
     }
     return out
   }

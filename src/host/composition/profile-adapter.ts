@@ -4925,6 +4925,7 @@ export class AcpProfileAdapter extends LlmAdapter {
               : binding.getAgent,
           ...(binding.locale === undefined ? {} : { locale: binding.locale }),
           ...(audit === undefined ? {} : { audit }),
+          log: (message) => this.log?.(message, { operation: 'permission' }),
           ...(binding.onUnavailable === undefined ? {} : { onUnavailable: binding.onUnavailable }),
         })(params, lifetime)
       if (context && signal && this.approvalReview?.enabled) {

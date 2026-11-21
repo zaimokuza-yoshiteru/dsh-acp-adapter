@@ -61,7 +61,7 @@ const zh = {
   auditIdentityUnmatched: '无法匹配当前连接的工具身份',
   auditInvalidToolName: '已拒绝当前连接中不存在的工具调用',
   auditNotCoordination: '普通工具，保留 Agent 审批',
-  auditApprovalRequired: '按会话策略转交审批',
+  auditApprovalRequired: '工具桥已将 Agent 的授权请求转交审批',
   auditAllowOnceMissing: 'Agent 未提供允许一次选项',
   'activity.code': '代码',
   'activity.wrap': '自动换行',
@@ -151,6 +151,7 @@ const zh = {
   aiApprovalHelp:
     '企业限制 Agent 自动模式时，可让所选模型审查 Devin 或 OpenCode 的工具请求。模型标为高风险或无法判断的请求由你确认。',
   aiApprovalUnavailable: '当前执行环境不支持 AI 审批，请求将由你确认。',
+  reviewVersionUnsupported: '{name} 的 CLI 版本 {version} 不支持 AI 审批。需要确认时会提示你。',
   reviewModelFor: '{name} 审查模型',
   reviewSessionModel: '跟随会话模型',
   reviewModelMissing: '保存的审查模型已不可用，请选择其他模型。',
@@ -531,7 +532,7 @@ const en: Record<AcpLocaleKey, string> = {
   auditIdentityUnmatched: 'Tool identity did not match the current connection',
   auditInvalidToolName: 'Rejected a tool call absent from the current connection',
   auditNotCoordination: 'Ordinary tool; Agent approval is preserved',
-  auditApprovalRequired: 'Approval follows the session policy',
+  auditApprovalRequired: 'Tool bridge forwarded the Agent’s permission request for approval',
   auditAllowOnceMissing: 'Agent did not offer allow once',
   'activity.code': 'Code',
   'activity.wrap': 'Wrap lines',
@@ -643,6 +644,8 @@ const en: Record<AcpLocaleKey, string> = {
   aiApprovalHelp:
     'When your organization restricts automatic modes, a model can review Devin or OpenCode tool requests. You decide when the model flags a request as high risk or cannot assess it.',
   aiApprovalUnavailable: 'AI approval is unavailable in this environment. You will be asked to decide.',
+  reviewVersionUnsupported:
+    'AI approval is unavailable for {name} CLI {version}. You’ll be prompted when confirmation is needed.',
   reviewModelFor: '{name} review model',
   reviewSessionModel: 'Use the session model',
   reviewModelMissing: 'The saved review model is unavailable. Choose another model.',
