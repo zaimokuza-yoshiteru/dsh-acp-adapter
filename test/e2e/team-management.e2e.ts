@@ -58,7 +58,6 @@ it(
     let setupAnswers: ReturnType<typeof installTeamFixtureApprovals> | undefined
     try {
       await host.ctx.settings.replace('dsh-acp-adapter', {
-        toolApprovalDefault: 'auto',
         agents: {
           devin: {
             name: 'ACP demo',
@@ -141,7 +140,6 @@ it(
       )
       setupAnswers.finish()
       setupAnswers = undefined
-      await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'ask' })
       writeFileSync(policyGate, 'ready')
       // The catalog must load automatically once the child's binding is ready.
       await row.getByText('Mock Model A', { exact: true }).waitFor()
@@ -194,10 +192,7 @@ it(
         (host.ctx.get('dshAcp') as AcpRemoteService).setTeamMemberMode(lead.id, childId, 'plan'),
       ).rejects.toThrow()
       const memberApprovals = page.locator('[data-acp-team-approvals]')
-      // This ordinary tool was requested while the inherited policy was Ask.
-      // Returning the Lead to Auto must leave its native card pending.
       await memberApprovals.getByRole('button', { name: 'Allow once', exact: true }).waitFor()
-      await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'auto' })
       expect(await memberApprovals.getByRole('button', { name: 'Allow once', exact: true }).count()).toBe(1)
       await memberApprovals.getByRole('button', { name: 'Allow once', exact: true }).click()
       await expect
@@ -442,7 +437,6 @@ it(
       )
       setupAnswers.finish()
       setupAnswers = undefined
-      await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(demoLead.id, { policy: 'ask' })
       writeFileSync(policyGate, 'ready')
       expect(
         events
@@ -466,9 +460,6 @@ it(
       const approvals = page.locator('[data-acp-team-approvals]')
       await approvals.getByText('需要你处理 · 2 个子会话', { exact: true }).waitFor()
       await expect.poll(() => approvals.locator('[data-team-pending-member]').count()).toBe(2)
-      // Changing the Lead's policy must not decide either pending child request.
-      await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(demoLead.id, { policy: 'auto' })
-      expect(await approvals.locator('[data-team-pending-member]').count()).toBe(2)
       expect(
         await page.locator('[data-slot="conversation.session.header.utilities"] [data-acp-team-management]').count(),
       ).toBe(0)

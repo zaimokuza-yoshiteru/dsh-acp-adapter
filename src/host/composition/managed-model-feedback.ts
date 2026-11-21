@@ -52,13 +52,25 @@ export class ManagedModelTurnObservation {
   }
 
   async commit(
-    store: Pick<AcpSidecar, 'recordManagedModelTurn'>,
+    store: Pick<AcpSidecar, 'recordManagedModelTurn' | 'recordManagedModelInterruption'>,
     sessionId: string,
     binding: AcpBindingData,
     confirmedModel: string | undefined,
+    outcome: 'completed' | 'cancelled' = 'completed',
   ): Promise<void> {
     if (!this.model || this.model !== confirmedModel || binding.agentSessionId !== this.sessionId) return
-    await store.recordManagedModelTurn(SessionId(sessionId), acpCanonicalHash16(modeIntentBindingKey(binding)), {
+    const key = acpCanonicalHash16(modeIntentBindingKey(binding))
+    if (outcome === 'cancelled') {
+      await store.recordManagedModelInterruption(
+        SessionId(sessionId),
+        key,
+        this.model,
+        binding.committedPromptOrdinal,
+        outcome,
+      )
+      return
+    }
+    await store.recordManagedModelTurn(SessionId(sessionId), key, {
       model: this.model,
       ordinal: binding.committedPromptOrdinal,
       used: this.usage?.used ?? null,
@@ -69,16 +81,17 @@ export class ManagedModelTurnObservation {
   }
 
   async recordFailure(
-    store: Pick<AcpSidecar, 'recordManagedModelFailure'>,
+    store: Pick<AcpSidecar, 'recordManagedModelInterruption'>,
     sessionId: string,
     binding: AcpBindingData,
   ): Promise<void> {
     if (!this.model || binding.agentSessionId !== this.sessionId) return
-    await store.recordManagedModelFailure(
+    await store.recordManagedModelInterruption(
       SessionId(sessionId),
       acpCanonicalHash16(modeIntentBindingKey(binding)),
       this.model,
       binding.committedPromptOrdinal,
+      'failed',
     )
   }
 }
@@ -116,7 +129,7 @@ interface ManagedModelFeedback {
   readonly capacityRisks?: readonly { readonly model: string; readonly lastUsed: number; readonly targetSize: number }[]
 }
 
-/** A fresh tool connection can report its default even after this binding completed on another model. */
+/** A fresh connection can report its default after the original session completed or confirmed cancellation. */
 export async function lastConfirmedBindingModel(
   store: Pick<AcpSidecar, 'readManagedModelTurns' | 'hasUncertainDispatch'>,
   sessionId: string,
@@ -125,12 +138,15 @@ export async function lastConfirmedBindingModel(
 ): Promise<boolean> {
   const id = SessionId(sessionId)
   const turns = await store.readManagedModelTurns(id, acpCanonicalHash16(modeIntentBindingKey(binding)))
-  const last = turns[0]
+  const head = binding.committedPromptOrdinal
+  const atHead = turns.filter((turn) => turn.ordinal === head || turn.cancelledOrdinal === head)
   return (
-    binding.committedPromptOrdinal > 0 &&
-    last?.model === target &&
-    last.ordinal === binding.committedPromptOrdinal &&
-    !turns.some((turn) => (turn.failureOrdinal ?? 0) > last.ordinal) &&
+    head > 0 &&
+    atHead.length === 1 &&
+    atHead[0]?.model === target &&
+    !turns.some(
+      (turn) => Math.max(turn.ordinal, turn.cancelledOrdinal ?? 0) > head || (turn.failureOrdinal ?? 0) >= head,
+    ) &&
     !(await store.hasUncertainDispatch(id))
   )
 }

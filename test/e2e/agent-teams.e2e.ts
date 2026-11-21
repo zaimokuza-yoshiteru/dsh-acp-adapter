@@ -1,6 +1,5 @@
 import { openNativeMemberAside, openNativeMembers } from './native-team-ui.ts'
 import { treeMember, treeMembers } from './subagent-tree.ts'
-import { en } from '../../src/client/ui/locales.ts'
 import { acpPermissionAudit } from './acp-permission-audit.ts'
 import {
   installTeamFixtureApprovals,
@@ -16,7 +15,6 @@ import type { TestBrowser } from './browser.ts'
 import { launchBrowser, newEnglishPage } from './browser.ts'
 import type { ObservedEvent } from './types.ts'
 import type { AdapterWorld } from './scaffold.ts'
-import type { AcpRemoteService } from '../../src/remote/service.js'
 import type { Page } from 'playwright'
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -70,7 +68,6 @@ describe.each([
         const policyGate = join(host.workspaceCwd, 'teams-policy-ready')
         const provider = `acp-${profile}`
         await host.ctx.settings.replace('dsh-acp-adapter', {
-          toolApprovalDefault: 'auto',
           agents: {
             [profile]: {
               name: `Fixture ${profile}`,
@@ -128,37 +125,13 @@ describe.each([
           { timeout: 30000 },
         )
         finishSetup(bootstrap)
-        // Inspect inherited policy while the child composer is still available.
-        // Once a permission card replaces the composer, its input-left menu is
-        // intentionally absent; the policy remains available again afterwards.
         await openNativeMemberAside(page, 'calculator')
         const sidebar = page.locator('[data-sidebar-chat]')
         await sidebar.waitFor()
         const memberSettings = sidebar.getByRole('button', { name: /^Session ·/ })
         await memberSettings.waitFor()
-        await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'ask' })
         await memberSettings.click()
-        const policyRow = page.getByRole('menuitem', { name: /^DSH tool approval/ })
-        await policyRow.waitFor()
-        await policyRow.click()
-        const policyOptions = page.getByRole('menu')
-        await policyOptions.getByText(en.toolApprovalInherited, { exact: true }).waitFor()
-        const inheritedAsk = policyOptions.getByRole('menuitem', { name: /^Ask(?:\s|$)/ })
-        await inheritedAsk.waitFor()
-        expect(await inheritedAsk.isDisabled()).toBe(true)
-        await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'auto' })
-        await expect.poll(() => policyOptions.innerText()).toContain('Auto approve')
-        await expect
-          .poll(() =>
-            policyOptions
-              .getByRole('menuitem', { name: /^Auto approve/ })
-              .locator('svg')
-              .count(),
-          )
-          .toBe(1)
-        await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'ask' })
-        await expect.poll(() => policyOptions.innerText()).toContain('Ask')
-        await expect.poll(() => inheritedAsk.locator('svg').count()).toBe(1)
+        expect(await page.getByRole('menuitem', { name: /^DSH tool approval/ }).count()).toBe(0)
         await page.keyboard.press('Escape')
         // Coordination setup itself produced no cards before the gated tool request.
         expect(await page.locator('[data-approval-key], [data-question-key]').count()).toBe(0)
@@ -205,10 +178,6 @@ describe.each([
         const approval = profile === 'codex' ? scopeQuestion : sidebar.locator('[data-approval-key]')
         await approval.waitFor()
         if (profile !== 'codex') expect(await approval.innerText()).toContain('echo E2E_TEAM_PERMISSION')
-        // Switching to Auto must not answer this original Ask-created request.
-        // Devin's later coordination uses only the finite, explicit fixture
-        // decisions below; its independent requests are not auto-approved.
-        await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'auto' })
         expect(
           await approval
             .getByRole(profile === 'codex' ? 'radio' : 'button', { name: 'Allow once', exact: true })
@@ -287,8 +256,6 @@ describe.each([
           return
         }
         writeFileSync(`${policyGate}.continue`, 'ready')
-        // Changing the session policy after this request is already pending does
-        // not dismiss or auto-answer its native approval card.
         expect(
           await approval
             .getByRole(profile === 'codex' ? 'radio' : 'button', { name: 'Allow once', exact: true })

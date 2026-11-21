@@ -8,12 +8,14 @@ import {
   type AcpExternalPolicyExplanation,
   type AcpExternalPolicyRequest,
 } from '../../contract/permission-policy.ts'
-import { isAntigravityInteractionCall } from './antigravity-question.ts'
+import { isAntigravityInteractionCall } from '../../agents/antigravity.ts'
+import { reviewPermissionRisk, type PermissionRiskReviewer } from './permission-review.ts'
 import type {
   AcpNativeQuestionUnavailable,
   AcpNativeUserQuestionService,
   AcpPermissionQuestionService,
 } from './elicitation.ts'
+import { permissionQuestionTranslation, type AcpQuestionText } from '../../contract/permission-question.ts'
 import { permissionCopy, type PermissionCopy } from './permission-copy.ts'
 import {
   ACP_PERMISSION_AUDIT_KIND,
@@ -25,8 +27,8 @@ import {
 } from './events.ts'
 
 export type { AcpApprovalOutcome } from './events.ts'
-export const ACP_PERMISSION_OPTIONS_MAX = 128
-export const ACP_PERMISSION_ID_MAX_BYTES = 512
+const ACP_PERMISSION_OPTIONS_MAX = 128
+const ACP_PERMISSION_ID_MAX_BYTES = 512
 
 const dshTeamPresentation = Symbol('dsh-team-permission-presentation')
 interface DshTeamPermissionPresentation {
@@ -49,7 +51,7 @@ export function withDshTeamPermissionPresentation<T extends acp.ToolCallUpdate>(
 export interface AcpPermissionAuditRecord {
   readonly kind: typeof ACP_PERMISSION_AUDIT_KIND
   readonly time: number
-  readonly data: Extract<AcpPermissionAuditData, { phase: 'asked' | 'decided' }>
+  readonly data: Exclude<AcpPermissionAuditData, { phase: 'bridge' | 'pre-tool' | 'codebuddy-review' }>
 }
 export interface AcpPermissionAuditChannel {
   append(record: AcpPermissionAuditRecord): Promise<void>
@@ -59,14 +61,21 @@ export type AcpNativeQuestionProfile = 'antigravity'
 export interface AcpExternalPermissionPolicyRequest extends Omit<AcpExternalPolicyRequest, 'agent'> {
   readonly agent: unknown
 }
+/** Private absence of an answerer; a public policy returning null is malformed. */
+export const NO_EXTERNAL_POLICY = Symbol('no-external-approval-policy')
 export interface AcpNativeApprovalService {
-  evaluateExternal?(request: AcpExternalPermissionPolicyRequest): Promise<AcpExternalPolicyDecision>
-  evaluateBinary?(request: AcpExternalPermissionPolicyRequest): Promise<AcpExternalPolicyDecision>
+  evaluateExternal?(
+    request: AcpExternalPermissionPolicyRequest,
+  ): Promise<AcpExternalPolicyDecision | typeof NO_EXTERNAL_POLICY>
+  evaluateBinary?(
+    request: AcpExternalPermissionPolicyRequest,
+  ): Promise<AcpExternalPolicyDecision | typeof NO_EXTERNAL_POLICY>
   request(req: {
     readonly agent: unknown
     readonly toolName: string
     readonly callId?: unknown
     readonly reason?: string
+    readonly displayReason?: { readonly en: string; readonly zh: string }
     readonly signal?: AbortSignal
     /** Tool input at the approval boundary, after runtime normalization; absent when not supplied here. */
     readonly toolArgs?: unknown
@@ -89,7 +98,10 @@ export interface AcpNativePermissionBridgeDeps {
   readonly approval?: AcpNativeApprovalService
   readonly nativeQuestionProfile?: AcpNativeQuestionProfile
   /** Resolved by the adapter runtime, never from Agent-supplied metadata. */
-  readonly permissionProfile?: string
+  readonly permissionProfile?: string | undefined
+  readonly riskReviewer?: PermissionRiskReviewer
+  /** The Host user explicitly chose to answer this class of DSH tool requests. */
+  readonly humanReviewOnly?: true | 'review-unavailable' | 'review-model-unavailable'
   readonly getAgent: () => unknown
   readonly locale?: string
   readonly log?: (message: string) => void
@@ -98,11 +110,19 @@ export interface AcpNativePermissionBridgeDeps {
   readonly now?: () => number
 }
 
+// Kept on the local response only. The ACP SDK serializes just the protocol fields.
+const withdrawSelection = Symbol('withdraw-selected-permission')
+type PendingPermissionResponse = acp.RequestPermissionResponse & { [withdrawSelection]?: () => Promise<unknown> }
+
+export async function discardPermissionResponse(
+  response: PendingPermissionResponse,
+): Promise<acp.RequestPermissionResponse> {
+  await response[withdrawSelection]?.()
+  return cancelled()
+}
+
 function cancelled(): acp.RequestPermissionResponse {
   return { outcome: { outcome: 'cancelled' } }
-}
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }
 function assertBounds(toolCallId: string, options: readonly acp.PermissionOption[]): void {
   if (Buffer.byteLength(toolCallId, 'utf8') > ACP_PERMISSION_ID_MAX_BYTES)
@@ -117,6 +137,18 @@ function assertBounds(toolCallId: string, options: readonly acp.PermissionOption
     ids.add(option.optionId)
   }
 }
+
+/** Reject this request only when its wire options unambiguously identify a one-time denial. */
+export function rejectPermissionOnce(request: acp.RequestPermissionRequest): acp.RequestPermissionResponse {
+  try {
+    assertBounds(request.toolCall.toolCallId, request.options)
+  } catch {
+    return cancelled()
+  }
+  const rejects = request.options.filter((option) => option.kind === 'reject_once')
+  return rejects.length === 1 ? { outcome: { outcome: 'selected', optionId: rejects[0]!.optionId } } : cancelled()
+}
+
 function safeText(value: string, max = 180): string {
   const clean = redactSecretText(value)
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
@@ -138,7 +170,7 @@ function visibleCommand(value: string): string {
   })
 }
 const commandKeys = ['command', 'cmd', 'CommandLine', 'argv'] as const
-function commandOf(tool: acp.RequestPermissionRequest['toolCall']): string | undefined {
+export function commandOf(tool: acp.RequestPermissionRequest['toolCall']): string | undefined {
   if (typeof tool.rawInput === 'string') return tool.rawInput
   return firstString(recordValue(tool.rawInput), commandKeys)
 }
@@ -272,7 +304,7 @@ function fileOperation(name: string | null | undefined, copy: PermissionCopy): s
 }
 
 /** Summarize file text only on cards with a full disclosure. Unknown authorization fields stay in the question. */
-function filePermissionText(tool: acp.ToolCallUpdate, copy: PermissionCopy) {
+function filePermissionText(tool: acp.ToolCallUpdate, copy: PermissionCopy, realDevin: boolean) {
   const input = recordValue(tool.rawInput)
   if (!input) return
   const operation = fileOperation(tool.name ?? tool.title, copy)
@@ -324,8 +356,20 @@ function filePermissionText(tool: acp.ToolCallUpdate, copy: PermissionCopy) {
   }
   if (!details.length) return
   details.push(permissionRequestDetail({ ...tool, rawInput: otherInput })!)
+  // Devin describes a pending native write in the past tense. Only replace its
+  // exact known title when the request has a single, matching write target.
+  const pendingDevinWrite =
+    realDevin &&
+    tool.kind === 'edit' &&
+    (tool.name == null || tool.name === 'write') &&
+    pathKeys[0] === 'file_path' &&
+    typeof input.content === 'string' &&
+    Object.keys(input).every((key) => key === 'file_path' || key === 'content') &&
+    tool.title === `Wrote ${input.file_path}` &&
+    !tool.locations?.some((location) => location.path !== input.file_path) &&
+    !tool.content?.some((item) => item.type === 'diff' && item.path !== input.file_path)
   return {
-    title: tool.title ? fileOperation(tool.title, copy) : operation,
+    title: pendingDevinWrite ? copy.writeFile : tool.title ? fileOperation(tool.title, copy) : operation,
     shown,
     summary,
     detail: details.join('\n\n'),
@@ -479,6 +523,14 @@ export function createAcpNativePermissionHandler(
     const nativeInteractionCall =
       deps.nativeQuestionProfile === 'antigravity' && isAntigravityInteractionCall(params.toolCall)
     let evaluate: AcpNativeApprovalService['evaluateExternal']
+    const realDevin = deps.permissionProfile === 'devin' && !deps.syntheticApproval
+    const reviewable = realDevin || (!deps.syntheticApproval && deps.permissionProfile === undefined)
+    const reviewer =
+      reviewable && !deps.humanReviewOnly && deps.riskReviewer?.agent === (realDevin ? 'devin' : 'opencode')
+        ? deps.riskReviewer
+        : undefined
+    const humanCard = reviewable && (reviewer !== undefined || deps.humanReviewOnly !== undefined)
+    let reviewCall = params.toolCall
     let agent: unknown
     try {
       assertBounds(params.toolCall.toolCallId, params.options)
@@ -488,7 +540,7 @@ export function createAcpNativePermissionHandler(
             ? deps.approval?.evaluateExternal
             : deps.approval?.evaluateBinary
       }
-      if (evaluate !== undefined) {
+      if (evaluate !== undefined || humanCard) {
         agent = deps.getAgent()
         // Keep the policy facts, audit and eventual option mapping on the same
         // snapshot, including while the first durable append is pending.
@@ -496,10 +548,11 @@ export function createAcpNativePermissionHandler(
           dshTeamPresentation
         ]
         params = structuredClone(params)
+        reviewCall = reviewer?.toolCall === undefined ? params.toolCall : structuredClone(reviewer.toolCall)
         if (team !== undefined) params.toolCall = withDshTeamPermissionPresentation(params.toolCall, team)
       }
-    } catch (error: unknown) {
-      deps.log?.(`dsh-acp native permission rejected by bounds: ${errorMessage(error)}`)
+    } catch {
+      deps.log?.('dsh-acp native permission rejected by bounds')
       return cancelled()
     }
     const append = async (data: AcpPermissionAuditRecord['data']): Promise<boolean> => {
@@ -507,10 +560,33 @@ export function createAcpNativePermissionHandler(
       try {
         await deps.audit.append({ kind: ACP_PERMISSION_AUDIT_KIND, time: deps.now?.() ?? Date.now(), data })
         return true
-      } catch (error: unknown) {
-        deps.log?.(`dsh-acp native permission audit failed: ${errorMessage(error)}`)
+      } catch {
+        try {
+          deps.log?.(
+            data.phase === 'decision-withdrawn'
+              ? 'dsh-acp: failed to persist a confirmed permission withdrawal'
+              : 'dsh-acp native permission audit write failed',
+          )
+        } catch {
+          // The Host logger can retire with the original Agent. Cancellation must still reach ACP.
+        }
         return false
       }
+    }
+    const guardsOwner = evaluate !== undefined || humanCard
+    const current = () => !signal?.aborted && deps.getAgent() === agent
+    const cancelForAuditFailure = async () => {
+      if (!signal?.aborted && (!guardsOwner || current())) {
+        try {
+          await deps.onUnavailable?.({
+            code: 'ACP_PERMISSION_AUDIT_UNAVAILABLE',
+            message: copy.permissionAuditFailed,
+          })
+        } catch {
+          deps.log?.('dsh-acp permission audit failure reporting unavailable')
+        }
+      }
+      return cancelled()
     }
     if (
       !(await append(
@@ -522,8 +598,11 @@ export function createAcpNativePermissionHandler(
         }),
       ))
     )
-      return cancelled()
-    let humanPolicyReason: string | undefined
+      return cancelForAuditFailure()
+    let humanPolicyReason: ((text: PermissionCopy) => string) | undefined
+    if (humanCard && deps.humanReviewOnly === 'review-unavailable') humanPolicyReason = (text) => text.reviewUnavailable
+    if (humanCard && deps.humanReviewOnly === 'review-model-unavailable')
+      humanPolicyReason = (text) => text.reviewFailures['model-unavailable']
     let denialReason: string | undefined
     let presentation: AcpPermissionPresentation | undefined
     const decide = async (
@@ -533,7 +612,9 @@ export function createAcpNativePermissionHandler(
         readonly selectedOptionKind?: acp.PermissionOption['kind']
         readonly note?: string
       },
-      decisionVia: 'native-question' | 'native-approval' | 'external-policy' = 'native-question',
+      decisionVia:
+        'native-question' | 'native-approval' | 'external-policy' | 'devin-ai' | 'opencode-ai' = 'native-question',
+      writeFailure: 'cancel' | 'ask' = 'cancel',
     ): Promise<acp.RequestPermissionResponse> => {
       const ok = await append(
         createPermissionDecidedAudit({
@@ -545,7 +626,27 @@ export function createAcpNativePermissionHandler(
           ...(presentation === undefined ? {} : { presentation }),
         }),
       )
-      if (!ok || (evaluate !== undefined && (signal?.aborted || deps.getAgent() !== agent))) return cancelled()
+      if (!ok) return writeFailure === 'ask' ? cancelled() : cancelForAuditFailure()
+      const response: PendingPermissionResponse =
+        init.outcome === 'cancelled' ? cancelled() : { outcome: { outcome: 'selected', optionId: init.optionId! } }
+      if (init.outcome === 'selected' && deps.audit) {
+        let withdrawal: Promise<boolean> | undefined
+        Object.defineProperty(response, withdrawSelection, {
+          value: () =>
+            (withdrawal ??= append({
+              phase: 'decision-withdrawn',
+              requestId: id,
+              agentSessionId: params.sessionId,
+              toolCallId: params.toolCall.toolCallId,
+              outcome: 'cancelled',
+            }).then((stored) => {
+              // Other delivery guards share this attempt, and can retry a failed durable write.
+              if (!stored) withdrawal = undefined
+              return stored
+            })),
+        })
+      }
+      if ((guardsOwner && !current()) || signal?.aborted) return discardPermissionResponse(response)
       if (denialReason !== undefined && decisionVia === 'external-policy') {
         const tool = safeText(params.toolCall.name ?? params.toolCall.title ?? params.toolCall.kind ?? copy.acpTool)
         deps.onPolicyDenial?.({
@@ -553,12 +654,11 @@ export function createAcpNativePermissionHandler(
           isCurrentOwner: () => deps.getAgent() === agent,
         })
       }
-      if (init.outcome === 'cancelled') return cancelled()
-      return { outcome: { outcome: 'selected', optionId: init.optionId! } }
+      return response
     }
     if (signal !== undefined && signal.aborted) return decide({ outcome: 'cancelled', note: 'cancelled' })
-    if (evaluate === undefined) agent = deps.getAgent()
-    if (agent === undefined || (evaluate !== undefined && deps.getAgent() !== agent))
+    if (!guardsOwner) agent = deps.getAgent()
+    if (agent === undefined || (guardsOwner && !current()))
       return decide({ outcome: 'cancelled', note: 'agent-unavailable' })
     const binary = binaryApprovalOptions(params.options)
     const nativeInteractionQuestion =
@@ -566,18 +666,20 @@ export function createAcpNativePermissionHandler(
       params.options.length > 0 &&
       params.options.every((option) => option.kind === 'allow_once')
 
+    let policyDeferredToHuman = false
     if (evaluate !== undefined) {
       let parsed: AcpExternalPolicyExplanation
       try {
-        parsed = readExternalPolicyDecision(
-          await evaluate.call(deps.approval, {
-            agent,
-            requestId: id,
-            profile: deps.permissionProfile ?? 'generic',
-            params,
-            ...(signal === undefined ? {} : { signal }),
-          }),
-        )
+        const policy = await evaluate.call(deps.approval, {
+          agent,
+          requestId: id,
+          profile: deps.permissionProfile ?? 'generic',
+          params,
+          ...(signal === undefined ? {} : { signal }),
+        })
+        // A registered rule can explicitly return not-applicable to end its chain in a human card.
+        parsed = policy === NO_EXTERNAL_POLICY ? { decision: 'not-applicable' } : readExternalPolicyDecision(policy)
+        policyDeferredToHuman = policy !== NO_EXTERNAL_POLICY && parsed.decision === 'not-applicable'
       } catch {
         parsed = { decision: 'failed' }
       }
@@ -586,7 +688,8 @@ export function createAcpNativePermissionHandler(
       const reason = parsed.reason && safeText(parsed.reason, 512)
       if (reason) {
         if (outcome === 'deny-once' || outcome === 'cancelled') denialReason = reason
-        else if (outcome === 'not-applicable' || outcome === 'allow-once') humanPolicyReason = copy.policyReason(reason)
+        else if (outcome === 'not-applicable' || outcome === 'allow-once')
+          humanPolicyReason = (text) => text.policyReason(reason)
       }
       if (outcome === 'failed') {
         try {
@@ -603,7 +706,7 @@ export function createAcpNativePermissionHandler(
       if (outcome === 'allow-once' || outcome === 'deny-once') {
         const kind = outcome === 'allow-once' ? 'allow_once' : 'reject_once'
         const options = params.options.filter((option) => option.kind === kind)
-        if (options.length === 1)
+        if (options.length === 1 && (outcome === 'deny-once' || !deps.humanReviewOnly))
           return decide(
             { outcome: 'selected', optionId: options[0]!.optionId, selectedOptionKind: kind },
             'external-policy',
@@ -615,21 +718,49 @@ export function createAcpNativePermissionHandler(
       }
     }
 
-    if (!nativeInteractionQuestion && deps.approval !== undefined && binary !== undefined) {
+    if (reviewer !== undefined && !policyDeferredToHuman && humanPolicyReason === undefined) {
+      const via = reviewer.agent === 'devin' ? 'devin-ai' : 'opencode-ai'
+      const outcome = await reviewPermissionRisk(
+        reviewer,
+        params,
+        reviewCall,
+        id,
+        current,
+        deps.audit === undefined ? undefined : append,
+        deps.now ?? Date.now,
+        signal,
+      )
+      if (outcome.kind === 'cancel' || !current()) return decide({ outcome: 'cancelled', note: 'cancelled' }, via)
+      if (outcome.kind === 'allow') {
+        const response = await decide(
+          { outcome: 'selected', optionId: outcome.optionId, selectedOptionKind: 'allow_once' },
+          via,
+          'ask',
+        )
+        if (response.outcome.outcome === 'selected' || !current()) return response
+        humanPolicyReason = (text) => text.reviewAuditUnavailable
+      } else humanPolicyReason = outcome.reason
+    }
+
+    if (!humanCard && !nativeInteractionQuestion && deps.approval !== undefined && binary !== undefined) {
       try {
         const commandLine = params.toolCall.kind === 'execute' ? commandOf(params.toolCall) : undefined
+        const reason = (text: PermissionCopy) =>
+          [
+            ...(humanPolicyReason === undefined ? [] : [humanPolicyReason(text)]),
+            nativePermissionReason(params.toolCall, text),
+            binaryChoiceLine(text.allowOnce, binary.allow),
+            ...(binary.reject === undefined ? [] : [binaryChoiceLine(text.rejectOnce, binary.reject)]),
+          ].join('\n')
+        const displayReason = { en: reason(permissionCopy('en')), zh: reason(permissionCopy('zh')) }
         const outcome = await deps.approval.request({
           agent,
           toolName: params.toolCall.name ?? params.toolCall.kind ?? copy.acpTool,
           callId: params.toolCall.toolCallId,
           ...(params.toolCall.rawInput === undefined ? {} : { toolArgs: params.toolCall.rawInput }),
           ...(commandLine === undefined ? {} : { commandLine }),
-          reason: [
-            ...(humanPolicyReason === undefined ? [] : [humanPolicyReason]),
-            nativePermissionReason(params.toolCall, copy),
-            binaryChoiceLine(copy.allowOnce, binary.allow),
-            ...(binary.reject === undefined ? [] : [binaryChoiceLine(copy.rejectOnce, binary.reject)]),
-          ].join('\n'),
+          reason: copy === permissionCopy('zh') ? displayReason.zh : displayReason.en,
+          displayReason,
           ...(signal === undefined ? {} : { signal }),
         })
         if (outcome === 'allowed-once')
@@ -643,8 +774,8 @@ export function createAcpNativePermissionHandler(
             'native-approval',
           )
         return decide({ outcome: 'cancelled', note: outcome }, 'native-approval')
-      } catch (error: unknown) {
-        deps.log?.(`dsh-acp native approval unavailable: ${errorMessage(error)}`)
+      } catch {
+        deps.log?.('dsh-acp native approval unavailable')
         // Continue to the generic native question only when it is available;
         // this preserves uncommon ACP option vocabularies without reviving a
         // plugin-owned permission surface.
@@ -652,29 +783,43 @@ export function createAcpNativePermissionHandler(
     }
     if (nativeInteractionCall && !nativeInteractionQuestion && binary !== undefined)
       return decide({ outcome: 'cancelled', note: 'native-approval-unavailable' }, 'native-approval')
-    const questions = nativeInteractionCall ? deps.userQuestions : (deps.permissionQuestions ?? deps.userQuestions)
+    const questions = humanCard
+      ? deps.permissionQuestions
+      : nativeInteractionCall
+        ? deps.userQuestions
+        : (deps.permissionQuestions ?? deps.userQuestions)
     if (questions === undefined) return decide({ outcome: 'cancelled', note: 'question-service-unavailable' })
     const questionId = `acp-permission:${id}`
-    const renderedLabels = optionLabels(params.options, copy)
-    const labels = new Map(renderedLabels.map((label, index) => [label, params.options[index]!]))
     try {
-      const file = nativeInteractionQuestion ? undefined : filePermissionText(params.toolCall, copy)
-      const detail = nativeInteractionQuestion
-        ? permissionQuestionDetail(params.toolCall, copy)
-        : (file?.detail ?? permissionRequestDetail(params.toolCall))
+      const render = (text: PermissionCopy): AcpQuestionText => {
+        const file = nativeInteractionQuestion ? undefined : filePermissionText(params.toolCall, text, realDevin)
+        const detail = nativeInteractionQuestion
+          ? permissionQuestionDetail(params.toolCall, text)
+          : (file?.detail ?? permissionRequestDetail(params.toolCall))
+        return {
+          question: nativeInteractionQuestion
+            ? params.toolCall.title!
+            : [
+                humanPolicyReason?.(text),
+                permissionQuestionFacts(params.toolCall, text, deps.nativeQuestionProfile, file),
+              ]
+                .filter((part) => part !== undefined)
+                .join('\n\n'),
+          ...(nativeInteractionQuestion ? {} : { header: text.permission }),
+          ...(detail === undefined ? {} : { detail }),
+          options: optionLabels(params.options, text).map((label) => ({ label })),
+        }
+      }
+      const question = render(copy)
+      const labels = new Map(question.options!.map(({ label }, index) => [label, params.options[index]!]))
+      const alternate = copy === permissionCopy('en') ? 'zh' : 'en'
       const questionRequest = {
         agent,
         questions: [
           {
+            ...question,
             id: questionId,
-            question: nativeInteractionQuestion
-              ? params.toolCall.title!
-              : [humanPolicyReason, permissionQuestionFacts(params.toolCall, copy, deps.nativeQuestionProfile, file)]
-                  .filter((part) => part !== undefined)
-                  .join('\n\n'),
-            ...(nativeInteractionQuestion ? {} : { header: copy.permission }),
-            ...(detail === undefined ? {} : { detail }),
-            options: renderedLabels.map((label) => ({ label })),
+            acpTranslation: permissionQuestionTranslation(alternate, question, render(permissionCopy(alternate))),
           },
         ],
         ...(signal === undefined ? {} : { signal }),
@@ -705,12 +850,12 @@ export function createAcpNativePermissionHandler(
               ? copy.delegatedQuestionUnavailable
               : copy.delegatedPermissionUnavailable,
           })
-        } catch (reportError: unknown) {
-          deps.log?.(`dsh-acp unavailable permission reporting failed: ${errorMessage(reportError)}`)
+        } catch {
+          deps.log?.('dsh-acp unavailable permission reporting failed')
         }
         return decide({ outcome: 'cancelled', note: 'delegated-question-unavailable' })
       }
-      deps.log?.(`dsh-acp native permission question cancelled: ${errorMessage(error)}`)
+      deps.log?.('dsh-acp native permission question cancelled')
       return decide({ outcome: 'cancelled', note: 'question-error' })
     }
   }

@@ -494,11 +494,10 @@ function ModeGroup({
         disabled: batchChoices.length === 0 || profileId === null || busy,
         onOpenChange: (value) => updateMenu(value ? 'batch' : null),
         onSelect: (choice) => {
-          if (choice.write.kind !== 'tool-approval-policy')
-            void change(
-              members.map((member) => member.sessionId),
-              choice.write.kind === 'mode' ? choice.write.id : String(choice.write.value),
-            )
+          void change(
+            members.map((member) => member.sessionId),
+            choice.write.kind === 'mode' ? choice.write.id : String(choice.write.value),
+          )
         },
       }),
     ),
@@ -590,11 +589,10 @@ function ModeGroup({
                     disabled: !snapshot || choices(member).length === 0 || busy,
                     onOpenChange: (value) => updateMenu(value ? member.sessionId : null),
                     onSelect: (choice) => {
-                      if (choice.write.kind !== 'tool-approval-policy')
-                        void change(
-                          [member.sessionId],
-                          choice.write.kind === 'mode' ? choice.write.id : String(choice.write.value),
-                        )
+                      void change(
+                        [member.sessionId],
+                        choice.write.kind === 'mode' ? choice.write.id : String(choice.write.value),
+                      )
                     },
                   }),
                   h(

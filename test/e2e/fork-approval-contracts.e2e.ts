@@ -37,7 +37,6 @@ async function fixture(supportsFork = false) {
   const log = join(host.workspaceCwd, 'fork-approval-wire.log')
   try {
     await host.ctx.settings.replace('dsh-acp-adapter', {
-      toolApprovalDefault: 'ask',
       agents: {
         contract: {
           name: 'Fork and approval contract',

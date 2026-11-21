@@ -9,15 +9,19 @@ import {
   effectiveRuntimeOf,
 } from '../../domain/session/agent-config.ts'
 import type { AcpAgentConfig, AcpAgentId, AcpConfiguredRuntime } from '../../domain/session/agent-config.ts'
+import { DEFAULT_DEVIN_REVIEW_MODEL, isDevinReviewModel } from '../../contract/devin-review.ts'
 
-export type AcpToolApprovalPolicy = 'auto' | 'ask'
+import { isOpenCodeReviewModel } from '../../contract/opencode-review.ts'
+
 export interface AcpSettings {
   agents: Record<string, AcpAgentConfig>
-  toolApprovalDefault: AcpToolApprovalPolicy
+  aiApproval: boolean
+  devinReviewModel: string
 }
 export interface Config {
   agents: Volatile<Record<string, AcpAgentConfig>>
-  toolApprovalDefault: Volatile<AcpToolApprovalPolicy>
+  aiApproval: Volatile<boolean>
+  devinReviewModel: Volatile<string>
 }
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
@@ -64,6 +68,9 @@ function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
   if (!isPlainObject(env) || !Object.values(env).every((value) => typeof value === 'string')) {
     throw new TypeError(`dsh-acp settings: agents.${id}.env must be a map of string values`)
   }
+  const openCodeReviewModel = raw['openCodeReviewModel']
+  if (openCodeReviewModel !== undefined && openCodeReviewModel !== '' && !isOpenCodeReviewModel(openCodeReviewModel))
+    throw new TypeError('dsh-acp settings: invalid OpenCode reviewer model ID')
   const loginHint = raw['loginHint']
   if (loginHint !== undefined && typeof loginHint !== 'string') {
     throw new TypeError(`dsh-acp settings: agents.${id}.loginHint must be a string`)
@@ -83,6 +90,7 @@ function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
   return {
     name,
     command,
+    ...(openCodeReviewModel === undefined ? {} : { openCodeReviewModel }),
     args: [...args] as string[],
     env: { ...env } as Record<string, string>,
     ...(loginHint === undefined ? {} : { loginHint }),
@@ -123,19 +131,21 @@ function assertSingletonRuntimes(agents: Record<string, AcpAgentConfig>): void {
  */
 export const acpSettingsSchema: ((value: unknown) => AcpSettings) & { toJSON(): unknown } = Object.assign(
   (value: unknown): AcpSettings => {
-    if (value === undefined) return { agents: {}, toolApprovalDefault: 'auto' }
+    if (value === undefined) value = {}
     if (!isPlainObject(value))
       throw new TypeError('dsh-acp settings: the section must be an object with an "agents" map')
-    // Deliberately ignore the retired preference so existing settings remain readable.
-    const toolApprovalDefault = value['toolApprovalDefault'] === undefined ? 'auto' : value['toolApprovalDefault']
-    if (toolApprovalDefault !== 'auto' && toolApprovalDefault !== 'ask')
-      throw new TypeError('dsh-acp settings: "toolApprovalDefault" must be "auto" or "ask"')
+    // Only the shared opt-in authorizes review across Agents.
+    const aiApproval = value['aiApproval'] === undefined ? false : value['aiApproval']
+    if (typeof aiApproval !== 'boolean') throw new TypeError('dsh-acp settings: "aiApproval" must be a boolean')
+    const devinReviewModel =
+      value['devinReviewModel'] === undefined ? DEFAULT_DEVIN_REVIEW_MODEL : value['devinReviewModel']
+    if (!isDevinReviewModel(devinReviewModel)) throw new TypeError('dsh-acp settings: invalid Devin reviewer model ID')
     const rawAgents = value['agents'] ?? {}
     if (!isPlainObject(rawAgents)) throw new TypeError('dsh-acp settings: "agents" must be a map of agent id → config')
     const agents: Record<string, AcpAgentConfig> = {}
     for (const [id, raw] of Object.entries(rawAgents)) agents[id] = agentConfigOf(id, raw)
     assertSingletonRuntimes(agents)
-    return { agents, toolApprovalDefault }
+    return { agents, aiApproval, devinReviewModel }
   },
   { toJSON: () => SettingsSchema.toJSON() },
 )
@@ -147,6 +157,7 @@ const AgentSchema = z.object({
   env: z.dict(z.string()).default({}),
   loginHint: z.string(),
   catalogId: z.string(),
+  openCodeReviewModel: z.string(),
   // The business validator accepts active identities and one retained retirement marker.
   // Do not expose the retired marker as a selectable runtime in a native enum.
   runtime: z.string(),
@@ -154,12 +165,14 @@ const AgentSchema = z.object({
 const AgentsSchema = z.dict(AgentSchema)
 const SettingsSchema = z.object({
   agents: AgentsSchema.default({}),
-  toolApprovalDefault: z.union(['auto', 'ask']).default('auto'),
+  aiApproval: z.boolean().default(false),
+  devinReviewModel: z.string().default(DEFAULT_DEVIN_REVIEW_MODEL),
 })
 /** Native volatile fields; Loader validates before publishing an atomic live update. */
 const NativeConfig = z.object({
   agents: AgentsSchema.default({}).volatile(),
-  toolApprovalDefault: z.union(['auto', 'ask']).default('auto').volatile(),
+  aiApproval: z.boolean().default(false).volatile(),
+  devinReviewModel: z.string().default(DEFAULT_DEVIN_REVIEW_MODEL).volatile(),
 })
 // Business validation belongs to Loader, not to a serialized browser callback.
 // Keep the native schema/prototype intact so forms can rehydrate its plain JSON.

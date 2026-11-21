@@ -18,7 +18,6 @@ import type { AcpProbeOptions } from '../../protocol/v1/types.ts'
 import { acpAgentIdFromRoute, acpRouteId, retiredAgentReason } from '../../domain/session/agent-config.ts'
 import type { AcpAgentConfig, AcpResolvedAgent } from '../../domain/session/agent-config.ts'
 import { createTeamManagement } from '../teams/management.ts'
-import { createToolApprovalPolicyReader } from '../subagent/tool-approval-policy.ts'
 import { createApprovalChildrenReader } from '../subagent/approval-children.ts'
 import { createAcpLogger } from '../../domain/observability/logging.ts'
 import { installExternalAgentContext } from './external-agent-context.ts'
@@ -269,7 +268,7 @@ export async function installInstalledProfileRegistry(
   const toolBridgeKey = createDshToolBridgeKey(readToolAdmission)
   let disposed = false
   const log = createAcpLogger(ctx.logger)
-  const sidecar = installAcpSidecar(ctx)
+  const sidecar = installAcpSidecar(ctx, continuity.uncommittedWithdrawals)
   const profileAdapters = new Map<string, AcpProfileAdapter>()
   const namedSteps = new NamedModelSteps()
   const canSwitchNamedModel = (provider: string) => {
@@ -476,18 +475,6 @@ export async function installInstalledProfileRegistry(
     sidecar === undefined ? undefined : (sessionId) => sidecar.readLatestBinding(sessionId),
   )
   const controlSubscribers = new Map<string, Set<() => void>>()
-  const policySubscribers = new Set<() => void>()
-  const notifyPolicySubscribers = (): void => {
-    for (const notify of policySubscribers) notify()
-  }
-  ctx.on('agent/disposed', notifyPolicySubscribers)
-  const readToolApprovalPolicy = createToolApprovalPolicyReader(ctx, {
-    sidecar,
-    sessionOf: (id) => sessionStore?.get(id),
-    ownsProvider,
-    isForeignProvider,
-    defaultPolicy: () => config.toolApprovalDefault.get(),
-  })
   const controlsChanged = (sessionId: string): void => {
     for (const notify of controlSubscribers.get(sessionId) ?? []) notify()
   }
@@ -701,27 +688,6 @@ export async function installInstalledProfileRegistry(
           }
         },
       },
-      toolApprovalPolicy: {
-        read: readToolApprovalPolicy,
-        write: async (sessionId, policy) => {
-          const current = await readToolApprovalPolicy(sessionId)
-          if (!current.editable) throw new Error('ACP_TOOL_APPROVAL_POLICY_INHERITED')
-          const confirmed = await readToolApprovalPolicy(sessionId)
-          if (!confirmed.editable || confirmed.source !== current.source)
-            throw new Error('ACP_TOOL_APPROVAL_POLICY_OWNER_CHANGED')
-          await sidecar.writeToolApprovalPolicy(sessionId as never, policy)
-          return await readToolApprovalPolicy(sessionId)
-        },
-      },
-      toolApprovalPolicyChanges: {
-        subscribe: (changed) => {
-          policySubscribers.add(changed)
-          return () => {
-            policySubscribers.delete(changed)
-          }
-        },
-        notify: notifyPolicySubscribers,
-      },
       agentSessionControl: (provider) => {
         const id = acpAgentIdFromRoute(provider)
         return id === undefined ? undefined : profileAdapters.get(id)
@@ -807,16 +773,7 @@ export async function installInstalledProfileRegistry(
             (message, fields) => log.warn(message, fields ?? { operation: 'claude-draft-subagent-capability' }),
             (sessionId) => resolveTerminalJobs(ctx, sessionId),
             (sessionId, capabilities, wireProfile, schemas) =>
-              createDshToolBridge(
-                ctx,
-                sessionId,
-                capabilities,
-                wireProfile,
-                async () => (await readToolApprovalPolicy(sessionId)).policy,
-                notifyPolicySubscribers,
-                schemas,
-                readToolAdmission,
-              ),
+              createDshToolBridge(ctx, sessionId, capabilities, wireProfile, schemas, readToolAdmission),
             (sessionId, schemas) => toolBridgeKey(ctx, sessionId, schemas),
             controlsChanged,
             ctx.root,
@@ -967,6 +924,9 @@ export async function installInstalledProfileRegistry(
     if (disposed) return
     agents = structuredClone(config.agents.get())
     onSettingsChange()
+    const reviewEnabled = config.aiApproval.get()
+    const devinModel = config.devinReviewModel.get()
+    for (const adapter of profileAdapters.values()) adapter.configureApprovalReview(reviewEnabled, devinModel)
   }
   refreshConfig()
   ready.resolve()

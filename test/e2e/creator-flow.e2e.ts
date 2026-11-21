@@ -72,7 +72,6 @@ async function verifyCreator(route: 'other-agent' | 'opencode') {
       .filter((record) => record.label === label)
   try {
     await host.ctx.settings.replace('dsh-acp-adapter', {
-      toolApprovalDefault: 'auto',
       agents: {
         codex: {
           name: 'Creator fixture',

@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { Worker } from 'node:worker_threads'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { ACP_CONFIG_IDENTIFIER_MAX } from '../../../src/contract/config-options.ts'
@@ -36,6 +36,8 @@ import {
   type AcpPermissionAuditData,
 } from '../../../src/domain/policy/events.ts'
 import { auditTimelineRowOf } from '../../../src/host/composition/audit-row.ts'
+import { createAcpNativePermissionHandler } from '../../../src/domain/policy/permissions.ts'
+import { UncommittedWithdrawals } from '../../../src/persistence/uncommitted-withdrawals.ts'
 import { matchesDiagnosticView } from '../../../src/contract/diagnostics.ts'
 
 const TIME_BASE = 1_700_000_000_000
@@ -232,20 +234,19 @@ afterEach(async () => {
 })
 
 describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
-  it('durably initializes a tool approval policy once and keeps session overrides isolated', async () => {
-    const lead = SessionId('approval-policy-lead')
-    const member = SessionId('approval-policy-member')
-    expect(await store.readToolApprovalPolicy(lead)).toBeUndefined()
-    expect(await store.readToolApprovalPolicy(lead, 'auto')).toBe('auto')
-    expect(await store.readToolApprovalPolicy(lead, 'ask')).toBe('auto')
-    await store.writeToolApprovalPolicy(lead, 'ask')
-    expect(await store.readToolApprovalPolicy(lead, 'auto')).toBe('ask')
-    expect(await store.readToolApprovalPolicy(member, 'auto')).toBe('auto')
+  it('opens an existing session without consulting its retired tool approval preference', async () => {
+    const id = SessionId('legacy-auto')
+    await store.append(id, { kind: 'binding', data: BINDING_A })
+    const binding = await store.readLatestBinding(id)
     await store.dispose()
+    const db = rawDb()
+    db.exec('CREATE TABLE tool_approval_policies (dsh_session_id TEXT PRIMARY KEY, policy TEXT NOT NULL)')
+    db.prepare("INSERT INTO tool_approval_policies VALUES (?, 'auto')").run(id)
+    db.close()
     store = createAcpSidecar({ root })
-    expect(await store.readToolApprovalPolicy(lead)).toBe('ask')
-    expect(await store.readToolApprovalPolicy(member)).toBe('auto')
+    expect(await store.readLatestBinding(id)).toEqual(binding)
   })
+
   it('reopens pre-diagnostics SQLite facts without rewriting payloads or blocking a valid binding', async () => {
     const id = SessionId('sess-before-diagnostics')
     await store.append(id, { kind: 'binding', data: BINDING_A })
@@ -291,6 +292,84 @@ describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
       expect(inspection.prepare('SELECT record_id, payload FROM audit ORDER BY seq').all()).toEqual(before)
     } finally {
       inspection.close()
+    }
+  })
+
+  it('redacts new and legacy permission inputs across reopen without changing the binding or decision identities', async () => {
+    const id = SessionId('cookie-audit')
+    const rawInput = {
+      headers: [
+        ['X-Api-Key', 'api-fixture'],
+        { name: 'Authorization', value: 'authorization-fixture' },
+        { key: 'Set-Cookie', value: 'sid=cookie-fixture; note=second-fixture' },
+        ['Accept', 'text/plain'],
+      ],
+      path: 'README',
+    }
+    const asked = createPermissionAskedAudit({
+      requestId: 'request',
+      agentSessionId: BINDING_A.agentSessionId,
+      options: [{ optionId: 'unique-choice', name: 'Allow once', kind: 'allow_once' }],
+      toolCall: { toolCallId: 'call', rawInput },
+    })
+    const healthy = { dshSessionId: id, kind: 'healthy', provider: BINDING_A.provider, updatedAt: TIME_BASE } as const
+    await store.append(id, { kind: 'binding', data: BINDING_A })
+    await store.writeRecoveryState(healthy)
+    await store.append(id, { kind: 'permission', data: asked })
+    const binding = await store.readLatestBinding(id)
+    await store.dispose()
+
+    const db = rawDb()
+    const legacySummary = JSON.stringify(rawInput)
+    const v2 = JSON.stringify({ command: "example -H 'Cookie: <redacted> pref=second-fixture' README" })
+    try {
+      const saved = db.prepare('SELECT payload FROM audit WHERE dsh_session_id = ? AND seq = 2').get(id)
+      expect(saved?.payload).toContain('<redacted>')
+      expect(saved?.payload).not.toMatch(/cookie-fixture|second-fixture|api-fixture|authorization-fixture/)
+      expect(asked.toolCall.rawInputSummaryVersion).toBe(4)
+      const insert = db.prepare(
+        "INSERT INTO audit (record_id, dsh_session_id, seq, time, kind, payload) VALUES (?, ?, ?, ?, 'permission', ?)",
+      )
+      const historical = [
+        { rawInputSummary: legacySummary },
+        { rawInputSummary: legacySummary.slice(0, -3) + '…(+3 chars)' },
+        { rawInput },
+        { rawInputSummaryVersion: 2, rawInputSummary: v2 },
+        { rawInputSummaryVersion: 2, rawInputSummary: v2.slice(0, -1) + '…(+1 chars)' },
+        { rawInputSummaryVersion: 2, rawInputSummary: legacySummary },
+        { rawInputSummaryVersion: 3, rawInputSummary: legacySummary },
+        { rawInputSummaryVersion: 3, rawInputSummary: legacySummary.slice(0, -1) + '…(+1 chars)' },
+      ]
+      historical.forEach((input, n) => {
+        const toolCall = { toolCallId: 'call', rawInputHash: asked.toolCall.rawInputHash, ...input }
+        insert.run('legacy-' + n, id, 3 + n, TIME_BASE, JSON.stringify({ ...asked, toolCall }))
+      })
+    } finally {
+      db.close()
+    }
+    store = createAcpSidecar({ root })
+    const entries = await store.listPage(id, 1, 10)
+    expect(entries).toHaveLength(9)
+    for (const [n, entry] of entries.entries()) {
+      expect(entry.data).toMatchObject({
+        requestId: 'request',
+        options: [{ optionId: 'unique-choice' }],
+        toolCall: { toolCallId: 'call', rawInputHash: asked.toolCall.rawInputHash },
+      })
+      const detail = auditTimelineRowOf(entry).detail!
+      expect(JSON.stringify(entry.data)).not.toMatch(/cookie-fixture|second-fixture|api-fixture|authorization-fixture/)
+      expect(detail).not.toMatch(/cookie-fixture|second-fixture|api-fixture|authorization-fixture/)
+      if ([2, 5, 8].includes(n)) expect(detail).not.toContain('rawInputSummary')
+      else expect(detail).toContain('README')
+    }
+    await expect(store.readLatestBinding(id)).resolves.toEqual(binding)
+    await expect(store.readRecoveryState(id)).resolves.toEqual(healthy)
+    const reopenedDb = rawDb()
+    try {
+      const record = reopenedDb.prepare('SELECT payload FROM audit WHERE record_id = ?').get('legacy-3')
+      expect(JSON.parse(String(record?.payload)).toolCall.rawInputSummary).toBe(v2)
+    } finally {
+      reopenedDb.close()
     }
   })
 
@@ -913,6 +992,152 @@ describe('reconciliation kind', () => {
 })
 
 describe('permission decided 重连重放去重（/ dedupe_key）', () => {
+  it('replays only confirmed withdrawals after the final audit insert fails and the sidecar restarts', async () => {
+    const sid = SessionId('work')
+    const owner = {}
+    const stop = new AbortController()
+    let withdraw = false
+    const handle = createAcpNativePermissionHandler({
+      getAgent: () => owner,
+      permissionProfile: 'devin',
+      riskReviewer: {
+        agent: 'devin',
+        model: 'swe-2-high',
+        policyVersion: 'v1',
+        review: async () => ({ risk: 'not_high', reason: 'Read only' }),
+      },
+      audit: {
+        append: async (record) => {
+          await store.append(sid, record)
+          if (withdraw && record.data.phase === 'decided') stop.abort()
+        },
+      },
+    })
+    const request = {
+      sessionId: 'main',
+      toolCall: { toolCallId: 'read-1', kind: 'read' as const },
+      options: [{ optionId: 'once', name: 'Allow once', kind: 'allow_once' as const }],
+    }
+    // An earlier request with exactly the same Agent and tool-call ID really was allowed.
+    await expect(handle(request)).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'once' } })
+    const db = rawDb()
+    try {
+      db.exec(`CREATE TRIGGER fail_withdrawal BEFORE INSERT ON audit
+        WHEN NEW.kind = 'permission' AND json_extract(NEW.payload, '$.phase') = 'decision-withdrawn'
+        BEGIN SELECT RAISE(ABORT, 'private error detail'); END`)
+      withdraw = true
+      const response = await handle(request, stop.signal)
+      expect(response).toEqual({ outcome: { outcome: 'cancelled' } })
+      expect(warns).toContain('dsh-acp: failed to reconcile the permission withdrawal journal')
+      await expect(store.listPage(sid, 0, 10)).rejects.toThrow('ACP_PERMISSION_AUDIT_UNAVAILABLE')
+      expect(await store.list(SessionId('other-session'))).toEqual([])
+      const pending = db.prepare('SELECT request_id, time FROM pending_permission_withdrawals').all()
+      expect(pending).toHaveLength(1)
+      await store.dispose()
+      db.exec('DROP TRIGGER fail_withdrawal')
+      store = createAcpSidecar({ root })
+      // Any ordinary startup read opens SQLite and replays the journal before the audit UI asks for it.
+      await store.readLatestBinding(sid)
+      expect(db.prepare('SELECT request_id FROM pending_permission_withdrawals').all()).toEqual([])
+      const entries = await store.list(sid)
+      const withdrawal = entries.at(-1)!
+      expect(withdrawal).toMatchObject({
+        time: pending[0]!.time,
+        data: { phase: 'decision-withdrawn', requestId: pending[0]!.request_id, outcome: response.outcome.outcome },
+      })
+      const selected = entries.filter((e) => e.kind === 'permission' && e.data.phase === 'decided')
+      expect(selected).toHaveLength(2)
+      expect(selected[0]).not.toMatchObject({ data: { requestId: pending[0]!.request_id } })
+      expect(selected[1]).toMatchObject({ data: { requestId: pending[0]!.request_id, decisionVia: 'devin-ai' } })
+      expect(entries.slice(-2).map(auditTimelineRowOf)).toMatchObject([
+        { summaryCode: 'permission.ai-decided', status: 'allow_once' },
+        { summaryCode: 'permission.decision-withdrawn', status: 'cancelled' },
+      ])
+      if (withdrawal.kind !== 'permission') throw new Error('expected a permission withdrawal')
+      await store.append(sid, { kind: 'permission', data: withdrawal.data })
+      expect(await store.list(sid)).toEqual(entries)
+    } finally {
+      db.close()
+    }
+  })
+
+  it('retains withdrawals across live sidecars when even the journal is unwritable and skips cleared history', async () => {
+    await store.dispose()
+    const uncommittedWithdrawals = new UncommittedWithdrawals()
+    store = createAcpSidecar({ root, uncommittedWithdrawals })
+    const next = createAcpSidecar({ root, uncommittedWithdrawals })
+    extraStores.push(next)
+    const kept = SessionId('kept')
+    const cleared = SessionId('cleared')
+    const withdrawal = {
+      phase: 'decision-withdrawn',
+      requestId: 'one',
+      agentSessionId: 'agent-session-1',
+      toolCallId: 'tc-1',
+      outcome: 'cancelled',
+    } as const
+    for (const id of [kept, cleared]) await store.append(id, { kind: 'permission', data: decidedData('one') })
+    await next.readLatestBinding(kept)
+    const db = rawDb()
+    try {
+      db.exec(`CREATE TRIGGER fail_journal BEFORE INSERT ON pending_permission_withdrawals
+        BEGIN SELECT RAISE(ABORT, 'private journal detail'); END`)
+      for (const id of [kept, cleared]) {
+        await expect(store.append(id, { kind: 'permission', time: 21, data: withdrawal })).rejects.toThrow(
+          'ACP_PERMISSION_AUDIT_UNAVAILABLE',
+        )
+      }
+      await expect(next.auditHead(kept)).rejects.toThrow('ACP_PERMISSION_AUDIT_UNAVAILABLE')
+      expect(await next.auditHead(SessionId('unaffected'))).toBe(0)
+      await expect(store.dispose()).rejects.toThrow('ACP_PERMISSION_AUDIT_UNAVAILABLE')
+      await expect(next.dispose()).rejects.toThrow('ACP_PERMISSION_AUDIT_UNAVAILABLE')
+      db.prepare('DELETE FROM audit WHERE dsh_session_id = ?').run(cleared)
+      db.exec('DROP TRIGGER fail_journal')
+      await uncommittedWithdrawals.close()
+      store = createAcpSidecar({ root })
+      expect(await store.list(kept)).toMatchObject([
+        { data: { phase: 'decided', outcome: 'selected' } },
+        { time: 21, data: withdrawal },
+      ])
+      expect(await store.list(cleared)).toEqual([])
+    } finally {
+      db.close()
+    }
+  })
+
+  it('persists independently correlated AI attempts and projects their phases after reopening', async () => {
+    const sid = SessionId('member-1')
+    const attempt = {
+      requestId: 'one',
+      attemptId: 'attempt-1',
+      agentSessionId: 'external-member',
+      toolCallId: 'call',
+      model: 'swe-2-high',
+      policyVersion: 'v1',
+      operationHash: 'operation-digest',
+    }
+    const start = { ...attempt, phase: 'ai-review-started' } as const
+    const result = {
+      ...attempt,
+      phase: 'ai-review-result',
+      status: 'high',
+      reason: 'Sharing a private document',
+      durationMs: 1000,
+    } as const
+    for (const data of [start, start, result, result, { ...start, attemptId: 'attempt-2' }]) {
+      await store.append(sid, { kind: 'permission', data })
+    }
+    await store.dispose()
+    store = createAcpSidecar({ root })
+    const entries = await store.list(sid)
+    expect(entries.map((e) => e.data)).toEqual([start, result, { ...start, attemptId: 'attempt-2' }])
+    expect(entries.map(auditTimelineRowOf)).toMatchObject([
+      { summaryCode: 'permission.ai-review-started', subject: 'swe-2-high', status: null },
+      { summaryCode: 'permission.ai-review-result', status: 'high', severity: 'warning' },
+      { summaryCode: 'permission.ai-review-started', status: null },
+    ])
+  })
+
   it('同 requestId 的 decided 第二次落库被跳过（行集不变，append 正常 resolve）', async () => {
     await store.append(SessionId('sess-1'), { kind: 'permission', time: 1, data: permissionData('req-1') })
     await store.append(SessionId('sess-1'), { kind: 'permission', time: 2, data: decidedData('req-1') })
@@ -1749,6 +1974,54 @@ describe('bound managed model selection', () => {
     await store.changeManagedModelIntent(id, { ...b, confirmed: true }, b)
     expect((await store.readManagedModelIntent(id))?.confirmed).toBe(true)
   })
+})
+
+it('upgrades existing model receipts on the first read without inferring earlier cancellations', async () => {
+  const id = SessionId('existing-model-receipts')
+  const key = 'same-binding'
+  await store.recordManagedModelTurn(id, key, { model: 'a', ordinal: 1, used: 12, size: 4000 })
+  await store.recordManagedModelInterruption(id, key, 'b', 2, 'failed')
+  await store.dispose()
+  const old = rawDb()
+  old.exec('ALTER TABLE managed_model_turns DROP COLUMN cancelled_ordinal')
+  old.close()
+
+  const before = await store.readManagedModelTurns(id, key)
+  expect(before).toMatchObject([
+    { model: 'a', ordinal: 1, used: 12, size: 4000, failureOrdinal: null, cancelledOrdinal: null },
+    { model: 'b', ordinal: 0, failureOrdinal: 2, cancelledOrdinal: null },
+  ])
+  await store.recordManagedModelInterruption(id, key, 'b', 4, 'cancelled')
+  await store.recordManagedModelInterruption(id, key, 'b', 3, 'cancelled')
+  await store.dispose()
+  expect(await store.readManagedModelTurns(id, key)).toEqual([before[0], { ...before[1], cancelledOrdinal: 4 }])
+})
+
+it('keeps old model receipts when a second Host finishes the upgrade during the first read', async () => {
+  const id = SessionId('concurrent-upgrade')
+  const key = 'original-binding'
+  await store.recordManagedModelInterruption(id, key, 'original-model', 2, 'failed')
+  await store.dispose()
+  const other = rawDb()
+  const exec = DatabaseSync.prototype.exec
+  let completedByOther = false
+  other.exec('ALTER TABLE managed_model_turns DROP COLUMN cancelled_ordinal')
+  const interleave = vi.spyOn(DatabaseSync.prototype, 'exec').mockImplementation(function (this: DatabaseSync, sql) {
+    if (!completedByOther && sql === 'ALTER TABLE managed_model_turns ADD COLUMN cancelled_ordinal INTEGER') {
+      exec.call(other, sql)
+      completedByOther = true
+    }
+    return exec.call(this, sql)
+  })
+  try {
+    expect(await store.readManagedModelTurns(id, key)).toMatchObject([
+      { model: 'original-model', ordinal: 0, cancelledOrdinal: null, failureOrdinal: 2 },
+    ])
+    expect(completedByOther).toBe(true)
+  } finally {
+    interleave.mockRestore()
+    other.close()
+  }
 })
 
 describe('pending member mode storage', () => {

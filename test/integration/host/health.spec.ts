@@ -1,3 +1,4 @@
+import { supportsLocalApprovalReview } from '../../../src/contract/approval-review.ts'
 // Host Remote integration coverage for the current additive API.
 // Legacy options, permission/elicitation brokers, and model-switch endpoints
 // are intentionally not part of the public Remote contract anymore.
@@ -13,6 +14,7 @@ import {
 import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts'
 import { ACP_PROBE_CACHE_OK_TTL_MS, acpProbeConfigKey } from '../../../src/domain/session/agent-config.ts'
 import type { AcpRecoveryView } from '../../../src/contract/remote.ts'
+import { acpDeclaredModelRoute, ACP_CURRENT_CONFIG_MODEL_ID } from '../../../src/contract/model-selection.ts'
 import { TYPERT } from '../../../lib/typert.host.js'
 
 const DEVIN: AcpAgentConfig = {
@@ -66,6 +68,106 @@ function service(extra: Partial<AcpRemoteServiceDeps> = {}) {
 }
 
 describe('AcpRemoteService current public surface', () => {
+  it('offers only cached named models on a supported local Devin profile', async () => {
+    const source = { ...DEVIN, runtime: 'devin' as const }
+    const cloud = { ...source, args: ['acp', '--cloud'] }
+    const handshake = { name: 'affogato', title: 'Devin Agent', version: '3000.14.30821' }
+    const seam = { localExecution: true as const, resolveExecutable: vi.fn(), spawn: vi.fn() }
+    const snap = {
+      at: Date.now(),
+      key: acpProbeConfigKey(source),
+      result: {
+        kind: 'ok' as const,
+        agentInfo: handshake,
+        models: [
+          { id: ACP_CURRENT_CONFIG_MODEL_ID },
+          { id: acpDeclaredModelRoute('dsh-acp:custom'), name: 'Custom' },
+          { id: 'swe-2-high' },
+        ],
+      },
+    }
+    const check = (snapshot: AcpProbeSnapshotLike | undefined, local: boolean) =>
+      service({
+        registry: registry({ custom: source, remote: cloud }, { 'acp-custom': snapshot }),
+        subprocess: { ok: true, seam: local ? seam : { spawn: seam.spawn, resolveExecutable: seam.resolveExecutable } },
+      }).instance
+    const instance = check(snap, true)
+    const rows = (await instance.health()).providers
+    const local = rows.find((row) => row.id === 'custom')!
+    if (supportsLocalApprovalReview(process.platform)) {
+      expect(local.devinReviewModels).toEqual([
+        { id: 'dsh-acp:custom', name: 'Custom' },
+        { id: 'swe-2-high', name: 'swe-2-high' },
+      ])
+    } else {
+      expect(local.devinReviewModels).toBeUndefined()
+    }
+    expect(rows.find((row) => row.id === 'remote')!.devinReviewModels).toBeUndefined()
+    expect(local.reviewVersionUnsupported).toBeUndefined()
+    const unavailable: Array<AcpProbeSnapshotLike | undefined> = [
+      undefined,
+      { ...snap, key: 'another-profile' },
+      { ...snap, result: { kind: 'error', failureKind: 'auth-required', error: { message: 'Check login' } } },
+      { ...snap, result: { kind: 'ok', models: snap.result.models } },
+      { ...snap, result: { ...snap.result, agentInfo: { ...handshake, version: '' } } },
+      { ...snap, result: { ...snap.result, agentInfo: { ...handshake, version: 'unknown' } } },
+      { ...snap, result: { ...snap.result, agentInfo: { ...handshake, title: 'Other', version: '1.0.0' } } },
+      { ...snap, result: { ...snap.result, agentInfo: { ...handshake, name: 'unrecognized' } } },
+    ]
+    for (const snapshot of unavailable) {
+      const row = (await check(snapshot, true).health()).providers[0]
+      expect(row?.devinReviewModels).toBeUndefined()
+      expect(row?.reviewVersionUnsupported).toBeUndefined()
+    }
+    for (const version of ['3000.14.30820', '3000.14.30822']) {
+      const mismatch = { ...snap, result: { ...snap.result, agentInfo: { ...handshake, version } } }
+      const row = (await check(mismatch, true).health()).providers[0]
+      expect(row?.probe.status).toBe('ok')
+      expect(row?.devinReviewModels).toBeUndefined()
+      expect(row?.reviewVersionUnsupported).toBe(supportsLocalApprovalReview(process.platform) ? true : undefined)
+      expect((await check(mismatch, false).health()).providers[0]?.reviewVersionUnsupported).toBeUndefined()
+    }
+    const empty = { ...snap, result: { ...snap.result, models: [{ id: ACP_CURRENT_CONFIG_MODEL_ID }] } }
+    expect((await check(empty, true).health()).providers[0]?.devinReviewModels).toEqual(
+      supportsLocalApprovalReview(process.platform) ? [] : undefined,
+    )
+    const remoteHost = await check(snap, false).health()
+    expect(remoteHost.localReviewUnavailable).toBe(true)
+    expect(remoteHost.providers[0]?.devinReviewModels).toBeUndefined()
+  })
+  it('discovers the verified local OpenCode profile without rebinding generic profiles or exposing credentials', async () => {
+    const config = { name: 'Work', command: 'opencode', args: ['acp'], env: { TOKEN: 'test-secret' } }
+    const seam = { localExecution: true as const, resolveExecutable: vi.fn(), spawn: vi.fn() }
+    const snap = {
+      at: Date.now(),
+      key: acpProbeConfigKey(config),
+      result: {
+        kind: 'ok' as const,
+        agentInfo: { name: 'OpenCode', version: '2.3.2' },
+        models: [{ id: 'work/fast' }, { id: 'implicit' }, { id: ACP_CURRENT_CONFIG_MODEL_ID }],
+      },
+    }
+    const { instance } = service({
+      subprocess: { ok: true, seam },
+      registry: registry(
+        { one: config, two: config },
+        {
+          'acp-one': snap,
+          'acp-two': { ...snap, result: { ...snap.result, agentInfo: { name: 'OpenCode', version: '1.2.3' } } },
+        },
+      ),
+    })
+    const [one, two] = (await instance.health()).providers
+    expect(one?.openCodeReviewModels).toEqual(
+      supportsLocalApprovalReview(process.platform) ? [{ id: 'work/fast', name: 'work/fast' }] : undefined,
+    )
+    expect(one?.reviewVersionUnsupported).toBeUndefined()
+    expect(two?.reviewVersionUnsupported).toBe(supportsLocalApprovalReview(process.platform) ? true : undefined)
+    expect(two?.openCodeReviewModels).toBeUndefined()
+    expect(one?.devinReviewModels).toBeUndefined()
+    expect(JSON.stringify([one, two])).not.toContain('test-secret')
+    expect(seam.spawn).not.toHaveBeenCalled()
+  })
   it('registers in Cordis and returns bounded health facts', async () => {
     const { ctx, instance } = service()
     expect(ctx.get('dshAcp' as never)).toBeDefined()
@@ -420,11 +522,8 @@ describe('AcpRemoteService current public surface', () => {
       'setAgentSessionOption',
       'setTeamMemberMode',
       'setTeamMemberModel',
-      'setToolApprovalPolicy',
       'teamMemberModels',
       'teamMembers',
-      'toolApprovalPolicy',
-      'toolApprovalPolicyFollow',
     ])
   })
 })

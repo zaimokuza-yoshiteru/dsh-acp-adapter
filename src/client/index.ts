@@ -201,7 +201,9 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     saveAgent: (editingId, draft) => panelController.saveAgent(editingId, draft),
     deleteAgent: (id) => panelController.deleteAgent(id),
     notifyOutcome: feedback.report,
-    setToolApprovalDefault: (policy) => panelController.setToolApprovalDefault(policy),
+    setAiApproval: (enabled) => panelController.setAiApproval(enabled),
+    setOpenCodeReviewModel: (id, value) => panelController.setOpenCodeReviewModel(id, value),
+    setDevinReviewModel: (value) => panelController.setDevinReviewModel(value),
     countBoundSessions: (id) => panelController.countBoundSessions(id),
   }
   const settingsT = ctx.locale.bind('settings.acp') as AcpTranslate
@@ -236,7 +238,11 @@ async function registerUi(ctx: ClientContext): Promise<void> {
         locale: 'acpActivity',
         store: createAcpPermissionQuestionStore,
       },
-      AcpPermissionQuestion,
+      (props) =>
+        AcpPermissionQuestion({
+          ...props,
+          language: ctx.locale.resolveText({ en: 'en', zh: 'zh' }) === 'zh' ? 'zh' : 'en',
+        }),
     ),
   )
   ctx.effect(

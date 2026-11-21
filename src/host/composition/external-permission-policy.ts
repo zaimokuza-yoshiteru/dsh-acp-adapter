@@ -91,12 +91,12 @@ export default class AcpPermissionPolicy extends Service {
     )
   }
 
-  evaluate(request: AcpExternalPolicyRequest): Promise<AcpExternalPolicyDecision> {
-    return this.dispatch('dsh-acp/permission-policy', request)
+  evaluate(request: AcpExternalPolicyRequest, onChainEnd?: () => void): Promise<AcpExternalPolicyDecision> {
+    return this.dispatch('dsh-acp/permission-policy', request, onChainEnd)
   }
 
-  evaluateBinary(request: AcpExternalPolicyRequest): Promise<AcpExternalPolicyDecision> {
-    return this.dispatch('dsh-acp/binary-permission-policy', request)
+  evaluateBinary(request: AcpExternalPolicyRequest, onChainEnd?: () => void): Promise<AcpExternalPolicyDecision> {
+    return this.dispatch('dsh-acp/binary-permission-policy', request, onChainEnd)
   }
 
   hasPreToolPolicy(agent: AcpPreToolPolicyRequest['agent']): boolean {
@@ -134,6 +134,7 @@ export default class AcpPermissionPolicy extends Service {
   private dispatch(
     event: 'dsh-acp/permission-policy' | 'dsh-acp/binary-permission-policy',
     request: AcpExternalPolicyRequest,
+    onChainEnd?: () => void,
   ): Promise<AcpExternalPolicyDecision> {
     return this.run(request.signal, (signal) => {
       const input = Object.freeze({
@@ -144,12 +145,11 @@ export default class AcpPermissionPolicy extends Service {
         signal,
       })
       return () =>
-        this.ctx.waterfall(
-          agentCarrier(input.agent),
-          event,
-          input,
-          async (): Promise<AcpExternalPolicyDecision> => 'not-applicable',
-        )
+        this.ctx.waterfall(agentCarrier(input.agent), event, input, async (): Promise<AcpExternalPolicyDecision> => {
+          // Public next() consumers continue to receive the documented literal.
+          onChainEnd?.()
+          return 'not-applicable'
+        })
     })
   }
 

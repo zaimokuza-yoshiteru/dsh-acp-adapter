@@ -2,7 +2,11 @@ import type { Context } from '@deepseek-ai/cordis'
 import { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-user-approval'
-import type { AcpExternalPermissionPolicyRequest, AcpNativeApprovalService } from '../../domain/policy/permissions.ts'
+import {
+  NO_EXTERNAL_POLICY,
+  type AcpExternalPermissionPolicyRequest,
+  type AcpNativeApprovalService,
+} from '../../domain/policy/permissions.ts'
 import type {} from './external-permission-policy.ts'
 
 /**
@@ -16,10 +20,15 @@ export function externalAgentApproval(ctx: Context, getAgent: () => Agent | unde
     if (agent === undefined || request.agent !== agent || agent.status !== 'running' || request.signal?.aborted)
       return 'cancelled'
     const policy = ctx.get('acpPermissionPolicy')
-    if (policy === undefined || (binary && policy.evaluateBinary === undefined)) return 'not-applicable'
+    if (policy === undefined || (binary && policy.evaluateBinary === undefined)) return NO_EXTERNAL_POLICY
     const input = { ...request, agent }
-    const outcome = binary ? await policy.evaluateBinary(input) : await policy.evaluate(input)
-    return request.signal?.aborted || getAgent() !== agent || agent.status !== 'running' ? 'cancelled' : outcome
+    let reachedEnd = false
+    const onChainEnd = () => {
+      reachedEnd = true
+    }
+    const outcome = binary ? await policy.evaluateBinary(input, onChainEnd) : await policy.evaluate(input, onChainEnd)
+    if (request.signal?.aborted || getAgent() !== agent || agent.status !== 'running') return 'cancelled'
+    return reachedEnd && outcome === 'not-applicable' ? NO_EXTERNAL_POLICY : outcome
   }
   return {
     evaluateExternal: (request) => evaluate(request, false),
@@ -38,6 +47,7 @@ export function externalAgentApproval(ctx: Context, getAgent: () => Agent | unde
           agent,
           toolName: request.toolName,
           ...(request.reason === undefined ? {} : { reason: request.reason }),
+          ...(request.displayReason === undefined ? {} : { displayReason: request.displayReason }),
           ...(request.signal === undefined ? {} : { signal: request.signal }),
           ...(request.callId === undefined ? {} : { callId: request.callId as ToolCallId }),
           // ACP has no native tool-call record for an answerer to resolve.
@@ -62,6 +72,7 @@ export function externalAgentApproval(ctx: Context, getAgent: () => Agent | unde
                 toolName: request.toolName,
                 ...(request.callId === undefined ? {} : { callId: request.callId as ToolCallId }),
                 ...(request.reason === undefined ? {} : { reason: request.reason }),
+                ...(request.displayReason === undefined ? {} : { displayReason: request.displayReason }),
                 ...(signal === undefined ? {} : { signal }),
                 ...(request.toolArgs === undefined ? {} : { toolArgs: request.toolArgs }),
                 ...(request.commandLine === undefined ? {} : { commandLine: request.commandLine }),

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { AcpUiFeedback, followAcpQuestionLimitations } from '../../../src/client/data/feedback.ts'
+import { en, zh } from '../../../src/client/ui/locales.ts'
 import { AcpOutcomeToast } from '../../../src/client/ui/AcpOutcomeToast.ts'
 
 const suffix = ' (ACP_DELEGATED_QUESTION_UNAVAILABLE)'
@@ -47,6 +48,22 @@ describe('unsupported child question feedback', () => {
     expect(toast.props.text).toContain('Research child')
     expect(toast.props.text).toContain('unopened-child')
     expect(toast.props.text).not.toContain('ACP_DELEGATED_QUESTION_UNAVAILABLE')
+  })
+
+  it('renders an audit failure in the current browser language with the affected session', () => {
+    const f = fixture()
+    f.mount()
+    f.emit('unopened-child', 'Host message (ACP_PERMISSION_AUDIT_UNAVAILABLE)')
+    expect(f.feedback.getSnapshot()).toMatchObject({
+      outcome: 'permission-audit-failed',
+      sourceSession: { id: 'unopened-child' },
+    })
+    for (const locale of [en, zh]) {
+      const t = (key: keyof typeof en, params?: { message: string }) =>
+        key === 'toastSessionOutcome' ? params!.message : locale[key]
+      const toast = AcpOutcomeToast({ feedback: f.feedback, t } as never) as { props: { text: string } }
+      expect(toast.props.text).toBe(locale.toastPermissionAuditFailed)
+    }
   })
 
   it('uses the source id when summaries have not arrived and refreshes the title for later notices', () => {

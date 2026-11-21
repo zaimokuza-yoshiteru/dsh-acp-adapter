@@ -520,7 +520,6 @@ it.skipIf(!optedIn)(
       }
       const provider = PROVIDER
       await host.ctx.settings.replace('dsh-acp-adapter', {
-        toolApprovalDefault: 'ask',
         agents: {
           antigravity: {
             name: 'Antigravity live verification',

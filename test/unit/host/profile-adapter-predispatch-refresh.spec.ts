@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -18,9 +18,13 @@ interface WireRequest {
   readonly sessionId?: string
 }
 
-async function harness(refresh: Refresh = 'directory') {
+async function harness(refresh: Refresh | 'pending-read' = 'directory') {
   const root = mkdtempSync(join(tmpdir(), 'acp-predispatch-refresh-'))
+  const readStarted = Promise.withResolvers<void>()
+  const releaseRead = Promise.withResolvers<void>()
+  const promptEntered = Promise.withResolvers<void>()
   const wirePath = join(root, 'wire.jsonl')
+  const admittedPath = join(root, 'session-admitted')
   const sidecar = createAcpSidecar({ root: join(root, 'sidecar') })
   let stale = false
   let promptsEntered = 0
@@ -33,7 +37,17 @@ async function harness(refresh: Refresh = 'directory') {
       const request = JSON.parse(line), reply = result => send({ jsonrpc: '2.0', id: request.id, result });
       require('node:fs').appendFileSync(${JSON.stringify(wirePath)}, JSON.stringify({ method: request.method, sessionId: request.params?.sessionId }) + '\\n');
       if (request.method === 'initialize') reply({ protocolVersion: 1, agentInfo: { name: 'refresh-fixture', version: '1' }, agentCapabilities: { sessionCapabilities: { resume: {} } } });
-      if (request.method === 'session/new') { session = 'original-' + process.pid; reply({ sessionId: session }); }
+      if (request.method === 'session/new') {
+        session = 'original-' + process.pid;
+        reply({ sessionId: session });
+        if (${refresh === 'pending-read'}) {
+          const admission = setInterval(() => {
+            if (!require('node:fs').existsSync(${JSON.stringify(admittedPath)})) return;
+            clearInterval(admission);
+            send({ jsonrpc: '2.0', id: 71, method: 'fs/read_text_file', params: { sessionId: session, path: '/file' } });
+          }, 10);
+        }
+      }
       if (request.method === 'session/resume') { session = request.params.sessionId; reply({}); }
       if (request.method === 'session/prompt') {
         if (request.params.prompt.some(block => block.text === 'crash after dispatch')) process.exit(7);
@@ -73,6 +87,20 @@ async function harness(refresh: Refresh = 'directory') {
       (options) => {
         const runtime = new AcpSessionRuntime({
           ...options,
+          ...(refresh === 'pending-read'
+            ? {
+                cancelGraceMs: 5,
+                createFileSystemHandlers: () => ({
+                  async readTextFile() {
+                    readStarted.resolve()
+                    await releaseRead.promise
+                    return { content: 'available' }
+                  },
+                  writeTextFile: async () => ({}),
+                  dispose() {},
+                }),
+              }
+            : {}),
           prepareLaunch: async () => ({ argv, env: {}, spawnPlan: { argv, env: {} } }),
           mcpKey: () => (refresh === 'key' && stale ? 'new-key' : 'original-key'),
           createMcpLease: async () => {
@@ -83,9 +111,10 @@ async function harness(refresh: Refresh = 'directory') {
               signal: controller.signal,
               servers: [],
               needsRefresh: () => first && refresh === 'directory' && stale,
-              beginPrompt() {},
+              beginPrompt() {
+                promptEntered.resolve()
+              },
               endPrompt() {},
-              permission: () => undefined,
               async close() {},
             }
           },
@@ -96,6 +125,12 @@ async function harness(refresh: Refresh = 'directory') {
           if (++promptsEntered === 2 && armed) {
             stale = true
             if (refresh === 'lease') invalidateLease()
+          }
+          if (refresh === 'pending-read') {
+            // Wait for the Host to accept session/new before requesting the prior read.
+            // A child-process tick can arrive in the same pipe batch as the new-session reply.
+            if (promptsEntered === 1) writeFileSync(admittedPath, '')
+            return readStarted.promise.then(() => prompt(...args))
           }
           return prompt(...args)
         }
@@ -141,6 +176,8 @@ async function harness(refresh: Refresh = 'directory') {
     dispatches,
     request,
     wire,
+    promptEntered: promptEntered.promise,
+    releaseRead: releaseRead.resolve,
     replacement: () => {
       const store = createAcpSidecar({ root: join(root, 'sidecar') })
       sidecars.push(store)
@@ -161,15 +198,40 @@ async function harness(refresh: Refresh = 'directory') {
   }
 }
 
-async function drain(stream: AsyncIterable<unknown>): Promise<void> {
-  for await (const _ of stream) {
-    /* consume */
-  }
+async function drain(stream: AsyncIterable<unknown>): Promise<unknown> {
+  let last: unknown
+  for await (const chunk of stream) last = chunk
+  return last
 }
 
 const sessionId = 'refresh-session' as never
 
 describe('known pre-dispatch connection refresh', () => {
+  it('stops an unsent input while prior Host work stays pending, preserving the binding and process', async () => {
+    const h = await harness('pending-read')
+    const controller = new AbortController()
+    try {
+      const finished = vi.fn()
+      void drain(h.adapter.stream(h.request('stopped before dispatch', controller.signal))).then(finished, finished)
+      await h.promptEntered
+      controller.abort()
+      await expect
+        .poll(() => finished.mock.lastCall?.[0])
+        .toMatchObject({ type: 'finish', reason: { kind: 'aborted' } })
+      expect(await h.sidecar.readDispatch(sessionId, h.dispatches[0]!.key)).toBeUndefined()
+      expect(await h.sidecar.readLatestBinding(sessionId)).toMatchObject({ binding: { committedPromptOrdinal: 0 } })
+      h.releaseRead()
+      await drain(h.adapter.stream(h.request('next input')))
+      expect(h.wire().filter((r) => r.method === 'initialize')).toHaveLength(1)
+      expect(h.wire().filter((r) => r.method === 'session/prompt')).toHaveLength(1)
+      expect(h.wire().filter((r) => r.method === 'session/cancel')).toEqual([])
+      expect(await h.sidecar.readLatestBinding(sessionId)).toMatchObject({ binding: { committedPromptOrdinal: 1 } })
+    } finally {
+      h.releaseRead()
+      await h.close()
+    }
+  })
+
   it.each<Refresh>(['directory', 'key', 'lease'])(
     'retries the same input against its original binding after %s invalidation',
     async (refresh) => {

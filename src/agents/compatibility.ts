@@ -3,11 +3,7 @@
 import type { AcpAgentId, AcpStubAgentConfig } from '../contract/agent-config.ts'
 import { antigravityCompatibility } from './antigravity.ts'
 import { claudeCompatibility } from './claude.ts'
-import {
-  codebuddyHasModelSpecificConfiguration,
-  codebuddySessionOptions,
-  isAnonymousCodeBuddyLaunch,
-} from './codebuddy.ts'
+import { isCodeBuddyPeer, codebuddySessionOptions, isAnonymousCodeBuddyLaunch } from './codebuddy.ts'
 import { codexModelProbeOptions } from './codex.ts'
 import { devinModelProbeOptions, devinToolDiscoveryInstructions } from './devin.ts'
 import { qwenHasModelSpecificConfiguration } from './qwen.ts'
@@ -26,12 +22,17 @@ export function toolDiscoveryInstructions(runtime: string | undefined): string {
     : 'Use your MCP client’s supported discovery operations for this server to obtain the tool definitions you need. A truncated or partial catalog is not evidence that a tool is unavailable; retrieve the missing definitions before calling it.'
 }
 
-export function modelProbeOptions(runtime: AcpAgentId | undefined): {
-  probeModelConfigOptions: boolean
+export function modelProbeOptions(
+  runtime: AcpAgentId | undefined,
+  profile?: Pick<AcpStubAgentConfig, 'command' | 'args' | 'runtime'>,
+): {
+  probeModelConfigOptions: boolean | 'if-anonymous'
   probeModelConfigConcurrency: number
 } {
   if (runtime === 'devin') return devinModelProbeOptions
   if (runtime === 'codex') return codexModelProbeOptions
+  if ((runtime === undefined || runtime === 'codebuddy') && isAnonymousCodeBuddyLaunch(profile))
+    return { probeModelConfigOptions: 'if-anonymous', probeModelConfigConcurrency: 1 }
   return {
     probeModelConfigOptions: runtime === 'antigravity' && antigravityCompatibility.probeModelConfigOptions,
     probeModelConfigConcurrency: 1,
@@ -40,7 +41,7 @@ export function modelProbeOptions(runtime: AcpAgentId | undefined): {
 
 /** These are observed protocol identities, not catalog names or profile ids. */
 export function hasModelSpecificConfiguration(agentName: string | undefined): boolean {
-  return codebuddyHasModelSpecificConfiguration(agentName) || qwenHasModelSpecificConfiguration(agentName)
+  return isCodeBuddyPeer(agentName) || qwenHasModelSpecificConfiguration(agentName)
 }
 
 /** Peers verified to report their selected model on both session creation and restoration. */
@@ -50,7 +51,7 @@ export function supportsAgentManagedModels(
 ): boolean {
   return agentName === undefined
     ? isAnonymousCodeBuddyLaunch(profile)
-    : codebuddyHasModelSpecificConfiguration(agentName) || agentName === 'OpenCode'
+    : isCodeBuddyPeer(agentName) || agentName === 'OpenCode'
 }
 
 /** An anonymous CodeBuddy handshake can become named across versions; it cannot become OpenCode. */
@@ -66,12 +67,12 @@ export function sameSwitchableAgent(
   )
 }
 
-export function sessionCompatibilityOptions(runtime: AcpAgentId | undefined): {
-  enableClaudeDraftSubagents: boolean
-  refreshSessionAfterCancelledPrompt?: true
-} {
+export function sessionCompatibilityOptions(
+  runtime: AcpAgentId | undefined,
+  profile?: Pick<AcpStubAgentConfig, 'command' | 'args' | 'runtime'>,
+) {
   return {
     enableClaudeDraftSubagents: runtime === 'claude' && claudeCompatibility.enableDraftSubagents,
-    ...(runtime === 'codebuddy' ? codebuddySessionOptions : {}),
+    ...codebuddySessionOptions(runtime, profile),
   }
 }

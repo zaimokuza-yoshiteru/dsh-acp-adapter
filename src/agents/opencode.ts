@@ -7,6 +7,16 @@ interface OpenCodeDeclaredModel {
   readonly imageInput?: boolean
 }
 
+/** A member can mark the request envelope or any update of the same tool call. */
+export function isOpenCodeChildPermission(
+  agentName: string | undefined,
+  ...metadata: (Record<string, unknown> | null | undefined)[]
+): boolean {
+  return (
+    agentName === 'OpenCode' && metadata.some((meta) => meta != null && Object.hasOwn(meta, 'opencode/child-session'))
+  )
+}
+
 function object(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)

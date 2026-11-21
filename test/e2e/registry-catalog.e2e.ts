@@ -1,6 +1,5 @@
 import type { AcpAgentConfig } from '../../src/contract/agent-config.ts'
 import type { AcpRemoteService } from '../../src/remote/service.ts'
-import registrySnapshot from '../../assets/registry/registry.json' with { type: 'json' }
 import { required } from './required.ts'
 import type { TestBrowser } from './browser.ts'
 import { launchBrowser, newEnglishPage } from './browser.ts'
@@ -64,11 +63,7 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     const menuText = await menu.innerText()
     expect(menuText.indexOf('Qwen Code')).toBeGreaterThan(menuText.indexOf('Verified adapters · 6'))
     expect(menuText.indexOf('Qwen Code')).toBeLessThan(menuText.indexOf('Catalog entries · Unverified ·'))
-    const antigravity = required(
-      registrySnapshot.agents.find((agent) => agent.id === 'antigravity-acp'),
-      'Antigravity catalog entry',
-    )
-    await menu.getByRole('menuitem', { name: `Google Antigravity · ${antigravity.version}`, exact: true }).waitFor()
+    await menu.getByRole('menuitem', { name: 'Google Antigravity', exact: true }).waitFor()
     expect(items.some((text) => /^Kimi(?: CLI| Code)?(?: ·| \(Legacy\))/.test(text))).toBe(false)
     const evidence = join(root, '.local/rc1-catalog-menu')
     mkdirSync(evidence, { recursive: true })
@@ -83,7 +78,7 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     await page.keyboard.press('Tab')
     expect(
       await detail
-        .getByRole('button', { name: 'Default DSH tool approval', exact: true })
+        .getByRole('switch', { name: 'AI approval', exact: true })
         .evaluate((node) => node === document.activeElement),
     ).toBe(true)
     expect(await detail.getByRole('textbox').count()).toBe(0)
@@ -119,15 +114,22 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
       await menu.waitFor({ state: 'hidden' })
       expect(await addButton.evaluate((node) => node === document.activeElement)).toBe(true)
     }
-    await addButton.click()
-    await menu.waitFor({ state: 'visible' })
-    // Scrolling the settings panel can move the CSS-anchored card beyond the window.
-    // The trigger stays visible and can immediately reopen it at its new position.
-    const beforeScroll = required(await addButton.boundingBox(), 'catalog trigger before panel scroll')
-    await addButton.evaluate((button) => button.scrollIntoView({ block: 'center' }))
+    // Deliver a real scroll and click in one task so the panel's scroll event is still queued on open.
+    const opening = await addButton.evaluate((button: HTMLButtonElement) => {
+      button.scrollIntoView({ block: 'start', behavior: 'instant' })
+      const before = button.getBoundingClientRect().top
+      button.scrollIntoView({ block: 'center', behavior: 'instant' })
+      const atClick = button.getBoundingClientRect().top
+      button.click()
+      return { before, atClick }
+    })
+    expect(opening.atClick).not.toBe(opening.before)
+    await expectCatalogMenuFits(menu)
+    // Moving the anchor again after the menu opened must dismiss it and restore focus.
+    await addButton.evaluate((button) => button.scrollIntoView({ block: 'end', behavior: 'instant' }))
     await menu.waitFor({ state: 'detached' })
     const afterScroll = required(await addButton.boundingBox(), 'catalog trigger after panel scroll')
-    expect(afterScroll.y).not.toBe(beforeScroll.y)
+    expect(afterScroll.y).not.toBe(opening.atClick)
     expect(afterScroll.y).toBeGreaterThanOrEqual(0)
     expect(afterScroll.y + afterScroll.height).toBeLessThanOrEqual(500)
     expect(await addButton.evaluate((button) => button === document.activeElement)).toBe(true)
@@ -148,14 +150,43 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     await select(/^Claude Agent ·/)
     await detail.getByRole('button', { name: 'Connection settings', exact: true }).click()
     expect(await detail.getByLabel('Executable', { exact: true }).inputValue()).toBe('claude-agent-acp')
-    await detail.getByText(/https:\/\/github\.com\/agentclientprotocol\/claude-agent-acp/).waitFor()
+    const guide = detail.getByRole('link', { name: 'View installation guide', exact: true })
+    expect(await guide.getAttribute('href')).toBe('https://github.com/agentclientprotocol/claude-agent-acp')
     expect(await detail.innerText()).not.toContain('claude-agent-acp-darwin-')
     await page.setViewportSize({ width: 390, height: 844 })
     await page.locator('[data-sidebar-collapsed="true"]').waitFor()
-    await detail.getByText(/https:\/\/github\.com\/agentclientprotocol\/claude-agent-acp/).scrollIntoViewIfNeeded()
+    await guide.scrollIntoViewIfNeeded()
     await page.screenshot({ path: join(root, '.local/registry-ui/claude-binary-390-en.png'), animations: 'disabled' })
     await detail.getByRole('button', { name: 'Cancel', exact: true }).click()
     await page.setViewportSize({ width: 1680, height: 1000 })
+    await select(/^Google Antigravity$/)
+    const agyGuideUrl = 'https://antigravity.google/docs/cli/acp'
+    expect(await guide.getAttribute('href')).toBe(agyGuideUrl)
+    expect(await guide.getAttribute('target')).toBe('_blank')
+    expect(await guide.getAttribute('rel')).toBe('noopener noreferrer')
+    // Exercise native link activation without contacting the vendor during UI regression.
+    await page.context().route(agyGuideUrl, (route) => route.fulfill({ contentType: 'text/plain', body: 'guide' }))
+    const popupReady = page.context().waitForEvent('page')
+    await guide.click()
+    const popup = await popupReady
+    await popup.waitForURL(agyGuideUrl)
+    await popup.close()
+    await page.context().unroute(agyGuideUrl)
+    await detail.getByRole('button', { name: 'Connection settings', exact: true }).click()
+    const agyCommand = detail.getByLabel('Executable', { exact: true })
+    expect(await agyCommand.inputValue()).toBe('agy')
+    expect(await detail.getByLabel('Arguments', { exact: true }).inputValue()).toBe('acp')
+    await detail.getByText(/If sign-in is required.*agy acp --login/).waitFor()
+    await agyCommand.fill('/opt/Agent Tools/agy')
+    await detail
+      .getByText(
+        "If sign-in is required, run this in a terminal on the machine running the Agent: '/opt/Agent Tools/agy' acp --login",
+        { exact: true },
+      )
+      .waitFor()
+    await agyCommand.fill('agy_acp_server.par')
+    expect(await detail.getByText(/acp --login/).count()).toBe(0)
+    await detail.getByRole('button', { name: 'Cancel', exact: true }).click()
     await select(/^Codex ·/)
     expect(await detail.getByLabel('Environment', { exact: true }).count()).toBe(0)
     expect(await detail.getByLabel('Login hint', { exact: true }).count()).toBe(0)
@@ -164,6 +195,8 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     await page.screenshot({ path: join(root, '.local/registry-ui/login-guidance-en.png'), fullPage: true })
     await detail.getByRole('button', { name: 'Cancel', exact: true }).click()
     await select(/^Minion Code ·/)
+    await detail.getByText(/^Install: uv tool install minion-code@/).waitFor()
+    expect(await guide.count()).toBe(0)
     expect(await detail.getByLabel('Arguments', { exact: true }).inputValue()).toBe('acp')
     await detail.getByRole('button', { name: 'Cancel', exact: true }).click()
     await select(/^VT Code ·/)
@@ -233,12 +266,30 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     expect(chineseMenuText.indexOf('Qwen Code')).toBeLessThan(chineseMenuText.indexOf('目录收录 · 未验证 ·'))
     await page
       .getByRole('menu')
-      .getByRole('menuitem', { name: `Google Antigravity · ${antigravity.version}`, exact: true })
-      .waitFor()
-    await page
-      .getByRole('menu')
       .getByText(/^目录收录 · 未验证 ·/)
       .waitFor()
+    await page.getByRole('menuitem', { name: 'Google Antigravity', exact: true }).click()
+    expect(await detail.getByRole('link', { name: '查看安装指南', exact: true }).getAttribute('href')).toBe(agyGuideUrl)
+    await page.setViewportSize({ width: 390, height: 844 })
+    await detail.getByRole('button', { name: '连接设置', exact: true }).click()
+    const login = detail.getByText(/如需登录.*agy acp --login/)
+    await login.scrollIntoViewIfNeeded()
+    const bounds = required(await login.boundingBox(), 'Chinese CLI sign-in hint')
+    expect(bounds.x).toBeGreaterThanOrEqual(0)
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(390)
+    await page.screenshot({ path: join(root, '.local/registry-ui/antigravity-390-zh.png'), animations: 'disabled' })
+    const cacheKey = 'baf3119c'.repeat(8)
+    const longCommand = join(host.workspaceCwd, cacheKey, 'agy')
+    await detail.getByLabel('可执行命令', { exact: true }).fill(longCommand)
+    const longLogin = detail.getByText(/如需登录/).filter({ hasText: cacheKey })
+    expect(await longLogin.textContent()).toContain('acp --login')
+    expect(await longLogin.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true)
+    await detail.getByRole('button', { name: '保存', exact: true }).click()
+    const launchError = detail.getByRole('alert').filter({ hasText: cacheKey })
+    await launchError.waitFor()
+    expect(await launchError.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true)
+    await page.setViewportSize({ width: 1680, height: 1000 })
+    await detail.getByRole('button', { name: '添加 Agent', exact: true }).click()
     await page.getByRole('menuitem', { name: /^VT Code ·/ }).click()
     await detail.getByText(/请在运行 Agent 的主机安装对应平台的程序/).waitFor()
     expect(await detail.getByLabel('登录指引', { exact: true }).count()).toBe(0)
@@ -266,11 +317,11 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     const manual = detail.locator('[data-dsh-acp-agent="manual-agent"]')
     await manual.getByText('上次检查未通过', { exact: true }).waitFor()
     await manual.getByRole('alert').filter({ hasText: 'Agent 尚未登录' }).waitFor()
-    expect(checkedAgents()).toEqual(['my-fast', 'manual-agent'])
+    expect(checkedAgents()).toEqual(['my-fast', 'antigravity-acp', 'manual-agent'])
     writeFileSync(authFile, 'authenticated')
     await manual.getByRole('button', { name: '重新检查', exact: true }).click()
     await manual.getByText('检查通过', { exact: true }).waitFor()
-    expect(checkedAgents()).toEqual(['my-fast', 'manual-agent', 'manual-agent'])
+    expect(checkedAgents()).toEqual(['my-fast', 'antigravity-acp', 'manual-agent', 'manual-agent'])
     const signedOut = join(host.workspaceCwd, 'replacement-login-state')
     writeFileSync(signedOut, 'signed-out')
     await manual.getByRole('button', { name: '编辑', exact: true }).click()
@@ -280,7 +331,7 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     await detail.getByRole('button', { name: '保存', exact: true }).click()
     await manual.getByText('上次检查未通过', { exact: true }).waitFor()
     expect(await manual.getByText('检查通过', { exact: true }).count()).toBe(0)
-    expect(checkedAgents()).toEqual(['my-fast', 'manual-agent', 'manual-agent', 'manual-agent'])
+    expect(checkedAgents()).toEqual(['my-fast', 'antigravity-acp', 'manual-agent', 'manual-agent', 'manual-agent'])
     await backToPluginList(detail, 'zh')
     const currentSettings = await openNativeSettings(page, 'zh')
     await currentSettings.getByRole('button', { name: '通用设置', exact: true }).click()

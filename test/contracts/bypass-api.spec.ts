@@ -80,15 +80,12 @@ const PINNED_REMOTE_METHODS: readonly string[] = [
   'setAgentSessionOption',
   'setTeamMemberMode',
   'setTeamMemberModel',
-  'setToolApprovalPolicy',
   'teamMemberModels',
   'teamMembers',
-  'toolApprovalPolicy',
-  'toolApprovalPolicyFollow',
 ]
 
 describe(' 旁路 API 消除门', () => {
-  it('limits transport primitives to the Teams MCP bridge and the private agy hook socket', () => {
+  it('limits transport primitives to the MCP bridge, the private agy hook and the local OpenCode generation client', () => {
     const violations: string[] = []
     for (const abs of walkTsFiles(SRC_DIR)) {
       const rel = path.relative(SRC_DIR, abs).split(path.sep).join('/')
@@ -98,6 +95,7 @@ describe(' 旁路 API 消除门', () => {
       }
     }
     expect(violations, `旁路 API 回归：\n  ${violations.join('\n  ')}`).toEqual([
+      'host/approval-review/opencode/review-api.ts: node:http(s)/node:net import',
       'host/tools/bridge.ts: createServer',
       'host/tools/bridge.ts: .listen(',
       'host/tools/bridge.ts: node:http(s)/node:net import',

@@ -107,7 +107,12 @@ function storeSpec() {
   }
 }
 
-function renderQuestion(pending: ReturnType<typeof candidate>, chosen?: string, stored?: DraftState) {
+function renderQuestion(
+  pending: ReturnType<typeof candidate>,
+  chosen?: string,
+  stored?: DraftState,
+  language: 'en' | 'zh' = 'en',
+) {
   const store = storeSpec()
   const state: DraftState = stored ?? {
     byRequest:
@@ -121,6 +126,7 @@ function renderQuestion(pending: ReturnType<typeof candidate>, chosen?: string, 
   }
   const tree = AcpPermissionQuestion({
     matched: pending,
+    language,
     t: (key: string) => key,
     useStore: (select: (state: { byRequest: Record<string, unknown> }) => unknown) => select(state),
     actions,
@@ -326,6 +332,29 @@ it('waits for an explicit option and submits its exact offered label', async () 
   expect(pending.answer).toHaveBeenCalledWith({
     answers: [{ id: 'acp-permission:permission-1', selected: ['BETA'] }],
   })
+})
+
+it('uses the translated display label and submits the stable original response value after changing languages', async () => {
+  const id = 'acp-permission:bilingual'
+  const pending = candidate(id, {
+    questions: [
+      {
+        id,
+        question: 'Approve?',
+        options: [{ label: 'Choose · option 1' }, { label: 'Choose · option 2' }],
+        acpTranslation: { language: 'zh', question: '允许吗？', labels: ['Choose · 选项 1', 'Choose · 选项 2'] },
+      },
+    ],
+  })
+  const chinese = renderQuestion(pending, undefined, undefined, 'zh')
+  const option = buttons(chinese.tree).find((button) => button.props['aria-label'] === 'Choose · 选项 2')!
+  ;(option.props.onClick as () => void)()
+  expect(chinese.actions.select).toHaveBeenCalledWith(id, 'Choose · option 2')
+  const english = buttons(renderQuestion(pending, undefined, chinese.state, 'en').tree)
+  expect(english.find((button) => button.props['aria-label'] === 'Choose · option 2')?.props['aria-checked']).toBe(true)
+  ;(english.find((button) => button.text === 'acpQuestionSubmit')!.props.onClick as () => void)()
+  await Promise.resolve()
+  expect(pending.answer).toHaveBeenCalledWith({ answers: [{ id, selected: ['Choose · option 2'] }] })
 })
 
 it('uses one roving radio tab stop and moves focus/selection with arrows, Home, and End without submitting', () => {

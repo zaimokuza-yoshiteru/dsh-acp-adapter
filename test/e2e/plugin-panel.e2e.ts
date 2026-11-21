@@ -36,7 +36,6 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
   mkdirSync(evidence, { recursive: true })
   try {
     await host.ctx.settings.replace('dsh-acp-adapter', {
-      toolApprovalDefault: 'auto',
       agents: {
         devin: {
           name: 'Panel-fixture-with-a-very-long-unbroken-agent-display-name-to-check-natural-wrapping-and-horizontal-overflow',
@@ -81,19 +80,15 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
     const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version as string
     expect(await detail.getByText(`v${version}`, { exact: true }).count()).toBe(1)
     expect(await panel.getByText(`v${version}`, { exact: true }).count()).toBe(0)
-    await panel.getByRole('heading', { name: 'Default DSH tool approval', exact: true }).waitFor()
-    const approvalDefault = panel.getByRole('button', { name: 'Default DSH tool approval', exact: true })
-    await expect.poll(() => approvalDefault.innerText()).toContain('Auto approve')
-    await approvalDefault.click()
-    await page.getByRole('menuitem', { name: 'Ask', exact: true }).click()
-    await expect.poll(() => approvalDefault.innerText()).toContain('Ask')
-    expect(
-      (
-        host.ctx.settings.describe().find((row) => row.ns === 'dsh-acp-adapter')?.value as {
-          toolApprovalDefault?: string
-        }
-      ).toolApprovalDefault,
-    ).toBe('ask')
+    const approval = panel.getByRole('switch', { name: 'AI approval', exact: true })
+    await approval.waitFor()
+    expect(await approval.getAttribute('aria-checked')).toBe('false')
+    expect(await panel.getByRole('switch').count()).toBe(1)
+    expect(await panel.getByRole('button', { name: 'Default DSH tool approval', exact: true }).count()).toBe(0)
+    await approval.click()
+    await expect
+      .poll(() => host.ctx.settings.describe().find((row) => row.ns === 'dsh-acp-adapter')?.value)
+      .toMatchObject({ aiApproval: true })
     await page.screenshot({ path: join(evidence, 'light.png'), fullPage: true, animations: 'disabled' })
 
     const card = panel.locator('[data-dsh-acp-agent="devin"]')
@@ -173,7 +168,6 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
     }
 
     await host.ctx.settings.replace('dsh-acp-adapter', {
-      toolApprovalDefault: 'ask',
       agents: {
         devin: {
           name: '面板预览 Agent',
@@ -189,11 +183,10 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
     const chineseDetail = await openAcpPluginDetail(page, 'zh')
     const chinesePanel = chineseDetail.locator('[data-dsh-acp-panel]')
     await chinesePanel.getByRole('heading', { name: 'Agent 配置', exact: true }).waitFor()
-    await chinesePanel.getByRole('heading', { name: 'DSH 工具默认审批', exact: true }).waitFor()
-    await chinesePanel
-      .getByRole('button', { name: 'DSH 工具默认审批', exact: true })
-      .getByText('询问', { exact: true })
-      .waitFor()
+    const aiApproval = chinesePanel.getByRole('switch', { name: 'AI 审批', exact: true })
+    await aiApproval.waitFor()
+    expect(await aiApproval.getAttribute('aria-checked')).toBe('false')
+    expect(await chinesePanel.getByRole('switch').count()).toBe(1)
     await chineseDetail.locator('p').getByText(chinese.meta.description, { exact: true }).waitFor()
     expect(await chineseDetail.locator('img').first().getAttribute('src')).toBe(iconSource)
     await page.screenshot({ path: join(evidence, 'normal-zh.png'), fullPage: true, animations: 'disabled' })

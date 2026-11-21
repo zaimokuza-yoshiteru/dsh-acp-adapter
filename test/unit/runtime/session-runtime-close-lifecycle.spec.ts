@@ -148,7 +148,6 @@ it('bounds a hanging lease independently while still awaiting connection teardow
     hasPendingCalls: () => true,
     hasRetainedFeedback: () => true,
     waitForCallsSettled: () => callsSettled.promise,
-    permission: () => undefined,
   }
   const runtime = createRuntime(tracked.seam, { cancelGraceMs: 15, mcpLease: lease })
   await runtime.start()

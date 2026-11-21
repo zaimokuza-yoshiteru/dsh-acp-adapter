@@ -1,3 +1,5 @@
+import { approvalReviewFailures, permissionAuditFailureMessage } from '../../contract/approval-review.ts'
+
 /** Adapter-owned approval text; Agent commands, titles and options stay intact. */
 const en = {
   actions: {
@@ -10,6 +12,13 @@ const en = {
   } as Record<string, string>,
   restrictedOperation: 'Restricted operation',
   permission: 'Permission request',
+  reviewHighRisk: (reason: string) => `AI review found a high risk: ${reason}`,
+  reviewFailures: approvalReviewFailures.en,
+  permissionAuditFailed: permissionAuditFailureMessage.en,
+  reviewUnavailable: 'AI review could not assess this operation. Choose how to proceed.',
+  reviewTimeout: 'AI review timed out. Choose how to proceed.',
+  reviewAuditUnavailable: 'The AI review could not be recorded. Choose how to proceed.',
+  reviewNoOnce: 'The Agent did not offer a unique one-time approval. Choose an option.',
   policyReason: (reason: string) => `Approval rule: ${reason}`,
   policyDenial: (tool: string, callId: string, reason: string) =>
     `Approval rule declined the earlier request for ${tool} (${callId}). ${reason}`,
@@ -63,6 +72,13 @@ const zh: typeof en = {
   },
   restrictedOperation: '受限操作',
   permission: '授权请求',
+  reviewHighRisk: (reason) => `AI 判断此操作风险较高：${reason}`,
+  reviewFailures: approvalReviewFailures.zh,
+  permissionAuditFailed: permissionAuditFailureMessage.zh,
+  reviewUnavailable: 'AI 未能判断本次操作的风险，请选择如何处理。',
+  reviewTimeout: 'AI 审查超时，请选择如何处理。',
+  reviewAuditUnavailable: '未能保存 AI 审查记录，请选择如何处理。',
+  reviewNoOnce: 'Agent 未提供明确的仅本次允许选项，请手动选择。',
   policyReason: (reason) => `审批规则：${reason}`,
   policyDenial: (tool, callId, reason) => `审批规则未授权先前的「${tool}」请求（${callId}）。${reason}`,
   command: '命令',

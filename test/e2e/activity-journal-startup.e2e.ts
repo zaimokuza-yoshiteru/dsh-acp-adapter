@@ -18,7 +18,6 @@ it.each(['en', 'zh'] as const)('keeps %s activity quiet while the initial ACP bi
   await mkdir(gateDirectory, { recursive: true })
   await mkdir(bindingGate, { recursive: true })
   await host.ctx.settings.replace('dsh-acp-adapter', {
-    toolApprovalDefault: 'ask',
     agents: {
       codex: {
         name: 'Activity startup fixture',

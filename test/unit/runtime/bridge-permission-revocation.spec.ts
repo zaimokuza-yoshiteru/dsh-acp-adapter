@@ -40,15 +40,9 @@ it('revokes a title-only manual target without granting identity or cancelling i
       return () => listeners.delete(name)
     },
   } as unknown as Context
-  const lease = await createDshToolBridge(
-    ctx,
-    agent.id,
-    { mcpCapabilities: { http: true } },
-    'antigravity',
-    async () => 'auto',
-    undefined,
-    [...definitions.values()],
-  )
+  const lease = await createDshToolBridge(ctx, agent.id, { mcpCapabilities: { http: true } }, 'antigravity', [
+    ...definitions.values(),
+  ])
   if (lease === undefined) throw new Error('Missing bridge fixture')
   cleanups.push(() => lease.close())
   lease.beginPrompt(new AbortController().signal)
@@ -108,10 +102,8 @@ it.each(['unchanged', 'ended', 'replaced'] as const)(
       beginPrompt() {},
       endPrompt() {},
       async close() {},
-      permission: () => undefined,
       elicitationSignal,
       validateElicitationDecision,
-      elicitation: () => undefined,
     }
     const shown = Promise.withResolvers<AbortSignal | undefined>()
     const answer = Promise.withResolvers<acp.CreateElicitationResponse>()

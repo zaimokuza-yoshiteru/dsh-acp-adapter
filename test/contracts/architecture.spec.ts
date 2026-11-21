@@ -12,7 +12,7 @@
 // contract src/contract/** —— dshAcp Remote 的收窄 wire 类型（
 //                                             host/client 两半共享的类型真源，零 import 叶子）
 //   remote           src/remote/**             —— dshAcp additive health/audit/activity/recovery service
-//   hostComposition  src/host/composition/**  —— per-profile provider composition
+//   hostApprovalReview src/host/approval-review/** —— isolated review backends and their profile lifetime
 //   hostComposition  src/host/composition/**   —— 注册表组合、llm-stub、入口壳
 //   hostEntry        src/index.ts              —— 包入口（只允许 re-export hostComposition）
 //   clientData       src/client/data/**        —— 面板/选择器逻辑（仅可下行 import contract；
@@ -73,6 +73,7 @@ type Layer =
   | 'contract'
   | 'remote'
   | 'hostComposition'
+  | 'hostApprovalReview'
   | 'hostEntry'
   | 'clientData'
   | 'clientUi'
@@ -91,6 +92,7 @@ function layerOf(srcRel: string): Layer | undefined {
   if (srcRel.startsWith('persistence/')) return 'persistence'
   if (srcRel.startsWith('contract/')) return 'contract'
   if (srcRel.startsWith('remote/')) return 'remote'
+  if (srcRel.startsWith('host/approval-review/')) return 'hostApprovalReview'
   if (srcRel.startsWith('host/composition/')) return 'hostComposition'
   if (srcRel.startsWith('host/subagent/')) return 'hostComposition'
   if (srcRel.startsWith('host/teams/')) return 'hostComposition'
@@ -112,6 +114,7 @@ const HOST_LAYERS: readonly Layer[] = [
   'persistence',
   'remote',
   'hostComposition',
+  'hostApprovalReview',
   'hostEntry',
 ]
 
@@ -140,7 +143,9 @@ const ALLOWED_CROSS_LAYER: Readonly<Record<Layer, readonly Layer[]>> = {
     'contract',
   ],
   remote: ['contract', 'protocol', 'runtime', 'domainSession', 'domainPolicy', 'domainObservability'],
+  hostApprovalReview: ['contract', 'protocol', 'runtime', 'domainSession', 'domainPolicy'],
   hostComposition: [
+    'hostApprovalReview',
     'agentCompatibility',
     'domainSession',
     'domainPolicy',
@@ -179,6 +184,9 @@ const ALLOWED_SRC_ESCAPES: Readonly<Record<string, readonly string[]>> = {
 
 /** Exact shared pure-leaf edges; do not widen layer-level import permissions. */
 const ALLOWED_CROSS_FILE_EDGES = new Set([
+  // Only protocol facts cross these boundaries; approval ownership stays with the common runtime.
+  'runtime/session/session-runtime.ts->agents/opencode.ts',
+  'domain/policy/permissions.ts->agents/antigravity.ts',
   'protocol/v1/connection.ts->contract/redaction.ts',
   'domain/observability/redaction.ts->contract/redaction.ts',
   'runtime/session/session-runtime.ts->contract/live-diagnostic-trace.ts',

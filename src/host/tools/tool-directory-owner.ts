@@ -26,7 +26,7 @@ interface PermissionFence {
   readonly prompt: ToolDirectoryPrompt
   readonly signal: AbortSignal
   readonly definition: ToolSchema
-  /** A matching display title can revoke a question, but never authorizes Auto. */
+  /** A matching display title can bind revocation without proving the tool identity. */
   readonly revocationOnly: boolean
 }
 

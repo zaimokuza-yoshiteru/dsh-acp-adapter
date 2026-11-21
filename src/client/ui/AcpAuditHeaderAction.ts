@@ -18,9 +18,11 @@ import type { TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AcpAuditSummaryCode, AcpAuditTimelineEntry } from '../data/acp-remote.ts'
 import type { AcpRemoteLike } from '../data/acp-remote.ts'
 import type { AcpLocaleKey } from './locales.ts'
+import { publicAuditStatusLabels } from '../data/audit-status.ts'
 import { includesRoute, type UseRouteOwnership } from '../data/managed-routes.ts'
 import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
 import type { AcpDiagnosticView, AcpRecoveryView } from '../../contract/remote.ts'
+import { isApprovalReviewFailureCode } from '../../contract/approval-review.ts'
 import { matchesDiagnosticView } from '../../contract/diagnostics.ts'
 import { AcpSupportExportError, collectAcpSupportExport, downloadAcpSupportExport } from '../data/acp-support-export.ts'
 import { recoveryText } from './AcpRecoveryDock.ts'
@@ -101,12 +103,12 @@ export function auditEntryMatchesQuery(t: Translate, entry: AcpAuditTimelineEntr
     auditSummaryOf(t, entry),
     entry.subject ?? '',
     entry.status ?? '',
-    auditRecordedCause(entry) ?? '',
+    auditRecordedCause(t, entry) ?? '',
   ].some((value) => value.toLocaleLowerCase().includes(normalized))
 }
 
 /** Display only explicit recorded reasons, never infer a cause from an outcome. */
-export function auditRecordedCause(entry: AcpAuditTimelineEntry): string | null {
+export function auditRecordedCause(t: Translate, entry: AcpAuditTimelineEntry): string | null {
   if (entry.detail === null) return null
   try {
     const value = JSON.parse(entry.detail) as {
@@ -115,7 +117,14 @@ export function auditRecordedCause(entry: AcpAuditTimelineEntry): string | null 
       cause?: unknown
       note?: unknown
       items?: unknown
+      failureCode?: unknown
     } | null
+    if (
+      entry.summaryCode === 'permission.ai-review-result' &&
+      entry.status === 'error' &&
+      isApprovalReviewFailureCode(value?.failureCode)
+    )
+      return t(value.failureCode)
     const reason = [value?.reason, value?.detail, value?.cause, value?.note].find(
       (candidate): candidate is string => typeof candidate === 'string' && candidate.trim() !== '',
     )
@@ -136,9 +145,16 @@ export function auditRecordedCause(entry: AcpAuditTimelineEntry): string | null 
 const summaryKeys: Record<AcpAuditSummaryCode, AcpLocaleKey> = {
   'binding.established': 'auditSummaryBinding',
   'permission.asked': 'auditSummaryPermissionAsked',
+  'permission.ai-review-started': 'auditSummaryReviewStarted',
+  'permission.ai-review-result': 'auditSummaryReviewResult',
   'permission.pre-tool-denied': 'auditSummaryPreToolDenied',
+  'permission.codebuddy-review': 'auditCodeBuddyReview',
   'permission.bridge': 'auditSummaryPermissionBridge',
   'permission.decided': 'auditSummaryPermissionDecided',
+  'permission.decision-withdrawn': 'auditSummaryWithdrawn',
+  'permission.opencode-ai-decided': 'auditSummaryOpenCodeAiDecision',
+  'permission.ai-decided': 'auditSummaryAiDecision',
+  'permission.card-decided': 'auditSummaryCardDecision',
   'reconciliation.required': 'auditSummaryReconciliation',
   'replay.matched': 'auditSummaryReplayMatched',
   'replay.different': 'auditSummaryReplayDifferent',
@@ -167,51 +183,15 @@ export function auditSummaryOf(t: Translate, entry: AcpAuditTimelineEntry): stri
   return [base, subject, status].filter((value): value is string => value !== null && value !== '').join(' · ')
 }
 
+const auditStatusLabels: Partial<Record<string, AcpLocaleKey>> = {
+  ...publicAuditStatusLabels,
+  'danger-full-access': 'auditStatusNativeAccess',
+  set_config_option: 'auditStatusConfigSync',
+  'session-setup': 'auditStatusSessionSetup',
+}
+
 function auditStatusOf(t: Translate, status: string): string {
-  const key: Partial<Record<string, AcpLocaleKey>> = {
-    'auto-approved': 'auditAutoApproved',
-    'approval-required': 'auditApprovalRequired',
-    'policy-unavailable': 'auditPolicyUnavailable',
-    'bridge-unavailable': 'auditBridgeUnavailable',
-    'inactive-connection': 'auditBridgeInactive',
-    'inactive-prompt': 'auditPromptInactive',
-    'identity-unmatched': 'auditIdentityUnmatched',
-    'invalid-tool-name': 'auditInvalidToolName',
-    'not-coordination': 'auditNotCoordination',
-    'allow-once-unavailable': 'auditAllowOnceMissing',
-    'danger-full-access': 'auditStatusNativeAccess',
-    set_config_option: 'auditStatusConfigSync',
-    'session-setup': 'auditStatusSessionSetup',
-    ok: 'auditStatusOk',
-    error: 'auditStatusError',
-    aborted: 'auditStatusAborted',
-    timeout: 'auditStatusTimeout',
-    'concurrent-change': 'auditStatusConcurrentChange',
-    selected: 'auditStatusSelected',
-    cancelled: 'auditStatusCancelled',
-    started: 'auditStatusStarted',
-    running: 'auditStatusRunning',
-    exited: 'auditStatusExited',
-    killed: 'auditStatusKilled',
-    released: 'auditStatusReleased',
-    'output-summary': 'auditStatusOutputSummary',
-    'stop-requested': 'auditStatusStopRequested',
-    'exit-unverified': 'auditStatusExitUnverified',
-    allow_once: 'auditAllowOnce',
-    allow_always: 'auditAllowAlways',
-    reject_once: 'auditRejectOnce',
-    reject_always: 'auditRejectAlways',
-    inherited: 'auditForkInherited',
-    blank: 'auditForkBlank',
-    'agent-does-not-advertise-fork': 'auditForkUnsupported',
-    'parent-not-idle': 'auditForkParentNotIdle',
-    'parent-recovery-required': 'auditForkParentRecoveryRequired',
-    'parent-binding-unavailable': 'auditForkParentUnavailable',
-    'parent-binding-mismatch': 'auditForkParentMismatch',
-    'seed-not-latest-semantic-boundary': 'auditForkOlderBoundary',
-    'candidate-not-available': 'auditForkCandidateUnavailable',
-  }
-  const localeKey = key[status]
+  const localeKey = Object.hasOwn(auditStatusLabels, status) ? auditStatusLabels[status] : undefined
   return localeKey === undefined ? status : t(localeKey)
 }
 
@@ -703,7 +683,7 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
               { key: selected.seq, className: css.detailsBody, 'data-audit-detail-scroll': true },
               h('p', { className: css.detailsSummary }, auditSummaryOf(t, selected)),
               selected.severity !== 'info'
-                ? h('p', { className: css.detailsSummary }, auditRecordedCause(selected) ?? t('auditNoCause'))
+                ? h('p', { className: css.detailsSummary }, auditRecordedCause(t, selected) ?? t('auditNoCause'))
                 : null,
               selected.status === 'exit-unverified'
                 ? h('p', { className: css.detailsSummary }, t('auditLegacyExitExplanation'))

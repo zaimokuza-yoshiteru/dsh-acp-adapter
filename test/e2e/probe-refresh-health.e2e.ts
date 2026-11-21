@@ -10,6 +10,79 @@ import { launchAdapterWorld, root } from './scaffold.ts'
 import { openAcpPluginDetail, returnToConversation } from './plugin-panel.helpers.ts'
 import { required } from './required.ts'
 
+it('rechecks the edited Agent exactly once under its new ID in plugin details', async () => {
+  const host = await launchAdapterWorld()
+  let browser: TestBrowser | undefined
+  const oldAuth = join(host.workspaceCwd, 'old-login')
+  const newAuth = join(host.workspaceCwd, 'new-login')
+  const oldLog = join(host.workspaceCwd, 'old-protocol.jsonl')
+  const newLog = join(host.workspaceCwd, 'new-protocol.jsonl')
+  const gate = join(host.workspaceCwd, 'rename-check-started')
+  const oldId = 'original-probe'
+  const newId = 'renamed-probe'
+  const health = vi.spyOn(host.ctx.get('dshAcp') as AcpRemoteService, 'health')
+  const checked = () => health.mock.calls.flatMap(([request]) => (request?.recheck ? [request.agentId] : []))
+  try {
+    writeFileSync(oldAuth, 'signed-out')
+    writeFileSync(newAuth, 'authenticated')
+    await host.ctx.settings.replace('dsh-acp-adapter', {
+      agents: {
+        [oldId]: {
+          name: 'Rename probe fixture',
+          command: process.execPath,
+          args: [join(root, 'test/mock-agent/probe-refresh-agent.ts')],
+          env: { MOCK_PROBE_AUTH_FILE: oldAuth, MOCK_PROBE_LOG_FILE: oldLog },
+        },
+      },
+    })
+    browser = await launchBrowser({ headless: true })
+    const page = await newEnglishPage(browser)
+    await page.goto(host.authenticatedUrl)
+    await connectFreshWorkspace(page, host.workspaceCwd)
+    const detail = await openAcpPluginDetail(page)
+    const oldRow = detail.locator(`[data-dsh-acp-agent="${oldId}"]`)
+    await oldRow.getByRole('button', { name: 'Re-check', exact: true }).click()
+    await oldRow.getByText('last check failed', { exact: true }).waitFor()
+    await oldRow.getByRole('alert').filter({ hasText: 'not signed in' }).waitFor()
+    health.mockClear()
+
+    await oldRow.getByRole('button', { name: 'Edit', exact: true }).click()
+    await detail.getByLabel('ID', { exact: true }).fill(newId)
+    await detail
+      .getByLabel('Arguments', { exact: true })
+      .fill([join(root, 'test/e2e/rename-probe-agent.ts'), gate].join('\n'))
+    await detail.getByRole('button', { name: /^Environment variables(?: \(\d+\))?$/ }).click()
+    await detail
+      .getByLabel('Environment', { exact: true })
+      .fill(`MOCK_PROBE_AUTH_FILE=${newAuth}\nMOCK_PROBE_LOG_FILE=${newLog}`)
+    await detail.getByRole('button', { name: 'Save', exact: true }).click()
+    await expect.poll(checked).toEqual([newId])
+    writeFileSync(gate, 'ready')
+    const newRow = detail.locator(`[data-dsh-acp-agent="${newId}"]`)
+    await newRow.getByText('Check passed', { exact: true }).waitFor()
+    expect(await oldRow.count()).toBe(0)
+    expect(checked()).toEqual([newId])
+    const protocol = readFileSync(newLog, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { event: string; authenticated: boolean })
+    const evidence = process.env.DSH_E2E_EVIDENCE_DIR
+    if (evidence) {
+      mkdirSync(evidence, { recursive: true })
+      await newRow.screenshot({ path: join(evidence, 'renamed-agent.png') })
+      writeFileSync(join(evidence, 'renamed-agent.json'), JSON.stringify({ checked: checked(), protocol }, null, 2))
+    }
+    expect(protocol.filter((entry) => entry.authenticated && entry.event === 'session/new')).toHaveLength(1)
+  } finally {
+    writeFileSync(gate, 'ready')
+    try {
+      await browser?.close()
+    } finally {
+      await host.close()
+    }
+  }
+})
+
 it('keeps a verified catalog and live session usable while reporting failed refresh and login recovery', async () => {
   const host = await launchAdapterWorld()
   let browser: TestBrowser | undefined

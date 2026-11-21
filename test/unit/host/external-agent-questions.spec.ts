@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { questionTextIn } from '../../../src/contract/permission-question.ts'
 import { externalAgentPermissionQuestions } from '../../../src/host/composition/external-agent-questions.ts'
 import {
   createAcpNativePermissionHandler,
@@ -133,6 +134,11 @@ describe('external permission root presentation', () => {
       expect(request.agent).toBe(f.root)
       const detail = request.questions[0]!.detail!
       expect(detail).toMatch(locale === 'en' ? /^Source child session:/ : /^来源子会话:/)
+      const alternate = questionTextIn(request.questions[0]!, locale === 'en' ? 'zh' : 'en')
+      expect(alternate.detail).toMatch(locale === 'en' ? /^来源子会话:/ : /^Source child session:/)
+      expect(alternate.header).toMatch(locale === 'en' ? /^子会话授权:/ : /^Child permission:/)
+      expect(JSON.stringify(request.questions[0]!.acpTranslation)).not.toContain('TEAM_forwarded')
+      expect(alternate.detail).toContain(JSON.stringify(text).slice(1, -1))
       const asked = records.find((entry) => entry.data.phase === 'asked')!.data
       if (asked.phase !== 'asked') throw new Error('expected asked audit')
       expect(() => intactPermissionInput(asked.toolCall.rawInputSummary, asked.toolCall.rawInputHash)).toThrow()

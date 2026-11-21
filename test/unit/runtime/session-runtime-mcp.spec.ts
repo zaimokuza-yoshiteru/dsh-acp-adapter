@@ -48,9 +48,6 @@ it.each(['http', 'stdio'] as const)(
         signal: new AbortController().signal,
         beginPrompt() {},
         endPrompt() {},
-        permission() {
-          return undefined
-        },
         close: leaseCloses[index]!,
       }
     })

@@ -7,7 +7,9 @@
  * @module @zaimokuza/dsh-acp-adapter/client/logic
  */
 
-import { catalogEntryOf } from './catalog.ts'
+import { antigravityCliLoginHint, catalogEntryOf } from './catalog.ts'
+import { DEFAULT_DEVIN_REVIEW_MODEL, isDevinReviewModel } from '../../contract/devin-review.ts'
+import { isOpenCodeReviewModel } from '../../contract/opencode-review.ts'
 
 // Shared profile shape and runtime binding rules; no imports of host implementations.
 
@@ -23,7 +25,8 @@ export type { AcpAgentConfigState } from '../../contract/remote.ts'
 export interface AcpSettings {
   agents: Record<string, AcpAgentConfig>
   /** Default policy snapshotted by newly initialized ACP sessions. */
-  toolApprovalDefault?: 'auto' | 'ask'
+  aiApproval?: boolean
+  devinReviewModel?: string
 }
 
 /** Env var name: POSIX shell identifier. */
@@ -79,9 +82,14 @@ export function emptyDraft(): AgentDraft {
 /** Display-only guidance: preserve saved hints and fall back to catalog metadata. */
 export function agentLoginHint(
   id: string,
-  config: Pick<AcpAgentConfig, 'runtime' | 'catalogId' | 'loginHint'>,
+  config: Pick<AcpAgentConfig, 'runtime' | 'catalogId' | 'loginHint'> &
+    Partial<Pick<AcpAgentConfig, 'command' | 'args'>>,
 ): string | undefined {
-  return config.loginHint?.trim() || catalogEntryOf(catalogIdOf(id, config))?.loginHint
+  return (
+    config.loginHint?.trim() ||
+    antigravityCliLoginHint(config.command, config.args) ||
+    catalogEntryOf(catalogIdOf(id, config))?.loginHint
+  )
 }
 
 /**
@@ -331,7 +339,8 @@ export interface PanelSettingsState {
   status: 'loading' | 'invalid' | 'unavailable' | 'ready'
   writable: boolean
   agents: Record<string, AcpAgentConfig>
-  toolApprovalDefault: 'auto' | 'ask'
+  aiApproval: boolean
+  devinReviewModel: string
   revision: number | undefined
 }
 
@@ -349,7 +358,8 @@ export function panelSettingsOf(snapshot: AcpScopeSnapshot): PanelSettingsState 
     status,
     writable: snapshot.writable,
     agents: snapshot.value?.agents ?? {},
-    toolApprovalDefault: snapshot.value?.toolApprovalDefault ?? 'auto',
+    aiApproval: snapshot.value?.aiApproval === true,
+    devinReviewModel: snapshot.value?.devinReviewModel ?? DEFAULT_DEVIN_REVIEW_MODEL,
     revision: snapshot.revision,
   }
 }
@@ -407,6 +417,9 @@ export type AcpProbePhase = 'initialize' | 'session'
 
 /** One provider row of the dshAcp Remote `health` view (src/contract/remote.ts). */
 export interface AcpProviderHealth {
+  reviewVersionUnsupported?: true
+  openCodeReviewModels?: readonly { id: string; name: string }[]
+  devinReviewModels?: readonly { id: string; name: string }[]
   id: string
   name: string
   command: string
@@ -483,6 +496,19 @@ function decodeHealthRow(raw: unknown): AcpProviderHealth | undefined {
   if (unavailableReason !== undefined && unavailableReason !== 'agent-retired') return undefined
   const probeRow = decodeProbeRow(probe)
   if (probeRow === undefined) return undefined
+  const validChoices = (
+    choices: unknown,
+    valid: (id: unknown) => boolean,
+  ): choices is { id: string; name: string }[] | undefined =>
+    choices === undefined ||
+    (Array.isArray(choices) &&
+      choices.every((choice) => isPlainObject(choice) && valid(choice['id']) && typeof choice['name'] === 'string'))
+  const reviewVersionUnsupported = raw['reviewVersionUnsupported']
+  if (reviewVersionUnsupported !== undefined && reviewVersionUnsupported !== true) return undefined
+  const choices = raw['devinReviewModels']
+  const openCodeChoices = raw['openCodeReviewModels']
+  if (!validChoices(choices, isDevinReviewModel) || !validChoices(openCodeChoices, isOpenCodeReviewModel))
+    return undefined
   return {
     id,
     name,
@@ -493,6 +519,9 @@ function decodeHealthRow(raw: unknown): AcpProviderHealth | undefined {
     version,
     state: state as AcpAgentConfigState,
     probe: probeRow,
+    ...(reviewVersionUnsupported ? { reviewVersionUnsupported } : {}),
+    ...(choices === undefined ? {} : { devinReviewModels: choices }),
+    ...(openCodeChoices === undefined ? {} : { openCodeReviewModels: openCodeChoices }),
     ...(unavailableReason === undefined ? {} : { unavailableReason }),
   }
 }

@@ -4,6 +4,11 @@ import type {} from '@deepseek-ai/dsh-subagent'
 import type {} from '../../contract/external-subagent.ts'
 import type { AcpNativeUserQuestionService, AcpPermissionQuestionService } from '../../domain/policy/elicitation.ts'
 
+import {
+  permissionQuestionTranslation,
+  questionTextIn,
+  type AcpQuestionText,
+} from '../../contract/permission-question.ts'
 import { captureSubagentTree, localSubagentIdentity, subagentPaths } from '../subagent/tree.ts'
 
 type QuestionRequest = Parameters<AcpNativeUserQuestionService['ask']>[0]
@@ -110,17 +115,31 @@ export function externalAgentPermissionQuestions(
         let delimiterLength = 1
         for (const match of source.matchAll(/`+/g)) delimiterLength = Math.max(delimiterLength, match[0].length + 1)
         const delimiter = '`'.repeat(delimiterLength)
-        const detail = `${zh ? '来源子会话' : 'Source child session'}: ${delimiter} ${source} ${delimiter}`
+        const fromChild = (item: AcpQuestionText, chinese: boolean): AcpQuestionText => {
+          const child = `${chinese ? '子会话授权' : 'Child permission'}: ${names}`
+          const sourceDetail = `${chinese ? '来源子会话' : 'Source child session'}: ${delimiter} ${source} ${delimiter}`
+          return {
+            ...item,
+            ...(item.header === undefined ? { question: `${child}\n${item.question}` } : { header: child }),
+            detail: item.detail === undefined ? sourceDetail : `${sourceDetail}\n\n${item.detail}`,
+          }
+        }
         onPresentation?.({ rootSessionId: root.id, path: path.map((entry) => entry.sessionId) })
         const question = native.ask({
           agent: root,
-          questions: request.questions.map((item) => ({
-            ...item,
-            ...(item.header === undefined
-              ? { question: `${zh ? '子会话授权' : 'Child permission'}: ${names}\n${item.question}` }
-              : { header: `${zh ? '子会话授权' : 'Child permission'}: ${names}` }),
-            detail: item.detail === undefined ? detail : `${detail}\n\n${item.detail}`,
-          })),
+          questions: request.questions.map((item) => {
+            const original = fromChild(item, zh)
+            const alternate = zh ? 'en' : 'zh'
+            return {
+              ...item,
+              ...original,
+              acpTranslation: permissionQuestionTranslation(
+                alternate,
+                original,
+                fromChild(questionTextIn(item, alternate), !zh),
+              ),
+            }
+          }),
           signal,
         })
         const answer = await Promise.race([question, cancelled.promise])

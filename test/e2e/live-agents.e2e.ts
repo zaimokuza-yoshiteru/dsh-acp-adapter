@@ -121,7 +121,6 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
           teams && profile.id === 'devin' ? await readLiveDevinCliVersion(command, host.workspaceCwd, env) : undefined
         if (devinCliVersion !== undefined) teamEvidence.manualApprovalCliVersion = devinCliVersion
         await host.ctx.settings.replace('dsh-acp-adapter', {
-          ...(devinPermissions ? { toolApprovalDefault: 'ask' } : {}),
           agents: { [profile.id]: { name: profile.id, command, args: profile.args, env } },
         })
         await vi.waitFor(() => expect(host.ctx.llm.listProviders().some((entry) => entry.id === provider)).toBe(true))

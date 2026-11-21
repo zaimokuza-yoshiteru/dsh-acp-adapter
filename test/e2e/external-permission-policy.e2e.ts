@@ -72,7 +72,6 @@ async function fixture() {
   try {
     await host.ctx.settings.replace('locale', { preference: 'en' })
     await host.ctx.settings.replace('dsh-acp-adapter', {
-      toolApprovalDefault: 'auto',
       agents: {
         'policy-fixture': {
           name: 'External policy fixture',

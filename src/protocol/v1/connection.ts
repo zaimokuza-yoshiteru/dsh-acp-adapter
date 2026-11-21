@@ -994,9 +994,9 @@ export class AcpClientConnection {
     sessionId: string,
     prompt: acp.ContentBlock[],
     onUpdate?: SessionUpdateListener,
-    options: AcpRpcOptions & { readonly beforeDispatch?: () => void } = {},
+    options: AcpRpcOptions & { readonly beforeDispatch?: () => void; readonly beforeDispatchSignal?: AbortSignal } = {},
   ): Promise<acp.PromptResponse> {
-    await this.drainPromptHostOperations(sessionId)
+    await this.drainPromptHostOperations(sessionId, options.beforeDispatchSignal)
     options.beforeDispatch?.()
     if (onUpdate !== undefined) this.updateListeners.add(onUpdate)
     this.terminalPromptSessionIds.delete(sessionId)
@@ -1032,10 +1032,24 @@ export class AcpClientConnection {
     return result
   }
 
-  private async drainPromptHostOperations(sessionId: string): Promise<void> {
+  private async drainPromptHostOperations(sessionId: string, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted()
     const pending = this.pendingPromptHostOperations.get(sessionId)
     if (pending === undefined) return
-    await Promise.all([...pending])
+    const drained = Promise.all([...pending])
+    if (!signal) {
+      await drained
+      return
+    }
+    // An unsent prompt can leave the wait. Accepted Host operations stay owned by this connection.
+    const cancelled = Promise.withResolvers<never>()
+    const stop = () => cancelled.reject(signal.reason)
+    signal.addEventListener('abort', stop, { once: true })
+    try {
+      await Promise.race([drained, cancelled.promise])
+    } finally {
+      signal.removeEventListener('abort', stop)
+    }
   }
 
   /** An autonomous turn has the same admitted native FS/terminal tail as a wire prompt. */
@@ -1174,7 +1188,8 @@ export class AcpClientConnection {
       let modelConfigOptions: Record<string, readonly acp.SessionConfigOption[]> | undefined
       // Qwen Code and CodeBuddy expose model-specific reasoning choices. Their
       // initialize identity also enables discovery for manually configured profiles.
-      if (probeModelConfigOptions || hasModelSpecificConfiguration(init.agentInfo?.name)) {
+      const probeByLaunch = probeModelConfigOptions === 'if-anonymous' && init.agentInfo == null
+      if (probeModelConfigOptions === true || probeByLaunch || hasModelSpecificConfiguration(init.agentInfo?.name)) {
         const sessionCaps = init.agentCapabilities?.sessionCapabilities
         try {
           modelConfigOptions = await probeModelConfigurations(

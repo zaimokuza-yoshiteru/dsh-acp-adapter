@@ -58,8 +58,6 @@ describe('published native subagent tools survive the ACP bridge', () => {
         agent.id,
         { mcpCapabilities: { http: true } },
         undefined,
-        async () => 'auto',
-        undefined,
         assembly.tools,
       )
       expect(lease).toBeDefined()

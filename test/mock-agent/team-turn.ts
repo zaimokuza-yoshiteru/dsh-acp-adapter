@@ -119,22 +119,10 @@ export async function teamTurn(
               }),
       }
       sendUpdate(session.id, { sessionUpdate: 'tool_call', ...toolCall })
-      if (profile === 'codex') {
-        const permission = await sendAgentRequest('elicitation/create', {
-          sessionId: session.id,
-          toolCallId,
-          mode: 'form',
-          message: 'Approve MCP tool',
-          _meta: { codex_approval_kind: 'mcp_tool_call' },
-          requestedSchema: {
-            type: 'object',
-            properties: { persist: { type: 'string', enum: approvalScopes } },
-            required: ['persist'],
-          },
-        })
-        if (permission.action !== 'accept' || permission.content?.persist !== 'once')
-          throw new Error('Team elicitation required extra approval')
-      } else {
+      // Only the Devin setup fixture asks for each coordination call. Its test
+      // driver answers an exact list. All profiles still ask for the member's
+      // command below with the native protocol and advertised scopes.
+      if (profile === 'devin') {
         const permission = await sendAgentRequest('session/request_permission', {
           sessionId: session.id,
           toolCall,

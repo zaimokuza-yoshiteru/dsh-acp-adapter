@@ -93,7 +93,7 @@ The event supplies the executing Agent, the ACP session and tool call, and a can
 This event uses Cordis waterfall, not an aggregate vote:
 
 1. Providers normally run in registration order. Explicit `{ prepend: true }` puts a listener before existing listeners. Scope filtering uses the original Agent identity and its ancestors; sibling sessions do not receive one another's requests.
-2. A provider without an applicable rule should `return next()`. The end of the chain returns `not-applicable`.
+2. A provider without an applicable rule should `return next()`. The end of the chain returns `not-applicable` to providers. When every provider defers, an enabled OpenCode reviewer can handle eligible requests. A provider that returns `not-applicable` directly sends the request to a person.
 3. Returning a result without calling `next()` prevents later providers from running. Returning `not-applicable` also ends the chain; it does not automatically skip that provider.
 4. This is ordered delegation, **not a global deny-overrides policy across plugins**. An earlier allow can prevent a later deny from being evaluated. Deployment owners must own the ordering, and providers should not rewrite a downstream decision after invoking `next()`.
 
@@ -101,11 +101,28 @@ Registrations belong to the provider's Cordis fiber. Removing a registration pre
 
 ## Preserved routes and boundaries
 
-- Binary permission requests use native approval when no binary rule applies. Ordinary Antigravity interactive questions stay with their question owner.
-- Auto for verified DSH bridge tools keeps its existing path and actual `tools.execute` checks. This extension does not redefine Auto, Full access, bypass, or a child session's native `never` policy.
-- Complete Devin permission requests retain the conservative human route. Agent metadata or mode cannot prove that enterprise-enforced Ask is eligible for an automatic response.
+- Binary permission requests use native approval when neither a policy nor AI approval answers the request. Ordinary Antigravity interactive questions stay with their question owner.
+- The DSH tool bridge verifies identity and current catalog membership. Matching a tool grants no permission. Execution still passes through the host’s `tools.execute` checks.
 - The parent page only presents the original child's request. Replies, execution identity, and audit remain with that child. Cancellation, Agent replacement, and late decisions cannot authorize an invalidated request.
 - The two ACP permission events handle requests sent by the Agent. The Antigravity pre-execution event above covers its native command tool. ACP client-provided file and terminal operations retain their separate control paths.
-- Without a matching rule and an online human, the request still waits. Browser connectivity cannot imply permission. This does not promise universal unattended execution or recovery of an unfinished machine policy call after a Host crash.
+- A request that needs a person waits until someone can answer. Browser connectivity cannot imply permission. This does not promise universal unattended execution or recovery of an unfinished machine policy call after a Host crash.
 
-Providers must validate their own rules and deployment order. A test provider does not certify compatibility with the Issue author's actual plugin, every Agent, enterprise policy, or operating system. User installation instructions remain in the README; execution logs and test evidence do not belong in this public API document.
+Providers must validate their own rules and deployment order.
+
+## AI approval
+
+AI approval is off by default in plugin details and covers supported local Devin and OpenCode profiles on macOS and Linux. The plugin combines arguments, target paths and changes already supplied for the same tool call in the current turn. A separate process with no tools asks the selected model to review the task and operation. Its provider receives the redacted content, which may include file paths and changes.
+
+When the model rates the operation “not high risk” and the audit is saved, the plugin can select the original request’s unique one-time grant. You decide if the model flags a request as high risk, details are missing, the review fails or the Agent offers no unique one-time grant. Windows and SSH execution use manual approval.
+
+The audit masks credentials such as cookies. When you view older records, input summaries that cannot be safely redacted are hidden. The original session can still resume. Existing database records and backups retain their original contents.
+
+### Devin
+
+The official CLI `3000.14.30821` is supported. The default review model is `swe-2-high`. If the selected model is unavailable, you decide on the request and can choose another model in plugin details. Third-party policies do not answer Devin requests. Organization-enforced extensions or an unverifiable inventory of extensions and MCP servers in the reviewer require a person. The working session can still use its own MCP and Teams tools. When Devin asks to use a DSH tool, AI approval can grant Devin’s request once if the bridge verifies the tool’s identity and registration in the current session. DSH checks the session’s tool rules at execution time and can still deny the call.
+
+### OpenCode
+
+Local `opencode acp` 2.3.2 supports built-in file, search and shell tools in a main session. It uses the confirmed session model by default. You can select another review model for that Agent in plugin details. OpenCode does not identify which rule produced an Ask. Leave AI approval off if your organization requires a person to answer every Ask.
+
+Tool origin is checked when the working connection starts. A connection opened before you enabled review keeps asking you until it reconnects. An independent OpenCode process uses its tool-free text generation API. The adapter selects the original one-time grant only after checking isolation and recording the assessment. External policy decisions take precedence. You handle policy referrals, DSH bridge tool prompts, child Agent requests, interactive questions and inconclusive assessments. The session audit distinguishes the review model's assessment from the final answer.

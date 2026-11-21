@@ -3,6 +3,11 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { afterEach, expect, it, vi } from 'vitest'
+import { ApprovalReviewScope } from '../../../src/host/approval-review/scope.ts'
+import {
+  createAcpNativePermissionHandler,
+  type AcpPermissionAuditRecord,
+} from '../../../src/domain/policy/permissions.ts'
 import { agyPreToolPolicy } from '../../../src/host/composition/agy-pre-tool-policy.ts'
 import AcpPermissionPolicy from '../../../src/host/composition/external-permission-policy.ts'
 import { auditTimelineRowOf } from '../../../src/host/composition/audit-row.ts'
@@ -135,4 +140,69 @@ it('cancels an outstanding provider before committing its answer for a stopped p
   f.controller.abort()
   expect(await pending).toMatchObject({ decision: 'deny', reason: expect.not.stringContaining('late') })
   expect(f.append).not.toHaveBeenCalled()
+})
+
+it('returns Antigravity approval to its native owner after replacing an opted-in OpenCode executable', async () => {
+  const f = await setup()
+  const spawn = vi.fn(() => {
+    throw new Error('Unexpected AI review')
+  })
+  const scope = new ApprovalReviewScope('personal', spawn, vi.fn())
+  const old = { name: 'OpenCode', command: 'opencode', args: ['acp'], env: {}, openCodeReviewModel: 'local/review' }
+  const agy = { ...old, name: 'Antigravity', command: 'agy', runtime: 'antigravity' as const }
+  const approval = vi.fn(async () => 'rejected' as const)
+  const records: AcpPermissionAuditRecord[] = []
+  const call = {
+    toolCallId: 'cmd',
+    name: 'run_command',
+    kind: 'execute' as const,
+    rawInput: { CommandLine: 'echo fixture' },
+  }
+  try {
+    scope.configure(old, old.openCodeReviewModel)
+    scope.configure(agy, agy.openCodeReviewModel)
+    expect(await f.evaluate()).toEqual({ decision: 'delegate' })
+    const answer = await scope.handle(
+      agy,
+      {
+        agent: { name: 'Antigravity ACP Server', version: '1.5.12' },
+        humanOnly: false,
+        task: () => 'Print the fixture text.',
+        current: () => true,
+        toolCall: call,
+      },
+      'en',
+      f.controller.signal,
+      (settings, signal) =>
+        createAcpNativePermissionHandler({
+          ...settings,
+          permissionProfile: 'antigravity',
+          nativeQuestionProfile: 'antigravity',
+          getAgent: () => f.agent,
+          approval: { request: approval },
+          audit: {
+            append: async (record) => {
+              records.push(record)
+            },
+          },
+        })(
+          {
+            sessionId: 'acp-id',
+            toolCall: call,
+            options: [
+              { optionId: 'allow', kind: 'allow_once', name: 'Allow' },
+              { optionId: 'deny', kind: 'reject_once', name: 'Deny' },
+            ],
+          },
+          signal,
+        ),
+    )
+    expect(answer).toEqual({ outcome: { outcome: 'selected', optionId: 'deny' } })
+    expect(approval).toHaveBeenCalledTimes(1)
+    expect(spawn).not.toHaveBeenCalled()
+    expect(records.map((r) => r.data.phase)).toEqual(['asked', 'decided'])
+    expect(records[1]?.data).toMatchObject({ decisionVia: 'native-approval', selectedOptionKind: 'reject_once' })
+  } finally {
+    await scope.close()
+  }
 })

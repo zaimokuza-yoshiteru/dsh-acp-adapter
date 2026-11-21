@@ -5,7 +5,7 @@ import { LlmAdapter } from '@deepseek-ai/dsh-llm'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
-import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
+import { connectFreshWorkspace, connectFreshWorkspaceZh, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
 import { launchBrowser, newEnglishPage, type TestBrowser } from './browser.ts'
 import { required } from './required.ts'
@@ -335,13 +335,15 @@ it('keeps ACP fixed choices usable across keyboard, themes, narrow windows, fail
   }
 }, 120_000)
 
-it.each(['en', 'zh'] as const)(
+it.each(['en', 'zh', 'follow-browser'] as const)(
   'keeps Antigravity command summaries compact and complete on the native question card (%s)',
-  async (locale) => {
+  async (preference) => {
+    const follow = preference === 'follow-browser'
+    const locale = preference === 'en' ? 'en' : 'zh'
     const host = await launchAdapterWorld()
     let browser: TestBrowser | undefined
     let page: Page | undefined
-    const directory = join(root, '.local/permission-command-summary', locale)
+    const directory = join(root, '.local/permission-command-summary', preference)
     mkdirSync(directory, { recursive: true })
     const errors: string[] = []
     const responses: acp.RequestPermissionResponse[] = []
@@ -358,11 +360,15 @@ it.each(['en', 'zh'] as const)(
     try {
       // Reuse the built normalizer and permission producer. The model is a
       // scripted control; real-provider coverage belongs to live-antigravity.
+      const candidate = process.env.DSH_E2E_ADAPTER_DIRECTORY ?? root
+      const { hostLocale }: typeof import('../../src/host/composition/host-locale.ts') = await host.ctx.loader.import(
+        pathToFileURL(join(candidate, 'lib/host/composition/host-locale.js')).href,
+      )
       const permission: typeof import('../../src/domain/policy/permissions.ts') = await host.ctx.loader.import(
-        pathToFileURL(join(root, 'lib/domain/policy/permissions.js')).href,
+        pathToFileURL(join(candidate, 'lib/domain/policy/permissions.js')).href,
       )
       const antigravity: typeof import('../../src/host/tools/antigravity.ts') = await host.ctx.loader.import(
-        pathToFileURL(join(root, 'lib/host/tools/antigravity.js')).href,
+        pathToFileURL(join(candidate, 'lib/host/tools/antigravity.js')).href,
       )
       const normalized = antigravity.normalizeAntigravityPresentation(wireInput, undefined, undefined, 'bash')
       const original = structuredClone(normalized.rawInput)
@@ -376,7 +382,7 @@ it.each(['en', 'zh'] as const)(
               await permission.createAcpNativePermissionHandler({
                 userQuestions: service,
                 getAgent: () => agent,
-                locale,
+                locale: hostLocale(host.ctx),
                 nativeQuestionProfile: 'antigravity',
               })(
                 {
@@ -399,19 +405,30 @@ it.each(['en', 'zh'] as const)(
         provider: 'permission-summary-control',
         model: 'question-model',
       })
-      await host.ctx.settings.replace('locale', { preference: 'en' })
-      browser = await launchBrowser({ headless: true })
-      page = await newEnglishPage(browser)
+      if (!follow) await host.ctx.settings.replace('locale', { preference: 'en' })
+      browser = await launchBrowser({ headless: true }, follow ? 'zh-CN' : 'en-US')
+      page = follow
+        ? await browser.newPage({ viewport: { width: 1680, height: 1000 }, locale: 'zh-CN' })
+        : await newEnglishPage(browser)
       page.setDefaultTimeout(10_000)
       page.on('pageerror', (error) => errors.push(error.message))
       await page.goto(host.authenticatedUrl)
-      await connectFreshWorkspace(page, host.workspaceCwd)
-      await host.ctx.settings.replace('locale', { preference: locale })
+      if (follow) {
+        expect(await page.evaluate(() => navigator.languages[0])).toMatch(/^zh/i)
+        await connectFreshWorkspaceZh(page, host.workspaceCwd)
+        expect(hostLocale(host.ctx)).toBeUndefined()
+      } else {
+        await connectFreshWorkspace(page, host.workspaceCwd)
+        await host.ctx.settings.replace('locale', { preference: locale })
+      }
       await writeComposerDraft(page, page.locator('[data-composer-input]').first(), 'Permission summary control')
       const settled = host.whenTurnSettled(30_000)
       await page.getByRole('button', { name: locale === 'zh' ? '发送消息' : 'Send message', exact: true }).click()
       const card = page.locator('section[data-question-key]')
       await card.waitFor()
+      expect(await card.locator('[data-question-source]').innerText()).toBe(
+        locale === 'zh' ? '授权请求' : 'Permission request',
+      )
       const operation = card.locator('[data-question-operation]')
       const expected = [
         `${locale === 'zh' ? '命令' : 'Command'}: ${wireInput.CommandLine}`,
@@ -419,6 +436,14 @@ it.each(['en', 'zh'] as const)(
         locale === 'zh' ? '转入后台前等待: 5000 毫秒' : 'Wait before backgrounding: 5000 ms',
       ].join('\n')
       await expect.poll(() => operation.innerText()).toBe(expected)
+      if (follow) {
+        await host.ctx.settings.replace('locale', { preference: 'en' })
+        await expect.poll(() => card.locator('[data-question-source]').innerText()).toBe('Permission request')
+        expect(await operation.innerText()).toContain(`Command: ${wireInput.CommandLine}`)
+        await host.ctx.settings.replace('locale', {})
+        await expect.poll(() => operation.innerText()).toBe(expected)
+        expect(await card.locator('[data-question-source]').innerText()).toBe('授权请求')
+      }
       const disclosure = card.getByRole('button', {
         name: locale === 'zh' ? '请求详情' : 'Request details',
         exact: true,

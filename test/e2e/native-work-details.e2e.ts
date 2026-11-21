@@ -193,7 +193,8 @@ describe('native work-details preferences with the ACP protocol fixture', () => 
   async function running(id: string) {
     activeIds.add(id)
     const turn = await send(`E2E_WORK_DETAILS ${id}`)
-    await expect.poll(() => existsSync(gate(id, 'ready'))).toBe(true)
+    // The first marker includes discovery and startup of a separate ACP process.
+    await expect.poll(() => existsSync(gate(id, 'ready')), { timeout: 15_000 }).toBe(true)
     expect(await page.locator('[data-chat-call-id]').count()).toBe(0)
     expect(
       await page
@@ -205,7 +206,7 @@ describe('native work-details preferences with the ACP protocol fixture', () => 
     await page.getByRole('button', { name: 'Stop generating', exact: true }).waitFor()
     await verifyFlowGeometry(id, 'initial')
     writeFileSync(gate(id, 'output'), 'output')
-    await expect.poll(() => existsSync(gate(id, 'streaming'))).toBe(true)
+    await expect.poll(() => existsSync(gate(id, 'streaming')), { timeout: 15_000 }).toBe(true)
     const plan = page.locator('[data-chat-flow-kind="acp-inline-activity"]').filter({
       has: page.getByRole('button', { name: 'Updated plan', exact: true, includeHidden: true }),
     })

@@ -110,7 +110,7 @@ async function bootstrap(world: OptionalWorld, page: Page, label: string): Promi
   return resolved.agent
 }
 
-/** Each target operation is approved through its real native UI, including Auto.
+/** Each target operation is approved through its real native UI.
  * This is an explicit user decision for an exact request, never a setup answerer. */
 async function runApproved(
   world: OptionalWorld,
@@ -306,7 +306,6 @@ it('executes official persistent terminal tools with native approval, exact owne
     await connectFreshWorkspace(page, world.workspaceCwd)
     const owner = await bootstrap(world, page, 'terminal-bootstrap')
     const ownerCwd = required(owner.session.header.cwd)
-    await world.controls.setToolApprovalPolicy(owner.id, { policy: 'ask' })
     const rejecting = world.run(owner, {
       label: 'terminal-native-rejection',
       calls: [{ name: 'terminal_open', arguments: { type: 'shell', name: 'must-not-exist' } }],
@@ -328,7 +327,6 @@ it('executes official persistent terminal tools with native approval, exact owne
         .some((event) => event.type === 'approval/decided' && event.data.outcome === 'rejected'),
     ).toBe(true)
 
-    await world.controls.setToolApprovalPolicy(owner.id, { policy: 'auto' })
     const opened = await runApproved(world, page, owner, {
       label: 'terminal-open',
       calls: [{ name: 'terminal_open', arguments: { type: 'shell', name: 'official-state' } }],

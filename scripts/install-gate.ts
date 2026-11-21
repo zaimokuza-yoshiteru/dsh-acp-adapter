@@ -173,8 +173,8 @@ function isGitSpec(spec: string) {
 export function assertAcpConfigSentinel(dump: string) {
   const adapterRows = rowBlocks(dump).filter((block) => /^\s*- id: dsh-acp-adapter(?:\s|$)/m.test(block))
   if (adapterRows.length !== 1) fail(`expected one dsh-acp-adapter config row, found ${adapterRows.length}`)
-  if (!/^\s*toolApprovalDefault:\s*ask\s*$/m.test(adapterRows[0]!))
-    fail('ACP toolApprovalDefault sentinel was not preserved')
+  if (!/^\s*devinReviewModel:\s*swe-1-6-fast\s*$/m.test(adapterRows[0]!))
+    fail('ACP review model sentinel was not preserved')
 }
 
 /**
@@ -483,7 +483,7 @@ async function main() {
     if (args.updateSpec !== undefined) {
       writeFileSync(
         join(dshHome, 'profiles', profileName, 'cordis.patch.yml'),
-        '- id: dsh-acp-adapter\n  config:\n    toolApprovalDefault: ask\n',
+        '- id: dsh-acp-adapter\n  config:\n    devinReviewModel: swe-1-6-fast\n',
       )
     }
     const initialDump = run(process.execPath, [hostCli(args.hostRoot), '--profile', profileName, '--dump-config'], {
@@ -555,7 +555,7 @@ async function main() {
     console.log(
       `[install-gate] OK: ${entries?.length ?? 'source'} package; additive composition; removal clean${args.skipBoot ? '; boot skipped' : '; HTTP 200/client bootstrap'}`,
     )
-    console.log(`[install-gate] evidence: ${evidence}`)
+    if (process.env.KEEP_INSTALL_GATE === '1') console.log(`[install-gate] evidence: ${evidence}`)
   } catch (error) {
     keep = true
     writeFileSync(

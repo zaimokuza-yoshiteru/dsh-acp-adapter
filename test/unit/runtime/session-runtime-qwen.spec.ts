@@ -229,7 +229,6 @@ describe('Qwen Code background tasks', () => {
             needsRefresh: () => stale,
             beginPrompt() {},
             endPrompt() {},
-            permission: () => undefined,
             async close() {},
           }),
         },

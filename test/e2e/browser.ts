@@ -17,7 +17,7 @@ export async function newEnglishPage(browser: TestBrowser, height = 1000) {
 }
 // Run the same product scenarios in a real Electron renderer, with an isolated
 // user-data directory. This does not claim coverage of the packaged desktop host.
-export async function launchBrowser(options?: LaunchOptions): Promise<DownloadTestBrowser> {
+export async function launchBrowser(options?: LaunchOptions, language = 'en-US'): Promise<DownloadTestBrowser> {
   if (!process.env.DSH_E2E_ELECTRON) {
     const browser = await chromium.launch(options)
     return {
@@ -44,7 +44,7 @@ export async function launchBrowser(options?: LaunchOptions): Promise<DownloadTe
     const running = await _electron.launch({
       executablePath: process.env.DSH_E2E_ELECTRON,
       args: [fileURLToPath(new URL('./electron-main.cjs', import.meta.url)), `--user-data-dir=${directory}`],
-      env: { ...env, TZ: 'Asia/Shanghai' },
+      env: { ...env, TZ: 'Asia/Shanghai', DSH_E2E_BROWSER_LANGUAGE: language },
       timeout: 30_000,
     })
     application = running

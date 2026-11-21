@@ -44,9 +44,13 @@ async function receive(request) {
   const { id, method, params } = request
   if (method === 'initialize') {
     log({ method })
+    const agentInfo =
+      process.env.PROBE_ANONYMOUS === 'null'
+        ? null
+        : { name: process.env.PROBE_AGENT_NAME ?? 'model-config-fixture', version: '1' }
     send(id, {
       protocolVersion: 1,
-      agentInfo: { name: process.env.PROBE_AGENT_NAME ?? 'model-config-fixture', version: '1' },
+      ...(process.env.PROBE_ANONYMOUS === '1' ? {} : { agentInfo }),
       agentCapabilities: { sessionCapabilities: { close: {}, delete: {} } },
     })
     return

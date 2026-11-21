@@ -46,16 +46,13 @@ function seam(): { ok: true; seam: never } {
   return { ok: true, seam: undefined as never }
 }
 
-const savedOptionSnapshots: unknown[] = []
 const durableSidecar = {
   append: async () => undefined,
   readLatestBinding: async () => undefined,
   readModeIntent: async () => undefined,
   readRecoveryState: async () => undefined,
   writeRecoveryState: async () => undefined,
-  writeOptionSnapshot: async (_sessionId: unknown, snapshot: unknown) => {
-    savedOptionSnapshots.push(snapshot)
-  },
+  writeOptionSnapshot: async () => undefined,
 } as unknown as AcpSidecar
 
 async function captureActivity(update: object, publishPlan = vi.fn()) {

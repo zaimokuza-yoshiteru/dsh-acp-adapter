@@ -83,7 +83,6 @@ function setup(owner = false, workspace = true) {
   const sessionAccessSource = (id: string, action: string) => state.resource('session', id, action)
   const remote = {
     setAgentSessionOption: vi.fn(async () => ({ ok: true, value: snapshot })),
-    setToolApprovalPolicy: vi.fn(async () => ({ ok: true, value: null })),
     setTeamMemberModel: vi.fn(async () => ({ ok: true, value: null })),
     retryOriginal: vi.fn(async () => ({ ok: true, value: undefined })),
     rebindRecoveryBlank: vi.fn(async () => ({ ok: true, value: undefined })),
@@ -143,20 +142,7 @@ function setup(owner = false, workspace = true) {
       select({ providers: ['acp-codex'], historicalProviders: [] }),
   }
   const control = () => {
-    seed([
-      undefined,
-      0,
-      snapshot,
-      { sessionId: 'lead', policy: 'auto', source: 'session', editable: true },
-      null,
-      false,
-      false,
-      false,
-      false,
-      null,
-      false,
-      0,
-    ])
+    seed([undefined, 0, snapshot, false, false, null, false, 0])
     return AcpAgentControl({
       ...common,
       watchDefaultProvider: () => () => {},
@@ -307,7 +293,7 @@ it('warns in the active locale only when the selected model has a measured capac
   }
 })
 
-it('preserves owner mode and policy writes while read-only grants disable and block both handlers', async () => {
+it('honors the owner’s session mode write permission in the menu and selection handler', async () => {
   for (const owner of [false, true]) {
     const h = setup(owner)
     const tree = h.control()
@@ -317,23 +303,19 @@ it('preserves owner mode and policy writes while read-only grants disable and bl
         .every((item) => item.disabled === !owner),
     ).toBe(true)
     select(tree, 'mode')
-    select(tree, 'tool-approval-policy')
     expect(h.remote.setAgentSessionOption).toHaveBeenCalledTimes(owner ? 1 : 0)
-    expect(h.remote.setToolApprovalPolicy).toHaveBeenCalledTimes(owner ? 1 : 0)
     await Promise.resolve()
   }
 })
 
 it('rechecks actual grants in an already-open mode menu and updates after revocation and restoration', () => {
   const h = setup()
-  const actions = ['dshAcp/setAgentSessionOption', 'dshAcp/setToolApprovalPolicy']
+  const actions = ['dshAcp/setAgentSessionOption']
   grants(h.state, 'lead', actions)
   const opened = h.control()
   grants(h.state, 'lead', [])
   select(opened, 'mode')
-  select(opened, 'tool-approval-policy')
   expect(h.remote.setAgentSessionOption).not.toHaveBeenCalled()
-  expect(h.remote.setToolApprovalPolicy).not.toHaveBeenCalled()
   expect(
     groups(h.control())
       .flatMap((group) => group.choices)

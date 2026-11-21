@@ -83,6 +83,36 @@ function remoteOf(
 }
 
 describe('ACP content-free support export', () => {
+  it('exports each public AI review outcome but never a private status, subject or diagnostic body', async () => {
+    const statuses = [
+      'high',
+      'not_high',
+      'codebuddy-data-protected',
+      'codebuddy-sandbox-denied',
+      'codebuddy-tool_call-denied',
+      'codebuddy-tool_result-denied',
+    ]
+    const entries = [...statuses, 'private-unknown'].map((status, i) => auditRow(i + 1, { status, kind: 'permission' }))
+    const remote = remoteOf({
+      auditTimeline: async () => ({
+        ok: true,
+        value: {
+          sessionId: 'raw-session-id',
+          entries,
+          snapshotHead: entries.length,
+          scannedThrough: entries.length,
+          scannedRecords: entries.length,
+          unreadableRecords: 0,
+          nextCursor: null,
+          hasMore: false,
+        },
+      }),
+    })
+    const result = await collectAcpSupportExport(remote, 'raw-session-id', '0.2.0')
+    expect(result.audit.rows.map((row) => row.status)).toEqual([...statuses, null])
+    expect(JSON.stringify(result)).not.toMatch(/private-unknown|secret-path|private-command|PRIVATE_BODY/)
+  })
+
   it('keeps fixed audit/activity watermarks while paging and excludes raw session content', async () => {
     const remote = remoteOf({
       auditTimeline: vi.fn(

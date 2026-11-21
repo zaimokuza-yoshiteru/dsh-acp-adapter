@@ -17,7 +17,6 @@ it.each(['launch', 'initialize', 'lease'])('closes resources if disposal races p
     close: leaseClose,
     beginPrompt: () => {},
     endPrompt: () => {},
-    permission: () => undefined,
   }
   const initialize = vi.spyOn(AcpClientConnection.prototype, 'initialize').mockImplementation(async () => {
     if (phase === 'initialize') {
@@ -130,9 +129,6 @@ it('closes the initializing process before waiting for a late MCP lease and bloc
     signal: new AbortController().signal,
     beginPrompt() {},
     endPrompt() {},
-    permission() {
-      return undefined
-    },
     async close() {
       leaseCloseEntered.resolve()
       await releaseLeaseClose.promise

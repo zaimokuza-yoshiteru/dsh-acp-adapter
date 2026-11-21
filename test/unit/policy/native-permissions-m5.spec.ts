@@ -65,6 +65,7 @@ describe('native ACP permission bridge', () => {
       await handler(params([option('exact-id', 'Allow', 'allow_once')]))
       expect(approval.request).toHaveBeenCalledWith(
         expect.objectContaining({
+          displayReason: { en: 'Run command\necho hello\nAllow once', zh: 'Run command\necho hello\n本次允许: Allow' },
           reason: `Run command\necho hello\n${locale?.startsWith('zh') ? '本次允许: Allow' : 'Allow once'}`,
         }),
       )

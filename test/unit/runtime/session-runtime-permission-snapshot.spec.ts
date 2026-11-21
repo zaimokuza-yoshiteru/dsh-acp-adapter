@@ -34,10 +34,13 @@ function createRuntime(
   onPermissionRequest: NonNullable<AcpSessionRuntimeOptions['onPermissionRequest']>,
   mode:
     | 'raw-input'
+    | 'opencode-child'
     | 'content-json'
     | 'content-json-prefixed'
     | 'content-json-unrelated'
     | 'content-json-late'
+    | 'renamed-tool'
+    | 'reverted-input'
     | 'devin-mcp-bare-name'
     | 'bridge-tool' = 'raw-input',
   previousStatus: 'in_progress' | 'completed' = 'in_progress',
@@ -45,11 +48,12 @@ function createRuntime(
   onPermissionCheck?: AcpSessionRuntimeOptions['onPermissionCheck'],
   cancelGraceMs = 5_000,
   echoPermissionResult: boolean | 'capture-prompts' = false,
+  verifyReviewOrigin?: () => Promise<boolean>,
 ): AcpSessionRuntime {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-runtime-permission-snapshot-'))
   roots.push(root)
   const initialInput =
-    mode === 'raw-input' || mode === 'devin-mcp-bare-name' || mode === 'bridge-tool'
+    mode === 'raw-input' || mode === 'reverted-input' || mode === 'devin-mcp-bare-name' || mode === 'bridge-tool'
       ? `rawInput:{command:'printf SNAPSHOT_OK'},`
       : `content:[{type:'content',content:{type:'text',text:'{\\"command\\":\\"printf SNAPSHOT_OK\\"}'}}],`
   const permissionCallId =
@@ -58,6 +62,8 @@ function createRuntime(
       : mode === 'content-json-unrelated'
         ? 'permission-only-id'
         : 'shared-call'
+  const child =
+    mode === 'opencode-child' ? ",_meta:{'opencode/child-session':{id:'child',parentID:'root',depth:1}}" : ''
   const permissionKind = mode === 'raw-input' ? '' : `,kind:'execute'`
   const updateSessionId = 'permission-snapshot-session'
   const updateTitle = mode === 'devin-mcp-bare-name' ? 'Calling jira_get_issue from dsh' : 'Run visible command'
@@ -71,11 +77,18 @@ function createRuntime(
   const firstPrompt =
     mode === 'content-json-late'
       ? `permission(permissionId);setTimeout(()=>{${updates}},40);`
-      : `${updates}permission(permissionId);`
+      : `${updates}permission(permissionId);` +
+        (mode === 'renamed-tool'
+          ? `setTimeout(()=>send({jsonrpc:'2.0',method:'session/update',params:{sessionId:'${updateSessionId}',update:{sessionUpdate:'tool_call_update',toolCallId:'shared-call',title:'Different operation'}}}),40);`
+          : mode === 'reverted-input'
+            ? `setTimeout(()=>{for(const command of ['printf SNAPSHOT_OK', 'printf REQUESTED'])send({jsonrpc:'2.0',method:'session/update',params:{sessionId:'${updateSessionId}',update:{sessionUpdate:'tool_call_update',toolCallId:'shared-call',rawInput:{command}}}})},40);`
+            : '')
   const requestContent =
-    mode === 'raw-input'
-      ? ''
-      : `,content:[{type:'content',content:{type:'text',text:'Requesting approval to run the visible command'}}]`
+    mode === 'reverted-input'
+      ? ",rawInput:{command:'printf REQUESTED'}"
+      : mode === 'raw-input'
+        ? ''
+        : `,content:[{type:'content',content:{type:'text',text:'Requesting approval to run the visible command'}}]`
   const capturePrompt =
     echoPermissionResult === 'capture-prompts'
       ? `require('node:fs').appendFileSync('prompts.jsonl',JSON.stringify(m.params.prompt)+'\\n');`
@@ -100,7 +113,7 @@ function createRuntime(
     const send = m => process.stdout.write(JSON.stringify(m) + '\\n')
     const permission = (id, callId = '${permissionCallId}') => send({
       jsonrpc: '2.0', id, method: 'session/request_permission',
-      params: { sessionId: 'permission-snapshot-session', toolCall: {toolCallId: callId${permissionKind}${requestContent}},
+      params: { sessionId: 'permission-snapshot-session', toolCall: {toolCallId: callId${permissionKind}${requestContent}${child}},
         options: [{optionId:'allow',name:'Allow',kind:'allow_once'}${denyOption}] }
     })
     process.stdin.on('data', d => {
@@ -112,7 +125,7 @@ function createRuntime(
         if (!line.trim()) continue
         const m = JSON.parse(line)
         if (m.method === 'initialize')
-          send({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentInfo:{name:'permission-snapshot',version:'1'},agentCapabilities:{}}})
+          send({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentInfo:{name:'${mode === 'opencode-child' ? 'OpenCode' : 'permission-snapshot'}',version:'1'},agentCapabilities:{}}})
         else if (m.method === 'session/new') send({jsonrpc:'2.0',id:m.id,result:{sessionId:'permission-snapshot-session'}})
         else if (m.method === 'session/prompt') {
           ${capturePrompt}
@@ -137,6 +150,7 @@ function createRuntime(
     subprocess,
     cwd: root,
     cancelGraceMs,
+    ...(verifyReviewOrigin && { verifyReviewOrigin }),
     prepareLaunch: async () => ({
       argv,
       env,
@@ -150,7 +164,7 @@ function createRuntime(
   return runtime
 }
 
-async function permissionBridge(policy: () => Promise<'ask' | 'auto'>) {
+async function permissionBridge() {
   const agent = { id: 'permission-snapshot-session', inbox: { nextStep: [], nextTurn: [] }, inject: vi.fn() }
   const definitions = new Map(
     ['present', 'todo_write'].map((name) => [
@@ -183,15 +197,9 @@ async function permissionBridge(policy: () => Promise<'ask' | 'auto'>) {
       return () => listeners.delete(name)
     },
   } as unknown as Context
-  const lease = (await createDshToolBridge(
-    ctx,
-    agent.id,
-    { mcpCapabilities: { http: true } },
-    undefined,
-    policy,
-    undefined,
-    [...definitions.values()],
-  ))!
+  const lease = (await createDshToolBridge(ctx, agent.id, { mcpCapabilities: { http: true } }, undefined, [
+    ...definitions.values(),
+  ]))!
   bridgeCleanups.push(() => lease.close())
   return {
     lease,
@@ -265,7 +273,7 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
           runtime.prompt(PROMPT, () => {}, controller.signal, undefined, undefined, undefined, {
             beforeDispatch: () => controller.abort(),
           }),
-        ).resolves.toEqual({ stopReason: 'cancelled' })
+        ).rejects.toMatchObject({ code: 'ACP_PROMPT_NOT_DISPATCHED', cancelled: true })
         expect(readPrompts()).toEqual([PROMPT])
       }
       await runtime.prompt(PROMPT, () => {}, undefined, undefined, undefined, undefined, {
@@ -292,7 +300,7 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
   it.each(['before-answer', 'after-answer', 'unrelated-tool', 'before-answer-without-event'] as const)(
     'keeps a displayed Ask bound to its exact tool when withdrawn %s',
     async (timing) => {
-      const bridge = await permissionBridge(async () => 'ask')
+      const bridge = await permissionBridge()
       const shown = Promise.withResolvers<AbortSignal | undefined>()
       const answer = Promise.withResolvers<acp.RequestPermissionResponse>()
       const runtime = createRuntime(
@@ -326,41 +334,8 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
     },
   )
 
-  it.each(['ask', 'auto'] as const)(
-    'settles withdrawal during a pending %s policy read before that read returns',
-    async (policy) => {
-      let armed = false
-      const entered = Promise.withResolvers<void>()
-      const resolved = Promise.withResolvers<'ask' | 'auto'>()
-      const bridge = await permissionBridge(async () => {
-        if (!armed) return policy
-        entered.resolve()
-        return resolved.promise
-      })
-      const shown = vi.fn(async (): Promise<acp.RequestPermissionResponse> => ({
-        outcome: { outcome: 'selected', optionId: 'allow' },
-      }))
-      const runtime = createRuntime(shown, 'bridge-tool', 'in_progress', bridge.lease, undefined, 5000, true)
-      const received: string[] = []
-      armed = true
-      const prompting = runtime.prompt(PROMPT, ({ update }) => {
-        if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text')
-          received.push(update.content.text)
-      })
-      await entered.promise
-      bridge.withdraw('present')
-      try {
-        await prompting
-        expect(shown).not.toHaveBeenCalled()
-        expect(JSON.parse(received.join(''))).toEqual({ outcome: { outcome: 'cancelled' } })
-      } finally {
-        resolved.resolve(policy)
-      }
-    },
-  )
-
-  it('revalidates an automatic target after asynchronous audit even without a directory event', async () => {
-    const bridge = await permissionBridge(async () => 'auto')
+  it('revalidates the target after asynchronous audit even without a directory event', async () => {
+    const bridge = await permissionBridge()
     const audited = Promise.withResolvers<void>()
     const completed = Promise.withResolvers<void>()
     const shown = vi.fn(async (): Promise<acp.RequestPermissionResponse> => ({
@@ -372,7 +347,7 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
       'in_progress',
       bridge.lease,
       async (check) => {
-        expect(check.reason).toBe('auto-approved')
+        expect(check.reason).toBe('approval-required')
         audited.resolve()
         await completed.promise
       },
@@ -408,7 +383,6 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
       hasPendingCalls: () => pending,
       waitForCallsSettled: () => drain,
       async close() {},
-      permission: () => undefined,
     }
     const runtime = createRuntime(
       async () => ({ outcome: { outcome: 'cancelled' } }),
@@ -448,7 +422,6 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
         active = undefined
       },
       async close() {},
-      permission: () => undefined,
     }
     const runtime = createRuntime(
       async () => ({ outcome: { outcome: 'cancelled' } }),
@@ -475,7 +448,6 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
       },
       endPrompt() {},
       async close() {},
-      permission: () => undefined,
     }
     const runtime = createRuntime(
       async () => ({ outcome: { outcome: 'cancelled' } }),
@@ -500,7 +472,6 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
       endPrompt() {},
       async close() {},
       inspectPermission: () => ({ reason: 'invalid-tool-name', identitySource: 'devin-meta', response }),
-      permission: () => response,
     }
     const runtime = createRuntime(
       async () => {
@@ -518,11 +489,44 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
     expect(nativeRequests).toBe(0)
     expect(records[0]).toMatchObject({ phase: 'bridge', reason: 'invalid-tool-name', identitySource: 'devin-meta' })
   })
-  it('audits automatic permission without saving the capability response, and fails closed when audit fails', async () => {
+  it.each(['inactive-prompt', 'inactive-connection'] as const)(
+    'cancels a bridge request with %s before asking for approval',
+    async (reason) => {
+      const shown = vi.fn(async (): Promise<acp.RequestPermissionResponse> => ({
+        outcome: { outcome: 'selected', optionId: 'allow' },
+      }))
+      const audit = vi.fn()
+      const runtime = createRuntime(
+        shown,
+        'bridge-tool',
+        'in_progress',
+        {
+          signal: new AbortController().signal,
+          servers: [{ name: 'dsh', command: 'unused', args: [], env: [] }],
+          beginPrompt() {},
+          endPrompt() {},
+          async close() {},
+          inspectPermission: () => ({ reason }),
+        },
+        audit,
+        5000,
+        true,
+      )
+      const replies: string[] = []
+      await runtime.prompt(PROMPT, ({ update }) => {
+        if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text')
+          replies.push(update.content.text)
+      })
+      expect(audit).toHaveBeenCalledWith({ reason }, expect.anything())
+      expect(shown).not.toHaveBeenCalled()
+      expect(JSON.parse(replies.join(''))).toEqual({ outcome: { outcome: 'cancelled' } })
+    },
+  )
+
+  it('omits the wire response from the bridge audit and fails closed if auditing fails', async () => {
     for (const auditFails of [false, true]) {
       const records: unknown[] = []
-      let answers = 0,
-        nativeRequests = 0
+      let nativeRequests = 0
       const response: acp.RequestPermissionResponse = {
         outcome: { outcome: 'selected', optionId: 'CAPABILITY_SECRET' },
       }
@@ -532,11 +536,7 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
         beginPrompt() {},
         endPrompt() {},
         async close() {},
-        inspectPermission: () => ({ reason: 'auto-approved', toolName: 'send_message', response }),
-        permission: () => {
-          answers++
-          return response
-        },
+        inspectPermission: () => ({ reason: 'invalid-tool-name', toolName: 'send_message', response }),
       }
       const runtime = createRuntime(
         async () => {
@@ -553,24 +553,20 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
       )
       await runtime.prompt(PROMPT, () => undefined)
       expect(nativeRequests).toBe(0)
-      // The exact inspected response is reused after the audit; permission()
-      // is never asked to resolve the same policy a second time.
-      expect(answers).toBe(0)
       expect(records).toHaveLength(auditFails ? 0 : 1)
       expect(JSON.stringify(records)).not.toContain('CAPABILITY_SECRET')
       if (!auditFails)
         expect(records[0]).toMatchObject({
           phase: 'bridge',
-          reason: 'auto-approved',
+          reason: 'invalid-tool-name',
           toolName: 'send_message',
           toolCallId: 'shared-call',
         })
     }
   })
 
-  it('keeps an audited Ask decision manual even if a legacy resolver would now auto-approve', async () => {
+  it('never treats a response attached to an identified live tool as authorization', async () => {
     const response: acp.RequestPermissionResponse = { outcome: { outcome: 'selected', optionId: 'user-once' } }
-    let legacyResolutions = 0
     let nativeRequests = 0
     const records: unknown[] = []
     const lease: AcpMcpLease = {
@@ -579,11 +575,10 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
       beginPrompt() {},
       endPrompt() {},
       async close() {},
-      inspectPermission: () => ({ reason: 'approval-required' }),
-      permission: () => {
-        legacyResolutions++
-        return { outcome: { outcome: 'selected', optionId: 'auto' } }
-      },
+      inspectPermission: () => ({
+        reason: 'approval-required',
+        response: { outcome: { outcome: 'selected', optionId: 'auto' } },
+      }),
     }
     const runtime = createRuntime(
       async () => {
@@ -599,7 +594,6 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
     )
     await runtime.prompt(PROMPT, () => undefined)
     expect(nativeRequests).toBe(1)
-    expect(legacyResolutions).toBe(0)
     expect(records[0]).toMatchObject({ phase: 'bridge', reason: 'approval-required' })
   })
 
@@ -619,7 +613,6 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
         beginPrompt() {},
         endPrompt() {},
         async close() {},
-        permission: () => undefined,
         inspectPermission: () => {
           if (phase === 'inspection') leaseAbort.abort()
           return { reason, titleMatchesCurrentTool }
@@ -668,7 +661,6 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
         beginPrompt() {},
         endPrompt() {},
         async close() {},
-        permission: () => undefined,
         inspectPermission: () => ({ reason, titleMatchesCurrentTool }),
       }
       const received: string[] = []
@@ -714,7 +706,6 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
       beginPrompt() {},
       endPrompt() {},
       async close() {},
-      permission: () => undefined,
       inspectPermission: () => ({ reason: 'identity-unmatched' }),
     }
     const received: string[] = []
@@ -750,9 +741,13 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
   it('checks wire identity before presenting a normalized native approval without changing arguments', async () => {
     const checked: acp.ToolCallUpdate[] = [],
       shown: acp.ToolCallUpdate[] = []
+    let reviewContext: import('../../../src/runtime/session/session-runtime.ts').AcpPermissionReviewContext | undefined
+    const input = { task: () => 'Read status' }
     const runtime = createRuntime(
-      async (request) => {
+      async (request, _signal, _deny, context) => {
         shown.push(request.toolCall)
+        reviewContext = context
+        expect(context?.current()).toBe(true)
         return { outcome: { outcome: 'selected', optionId: 'allow' } }
       },
       'raw-input',
@@ -762,9 +757,9 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
         servers: [],
         beginPrompt() {},
         endPrompt() {},
-        permission(request) {
+        inspectPermission(request) {
           checked.push(request.toolCall)
-          return undefined
+          return { reason: 'identity-unmatched' }
         },
         presentTool(call) {
           return { ...call, title: 'bash', name: 'bash', kind: 'execute' }
@@ -772,7 +767,12 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
         async close() {},
       },
     )
-    await runtime.prompt(PROMPT, () => undefined)
+    await runtime.prompt(PROMPT, () => undefined, undefined, undefined, undefined, undefined, {
+      reviewInput: () => input,
+    })
+    expect(reviewContext?.task()).toBe('Read status')
+    expect(reviewContext?.toolCall).toEqual(checked[0])
+    expect(reviewContext?.current()).toBe(false)
     expect(checked[0]).toMatchObject({
       name: 'terminal',
       title: 'Run visible command',
@@ -786,6 +786,88 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
     })
     expect(shown[0]?.toolCallId).toBe(checked[0]?.toolCallId)
   })
+  it('invalidates a pending AI decision when the Agent changes only the reviewed title', async () => {
+    const input = { task: () => 'Check the current files' }
+    const runtime = createRuntime(async (_request, _signal, _deny, review) => {
+      expect(review?.current()).toBe(true)
+      await vi.waitFor(() => expect(review?.current()).toBe(false))
+      return { outcome: { outcome: 'cancelled' } }
+    }, 'renamed-tool')
+    await runtime.prompt(PROMPT, () => undefined, undefined, undefined, undefined, undefined, {
+      reviewInput: () => input,
+    })
+  })
+
+  it('binds origin verification to the actual connection and checks again after reconnecting', async () => {
+    const check = vi
+      .fn<() => Promise<boolean>>()
+      .mockResolvedValueOnce(true)
+      .mockRejectedValueOnce(Error('Unknown extensions'))
+    const origins: (string | undefined)[] = []
+    const runtime = createRuntime(
+      async (_request, _signal, _denial, context) => {
+        origins.push(context?.verifiedActorCwd)
+        return { outcome: { outcome: 'cancelled' } }
+      },
+      'raw-input',
+      'in_progress',
+      undefined,
+      undefined,
+      5000,
+      false,
+      check,
+    )
+    const input = { task: () => 'Read file' }
+    const prompt = () =>
+      runtime.prompt(PROMPT, () => undefined, undefined, undefined, undefined, undefined, { reviewInput: () => input })
+    await prompt()
+    await prompt()
+    expect(check).toHaveBeenCalledTimes(1)
+    await runtime.close()
+    await prompt()
+    expect(check).toHaveBeenCalledTimes(2)
+    expect(origins).toEqual([expect.any(String), origins[0], undefined])
+  })
+
+  it('preserves a child OpenCode tool approval as a human decision on its root connection', async () => {
+    const input = { task: () => 'Read the parent task' }
+    const runtime = createRuntime(async (_params, _signal, _denial, review) => {
+      expect(review?.humanOnly).toBe(true)
+      expect(review?.current()).toBe(true)
+      return { outcome: { outcome: 'cancelled' } }
+    }, 'opencode-child')
+    await runtime.prompt(PROMPT, () => undefined, undefined, undefined, undefined, undefined, {
+      reviewInput: () => input,
+    })
+  })
+
+  it('keeps a permission invalid after a streamed argument overrides the request and then changes back', async () => {
+    const input = { task: () => 'Check the current files' }
+    const runtime = createRuntime(async (_request, _signal, _deny, review) => {
+      expect(review?.toolCall.rawInput).toEqual({ command: 'printf REQUESTED' })
+      expect(review?.current()).toBe(true)
+      await vi.waitFor(() => expect(review?.current()).toBe(false))
+      return { outcome: { outcome: 'cancelled' } }
+    }, 'reverted-input')
+    await runtime.prompt(PROMPT, () => undefined, undefined, undefined, undefined, undefined, {
+      reviewInput: () => input,
+    })
+  })
+
+  it('a new admitted input in the same ACP prompt cannot inherit a pending approval', async () => {
+    let input = { task: () => 'Change the file' }
+    const runtime = createRuntime(async (_request, _signal, _deny, review) => {
+      expect(review?.current()).toBe(true)
+      input = { task: () => 'Only describe the change' }
+      expect(review?.task()).toBe('Change the file')
+      expect(review?.current()).toBe(false)
+      return { outcome: { outcome: 'cancelled' } }
+    })
+    await runtime.prompt(PROMPT, () => undefined, undefined, undefined, undefined, undefined, {
+      reviewInput: () => input,
+    })
+  })
+
   it('preserves Devin bare native name plus complete DSH title when enriching an id-only permission request', async () => {
     const checked: acp.ToolCallUpdate[] = []
     let nativeRequests = 0
@@ -795,9 +877,6 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
       beginPrompt() {},
       endPrompt() {},
       async close() {},
-      permission() {
-        return undefined
-      },
       inspectPermission(request) {
         checked.push(request.toolCall)
         return {

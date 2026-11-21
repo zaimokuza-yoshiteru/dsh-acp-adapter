@@ -23,7 +23,6 @@ async function launchQwenWorld() {
   const log = join(host.workspaceCwd, 'qwen-ui-wire.jsonl')
   try {
     await host.ctx.settings.replace('dsh-acp-adapter', {
-      toolApprovalDefault: 'ask',
       agents: {
         qwen: {
           name: 'Qwen Code fixture',
@@ -103,8 +102,7 @@ it('routes Qwen single, multiple and custom answers through the native composer 
       phase = marker
       const turn = await send(host, page!, marker)
       await card.waitFor()
-      // A vendor question must not become a tool-approval decision, even with
-      // the Host's approval default explicitly set to Ask.
+      // Vendor questions use the original question card and choices.
       expect(await page!.getByRole('button', { name: 'Allow once', exact: true }).count()).toBe(0)
       await card.getByRole('button', { name: 'Dismiss all questions', exact: true }).waitFor()
       return turn

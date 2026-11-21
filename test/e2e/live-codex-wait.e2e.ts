@@ -92,7 +92,6 @@ it.skipIf(process.env.DSH_E2E_LIVE_CODEX_WAIT !== '1')(
         selectedEnvKeys.map((key) => [key, required(process.env[key], `Missing selected env key ${key}`)]),
       )
       await host.ctx.settings.replace('dsh-acp-adapter', {
-        toolApprovalDefault: 'auto',
         agents: {
           codex: {
             name: 'Real Codex wait check',

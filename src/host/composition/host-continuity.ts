@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { HostExecutionOwners } from './host-execution-owners.ts'
 import { LocalSettlementOwner } from './local-settlement.ts'
+import { UncommittedWithdrawals } from '../../persistence/uncommitted-withdrawals.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -14,6 +15,7 @@ export interface HostContinuityLease {
 
 /** Survives adapter replacement; the Host root owns its final shutdown. */
 export class AcpHostContinuity {
+  readonly uncommittedWithdrawals = new UncommittedWithdrawals()
   readonly executionOwners = new HostExecutionOwners()
   readonly settlements = new LocalSettlementOwner()
   private readonly leases = new Set<HostContinuityLease>()
@@ -53,6 +55,11 @@ export class AcpHostContinuity {
       } catch (error) {
         failures.push(error)
       }
+      try {
+        await this.uncommittedWithdrawals.close()
+      } catch (error) {
+        failures.push(error)
+      }
       if (failures.length > 0) throw new AggregateError(failures, 'ACP Host continuity cleanup failed')
     })())
   }
@@ -62,7 +69,15 @@ export class AcpHostContinuity {
 export function ensureHostContinuity(ctx: Context): AcpHostContinuity {
   const root = ctx.root
   const existing = root.get('acpHostContinuity', false)
-  if (existing !== undefined) return existing
+  if (existing !== undefined) {
+    // Upgrade an already running Host whose continuity service came from an older plugin.
+    if (!existing.uncommittedWithdrawals) {
+      const withdrawals = new UncommittedWithdrawals()
+      Object.assign(existing, { uncommittedWithdrawals: withdrawals })
+      root.effect(() => () => withdrawals.close())
+    }
+    return existing
+  }
   const owner = new AcpHostContinuity()
   root.effect(function* () {
     const withdraw = root.provide('acpHostContinuity', owner)

@@ -33,6 +33,33 @@ export function auditTimelineRowOf(entry: AcpSidecarEntry): AcpAuditTimelineEntr
       subject = boundedAuditSubject(data['profileId'] ?? data['provider'] ?? data['agentSessionId'])
       break
     case 'permission': {
+      if (data['phase'] === 'codebuddy-review') {
+        summaryCode = 'permission.codebuddy-review'
+        subject = boundedAuditSubject(data['toolName'])
+        const scope = data['scope']
+        if (scope === 'sensitive' && data['decision'] === 'allow') status = 'codebuddy-data-protected'
+        if ((scope === 'sandbox' || scope === 'tool_call' || scope === 'tool_result') && data['decision'] === 'deny') {
+          status = `codebuddy-${scope}-denied`
+          severity = 'warning'
+        }
+        break
+      }
+      if (data['phase'] === 'decision-withdrawn') {
+        summaryCode = 'permission.decision-withdrawn'
+        subject = boundedAuditSubject(data['toolCallId'])
+        status = 'cancelled'
+        break
+      }
+      if (data['phase'] === 'ai-review-started' || data['phase'] === 'ai-review-result') {
+        summaryCode =
+          data['phase'] === 'ai-review-started' ? 'permission.ai-review-started' : 'permission.ai-review-result'
+        subject = boundedAuditSubject(
+          data['reviewAgent'] === 'opencode' ? `OpenCode · ${String(data['model'])}` : data['model'],
+        )
+        status = boundedAuditSubject(data['status'])
+        if (status === 'high' || status === 'timeout' || status === 'error') severity = 'warning'
+        break
+      }
       if (data['phase'] === 'pre-tool') {
         summaryCode = 'permission.pre-tool-denied'
         subject = boundedAuditSubject(data['toolName'])
@@ -51,6 +78,9 @@ export function auditTimelineRowOf(entry: AcpSidecarEntry): AcpAuditTimelineEntr
       } else subject = boundedAuditSubject(data['toolCallId'])
       status = boundedAuditSubject(data['phase'] === 'decided' ? data['outcome'] : undefined)
       if (status === 'selected') {
+        if (data['decisionVia'] === 'devin-ai') summaryCode = 'permission.ai-decided'
+        if (data['decisionVia'] === 'opencode-ai') summaryCode = 'permission.opencode-ai-decided'
+        if (data['decisionVia'] === 'native-question') summaryCode = 'permission.card-decided'
         const option = data['selectedOptionKind']
         if (
           option === 'allow_once' ||

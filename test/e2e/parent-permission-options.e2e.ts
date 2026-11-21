@@ -83,7 +83,6 @@ async function fixture(parentKind: 'native' | 'acp' = 'native', locale: 'en' | '
   try {
     await host.ctx.settings.replace('locale', { preference: 'en' })
     await host.ctx.settings.replace('dsh-acp-adapter', {
-      toolApprovalDefault: 'ask',
       agents: {
         'parent-options': {
           name: 'Parent permission fixture',
@@ -320,6 +319,29 @@ async function choose(world: World, key: string, optionId: string) {
   await card.getByRole('button', { name: world.submitLabel, exact: true }).click()
 }
 
+async function assertCardInsets(card: Locator) {
+  const insets = await card.evaluate((element) => {
+    const bounds = element.getBoundingClientRect()
+    const rect = (selector: string) => element.querySelector(selector)!.getBoundingClientRect()
+    const submit = rect('footer button:last-child')
+    const lastOption = rect('[role="radio"]:last-child')
+    const body = rect('[data-question-scroll]')
+    return {
+      title: rect('[data-question-operation]').left - bounds.left,
+      option: rect('[role="radio"] span').left - bounds.left,
+      end: bounds.right - submit.right,
+      bottom: bounds.bottom - submit.bottom,
+      footerGap: submit.top - Math.min(body.bottom, lastOption.bottom),
+    }
+  })
+  expect(Math.abs(insets.title - insets.option)).toBeLessThanOrEqual(1)
+  expect(Math.abs(insets.title - insets.end)).toBeLessThanOrEqual(1)
+  expect(insets.end).toBeGreaterThanOrEqual(16)
+  expect(insets.bottom).toBeGreaterThanOrEqual(16)
+  expect(insets.footerGap).toBeGreaterThanOrEqual(8)
+  expect(insets.footerGap).toBeLessThanOrEqual(24)
+}
+
 /** The initial approval view must show the operation and every choice together, without a screenshot-only scroll. */
 async function saveOptions(world: World, key: string, name: string) {
   const card = world.card(key)
@@ -429,6 +451,10 @@ async function inspectNarrowAccess(world: World, key: string) {
   const chosen = card.getByRole('radio', { name: 'Allow', exact: true })
   await chosen.focus()
   await world.page.setViewportSize({ width: 390, height: 844 })
+  // The Host collapses the sidebar after resizing. Measure the conversation once it has its mobile width.
+  await world.page.locator('[data-sidebar-collapsed="true"]').waitFor()
+  await vi.waitFor(() => assertCardInsets(card))
+  await card.screenshot({ path: join(directory, `${key}-card-390.png`), animations: 'disabled' })
   expect(await chosen.evaluate((element) => document.activeElement === element)).toBe(true)
   expect(await chosen.getAttribute('aria-checked')).toBe('true')
   expect(await card.locator('[data-question-operation]').innerText()).toContain(`write ${parentPermissionMarker(key)}`)
@@ -486,13 +512,15 @@ it.each([
         await world.save(key)
         return
       }
-      await assertChoices(world, key, child)
+      const card = await assertChoices(world, key, child)
       expect(await world.ctx.approval.request({ agent: child, toolName: 'E2E_NATIVE_POLICY_CHECK' })).toBe('rejected')
       expect(acpPermissionAudit(world, 'asked')).toHaveLength(1)
       expect(acpPermissionAudit(world, 'decided')).toHaveLength(0)
       for (const theme of ['light', 'dark']) {
         await world.ctx.settings.replace('ui-theme', { preference: theme })
         await expect.poll(() => world.page.evaluate(() => document.documentElement.style.colorScheme)).toBe(theme)
+        await assertCardInsets(card)
+        await card.screenshot({ path: join(directory, `${key}-${theme}-card-wide.png`), animations: 'disabled' })
         await world.save(`${key}-${theme}-wide`)
         await saveOptions(world, key, `${key}-${theme}-options-wide`)
       }

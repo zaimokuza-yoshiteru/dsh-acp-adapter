@@ -10,7 +10,6 @@ it.each([false, true])('retains the answer after Reject and reload (remote cance
   let browser: TestBrowser | undefined
   try {
     await host.ctx.settings.replace('dsh-acp-adapter', {
-      toolApprovalDefault: 'ask',
       agents: {
         rejection: {
           name: 'Rejection regression',

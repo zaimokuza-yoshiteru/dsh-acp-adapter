@@ -39,7 +39,6 @@ it('keeps ACP drafts and diagnostics scoped through alpha.2 native navigation wi
     existsSync(agentLog) ? readFileSync(agentLog, 'utf8').split('--> session/prompt ').length - 1 : 0
   try {
     await host.ctx.settings.replace('dsh-acp-adapter', {
-      toolApprovalDefault: 'ask',
       agents: {
         codex: {
           name: 'Navigation fixture',

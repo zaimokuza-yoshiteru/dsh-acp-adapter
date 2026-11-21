@@ -18,10 +18,8 @@ export function teamSessionMenuGroups(
     .map((group) => ({
       ...group,
       choices: group.choices
-        .filter(
-          (choice) =>
-            choice.write.kind !== 'tool-approval-policy' &&
-            modes.some((mode) => mode.write.kind === choice.write.kind && mode.write.id === choice.write.id),
+        .filter((choice) =>
+          modes.some((mode) => mode.write.kind === choice.write.kind && mode.write.id === choice.write.id),
         )
         .map((choice) => ({ ...choice, disabled: !writable })),
     }))

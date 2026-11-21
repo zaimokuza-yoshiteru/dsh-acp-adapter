@@ -58,17 +58,14 @@ export interface AcpMcpLease {
   hasUncommittedFeedback?(): boolean
   hasRetainedFeedback?(): boolean
   waitForCallsSettled?(): Promise<void>
-  permission(
-    request: acp.RequestPermissionRequest,
-  ): Promise<acp.RequestPermissionResponse | undefined> | acp.RequestPermissionResponse | undefined
   inspectPermission?(
     request: acp.RequestPermissionRequest,
   ):
     | Promise<AcpPermissionCheck & { readonly response?: acp.RequestPermissionResponse }>
     | (AcpPermissionCheck & { readonly response?: acp.RequestPermissionResponse })
-  /** Captured target/prompt lifetime for both automatic and manual permission decisions. */
+  /** Captured target/prompt lifetime while an approval decision is pending. */
   permissionSignal?(request: acp.RequestPermissionRequest): AbortSignal | undefined
-  /** Revalidate the captured target after audit or a manual answer without resolving policy again. */
+  /** Revalidate the captured target after audit or a manual answer. */
   validatePermissionDecision?(request: acp.RequestPermissionRequest): boolean
   /** Capture the target, prompt, and Host admission of a Codex tool approval once. */
   elicitationSignal?(
@@ -80,10 +77,6 @@ export interface AcpMcpLease {
     request: acp.CreateElicitationRequest,
     toolCall: acp.ToolCallUpdate | undefined,
   ): boolean | undefined
-  elicitation?(
-    request: acp.CreateElicitationRequest,
-    toolCall: acp.ToolCallUpdate | undefined,
-  ): Promise<acp.CreateElicitationResponse | undefined> | acp.CreateElicitationResponse | undefined
   elicitationToolName?(
     request: acp.CreateElicitationRequest,
     toolCall: acp.ToolCallUpdate | undefined,

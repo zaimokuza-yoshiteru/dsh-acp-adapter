@@ -18,6 +18,7 @@ import type * as acp from '@agentclientprotocol/sdk'
 import { acpProbeConfigKey, acpProbeFresh } from '../../domain/session/agent-config.ts'
 import type { AcpStubAgentConfig } from '../../domain/session/agent-config.ts'
 import { effectiveRuntimeOf, retiredAgentReason } from '../../contract/agent-config.ts'
+import { isDevinReviewerAgent } from '../../contract/devin-review.ts'
 import { modelProbeOptions, supportsAgentManagedModels } from '../../agents/compatibility.ts'
 import { acpConfigOptionsSnapshot } from '../../domain/session/acp-config-options.ts'
 import { acpCanonicalHash16 } from '../../persistence/sidecar.ts'
@@ -215,6 +216,17 @@ export function probeModels(provider: string, configOptions: AcpProbeResult['con
   if (models.length === 0)
     return [{ provider, id: ACP_CURRENT_CONFIG_MODEL_ID, name: acpRouteNames.en.agentCurrentConfiguration }]
   return disambiguateModelLabels(models)
+}
+
+/** A missing model is conclusive only for a fresh catalog from this exact Devin launch. */
+export function checkedDevinModels(profile: AcpStubAgentConfig, snapshot: AcpProbeCacheEntry | undefined) {
+  if (
+    snapshot?.result.kind === 'ok' &&
+    isDevinReviewerAgent(snapshot.result.agentInfo) &&
+    acpProbeFresh(snapshot, acpProbeConfigKey(profile), Date.now())
+  )
+    return snapshot.result.models
+  return undefined
 }
 
 export function supportsNamedModelSwitch(
@@ -455,7 +467,7 @@ export class AcpStubAdapter extends LlmAdapter {
       // the confirmed options from the disposable probe session so DSH does not
       // offer a level (for example Codex Mini + Ultra) that the live session
       // would immediately reject.
-      const modelDiscovery = modelProbeOptions(runtimeId)
+      const modelDiscovery = modelProbeOptions(runtimeId, config)
       const onProcessWarn =
         this.probeOptions.onProcessWarn ??
         (this.options.onProcessWarn === undefined

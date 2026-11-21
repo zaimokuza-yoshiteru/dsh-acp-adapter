@@ -1205,7 +1205,6 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           ...('catalogId' in profile ? { catalogId: profile.catalogId } : {}),
         }
         await host.ctx.settings.replace('dsh-acp-adapter', {
-          toolApprovalDefault: 'auto',
           agents: { [profile.id]: agentConfig },
         })
         await waitFor(() =>
@@ -2144,13 +2143,6 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           mkdirSync(operationDir, { recursive: true, mode: 0o700 })
           const destinations = new Map(operationIds.map((id) => [id, join(operationDir, `${id}-${runId}.txt`)]))
           for (const target of destinations.values()) expect(existsSync(target)).toBe(false)
-          await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(required(leadAgent).id, {
-            policy: 'ask',
-          })
-          if (scenarios === 'approvals')
-            expect(
-              await (host.ctx.get('dshAcp') as AcpRemoteService).toolApprovalPolicy(String(required(runtimeReaderId))),
-            ).toMatchObject({ policy: 'ask', source: 'lead', editable: false })
 
           const handleApproval = async (
             actor: 'lead' | 'member',
@@ -2598,9 +2590,6 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
             ownerDshSessionId: String(leadSessionId),
             operation: 'D:long-running',
             command: shellCommand,
-          })
-          await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(required(leadAgent).id, {
-            policy: 'ask',
           })
           const turnBefore = events.filter(
             (event) => event.sessionId === leadSessionId && event.type === 'user/message',

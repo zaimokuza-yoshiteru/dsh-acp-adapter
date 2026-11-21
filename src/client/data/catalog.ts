@@ -58,6 +58,33 @@ const LOGIN_HINTS: Readonly<Partial<Record<AcpAgentId, string>>> = {
   codebuddy: 'codebuddy',
 }
 
+/** These launch and sign-in defaults describe Google's CLI, separately from the registry's standalone server. */
+const ANTIGRAVITY_CLI = {
+  command: 'agy',
+  subcommand: 'acp',
+  loginFlag: '--login',
+  installHint: 'https://antigravity.google/docs/cli/acp',
+} as const
+
+export function antigravityCliLoginHint(command?: string, args?: readonly string[]): string | undefined {
+  if (!command || args?.[0] !== ANTIGRAVITY_CLI.subcommand) return undefined
+  // The browser may be on a different OS from the Host. Use the configured path's syntax.
+  const windowsPath =
+    /^[a-z]:[\\/]/iu.test(command) ||
+    (!command.startsWith('/') && command.includes('\\')) ||
+    (command.startsWith('//') && /\.exe$/iu.test(command))
+  const name = command.split(windowsPath ? /[\\/]/u : '/').at(-1)
+  if (!/^agy(?:\.exe)?$/iu.test(name ?? '')) return undefined
+  let executable = command
+  if (command !== name) {
+    // PowerShell recognizes typographic single quotes as well as ASCII apostrophes.
+    executable = windowsPath
+      ? `& '${command.replace(/['\u2018-\u201b]/gu, '$&$&')}'`
+      : `'${command.replaceAll("'", "'\\''")}'`
+  }
+  return [executable, ANTIGRAVITY_CLI.subcommand, ANTIGRAVITY_CLI.loginFlag].join(' ')
+}
+
 /** Known installed CLI names for binary distributions; never archive paths. */
 const INSTALLED_BINARY_COMMANDS: Readonly<Record<string, string>> = {
   devin: 'devin',
@@ -84,7 +111,7 @@ export interface AcpCatalogEntry {
   readonly id: string
   /** Display name. */
   readonly name: string
-  /** Registry-published upstream version (sidecar double-checked; undefined when neither has it). */
+  /** Registry version, when it describes the program this entry launches. */
   readonly version: string | undefined
   /** Install guidance derived from the registry distribution (npx/uvx/binary facts). */
   readonly installHint: string
@@ -119,6 +146,29 @@ function installHintOf(agent: RegistryAgent): string {
   return agent.website ?? agent.id
 }
 
+function launchDefaultsOf(agent: RegistryAgent, executable: ExecutableEntry | undefined) {
+  // Google's registry binary is a separate ACP server with its own version, flags and sign-in.
+  if (agent.id === 'antigravity-acp') {
+    return {
+      command: ANTIGRAVITY_CLI.command,
+      args: [ANTIGRAVITY_CLI.subcommand],
+      env: {},
+      version: undefined,
+      installHint: ANTIGRAVITY_CLI.installHint,
+    }
+  }
+  return {
+    command:
+      executable?.kind === 'binary'
+        ? (INSTALLED_BINARY_COMMANDS[agent.id] ?? executable.command)
+        : (executable?.command ?? ''),
+    args: [...(executable?.args ?? [])],
+    env: { ...executable?.env },
+    version: executable?.version ?? agent.version,
+    installHint: installHintOf(agent),
+  }
+}
+
 /**
  * 全量 catalog：已验证适配条目排前，其余按 registry 顺序。合成是
  * 纯数据变换，模块加载时执行一次。
@@ -133,23 +183,14 @@ export function buildCatalogEntries(
   for (const agent of registryAgents) {
     // Keep the official snapshot intact while excluding the retired preset.
     if (agent.id === 'kimi' || agent.id === 'kimi-code') continue
-    const executable = executableEntries[agent.id]
     const runtime = runtimeForCatalogId(agent.id)
-    const command =
-      executable?.kind === 'binary'
-        ? (INSTALLED_BINARY_COMMANDS[agent.id] ?? executable.command)
-        : (executable?.command ?? '')
-    const args = executable?.args ?? []
+    const launch = launchDefaultsOf(agent, executableEntries[agent.id])
     entries.push({
       id: agent.id,
       name: agent.name,
-      version: executable?.version ?? agent.version,
-      installHint: installHintOf(agent),
-      command,
+      ...launch,
       verification: VERIFIED_ADAPTER_IDS.includes(agent.id) ? 'adapter-tested' : 'unverified',
-      args: [...args],
-      env: { ...executable?.env },
-      requiresCommand: command === '',
+      requiresCommand: launch.command === '',
       ...(runtime === undefined
         ? {}
         : { runtime, ...(LOGIN_HINTS[runtime] === undefined ? {} : { loginHint: LOGIN_HINTS[runtime] }) }),
@@ -169,4 +210,11 @@ export function buildCatalogEntries(
 /** Look up one catalog entry by registry agent id (the add-menu rows are rendered from the list). */
 export function catalogEntryOf(id: string): AcpCatalogEntry | undefined {
   return ACP_CATALOG_ENTRIES.find((entry) => entry.id === id)
+}
+
+/** Only a single absolute HTTP(S) address can open outside the settings panel. */
+export function catalogInstallUrl(hint: string): string | undefined {
+  if (!/^https?:\/\/[^\s\\]+$/iu.test(hint)) return undefined
+  const url = URL.parse(hint)
+  return url && !url.username && !url.password ? url.href : undefined
 }

@@ -36,7 +36,7 @@ describe('DSH clean-install gate contracts', () => {
   const adapterRow = `- id: dsh-acp-adapter
   name: '@zaimokuza/dsh-acp-adapter'
   config:
-    toolApprovalDefault: ask
+    devinReviewModel: swe-1-6-fast
 `
   const acpPreset = `- id: preset-acp-adapter
   name: '@deepseek-ai/dsh-agent-preset'
@@ -124,11 +124,11 @@ describe('DSH clean-install gate contracts', () => {
     const dump = [
       '- id: agent-loop\n  name: @deepseek-ai/dsh-agent-loop',
       '- id: ui-model-selection\n  name: @deepseek-ai/dsh-client-ui-model-selection',
-      "- id: dsh-acp-adapter\n  name: '@zaimokuza/dsh-acp-adapter'\n  config:\n    toolApprovalDefault: ask",
+      "- id: dsh-acp-adapter\n  name: '@zaimokuza/dsh-acp-adapter'\n  config:\n    devinReviewModel: swe-1-6-fast",
     ].join('\n')
     expect(() => assertAcpConfigSentinel(dump)).not.toThrow()
     expect(() =>
-      assertAcpConfigSentinel(dump.replace('toolApprovalDefault: ask', 'toolApprovalDefault: auto')),
+      assertAcpConfigSentinel(dump.replace('devinReviewModel: swe-1-6-fast', 'devinReviewModel: swe-2-high')),
     ).toThrow(/sentinel was not preserved/)
   })
 

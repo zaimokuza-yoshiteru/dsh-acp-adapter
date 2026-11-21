@@ -59,7 +59,6 @@ it('proves deferred Codex wait through the native MCP bridge and keeps untrusted
       executions.push({ name: execution.name, isError: result.isError })
     })
     await host.ctx.settings.replace('dsh-acp-adapter', {
-      toolApprovalDefault: 'auto',
       agents: {
         codex: {
           name: 'Codex wait protocol fixture',

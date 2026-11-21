@@ -342,8 +342,6 @@ describe('session-scoped ACP image capability', () => {
         agent.id,
         { mcpCapabilities: { http: true }, promptCapabilities: { image: imageSupported } },
         undefined,
-        async () => 'auto',
-        undefined,
         assembly.tools,
       ))!
       cleanup.push(() => lease.close())

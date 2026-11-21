@@ -259,10 +259,15 @@ describe('Host continuity owner', () => {
     const root = new Context()
     const original = ensureHostContinuity(root)
     original.executionOwners.setRecoveryFallback(recovery)
+    // HMR can reuse the root instance from a release which predates durable withdrawals.
+    Reflect.deleteProperty(original, 'uncommittedWithdrawals')
     vi.resetModules()
     const reloaded = await import('../../../src/host/composition/host-continuity.ts')
     expect(reloaded.AcpHostContinuity).not.toBe(AcpHostContinuity)
     expect(reloaded.ensureHostContinuity(root)).toBe(original)
+    const withdrawals = original.uncommittedWithdrawals
+    expect(withdrawals).toBeDefined()
+    expect(reloaded.ensureHostContinuity(root).uncommittedWithdrawals).toBe(withdrawals)
     expect(reloaded.ensureHostContinuity(root).executionOwners.getRecoveryFallback('session-a')).toEqual(recovery)
     await root.fiber.dispose()
     expect(root.get('acpHostContinuity', false)).toBeUndefined()

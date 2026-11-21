@@ -77,6 +77,8 @@ export interface AcpSubprocessHandle {
  * src/host/composition/subprocess.ts 的 `resolveSubprocessSeam` 解析一次后注入。
  */
 export interface SubprocessSeam {
+  /** Proven Host-local provider; filesystem paths and login material may not cross a remote seam. */
+  readonly localExecution?: true
   spawn(spec: AcpSubprocessSpawnSpec): AcpSubprocessHandle
   resolveExecutable(command: string, env?: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<string>
 }

@@ -433,6 +433,46 @@ describe('complete ACP permission choices', () => {
     },
   )
 
+  it.each(['en', 'zh'] as const)('localizes only Devin’s verified pending native write title (%s)', async (locale) => {
+    const path = '/workspace/access policy.json'
+    const title = `Wrote ${path}`
+    const rawInput = { file_path: path, content: 'example' }
+    const call: acp.ToolCallUpdate = { toolCallId: 'write:0#fixture', kind: 'edit', title, rawInput }
+    const action = locale === 'zh' ? '写入文件' : 'Write file'
+    const cases: Array<[string, acp.ToolCallUpdate, string]> = [
+      ['devin', call, action],
+      ['codebuddy', call, title],
+      ['devin', { ...call, title: 'Write a new access policy' }, 'Write a new access policy'],
+      ['devin', { ...call, title: 'Wrote /other' }, 'Wrote /other'],
+      ['devin', { ...call, name: 'replace' }, title],
+      ['devin', { ...call, rawInput: { ...rawInput, path: '/other' } }, title],
+      ['devin', { ...call, locations: [{ path: '/other' }] }, title],
+      ['devin', { ...call, content: [{ type: 'diff', path: '/other', newText: 'other' }] }, title],
+    ]
+    for (const [permissionProfile, toolCall, expected] of cases) {
+      const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async () => ({ answers: [] }))
+      const append = vi.fn<(row: AcpPermissionAuditRecord) => Promise<void>>(async () => {})
+      await createAcpNativePermissionHandler({
+        permissionProfile,
+        locale,
+        getAgent: () => ({}),
+        userQuestions: { ask },
+        audit: { append },
+      })({
+        ...request([option('once', 'Allow', 'allow_once')]),
+        toolCall,
+      })
+      const card = ask.mock.calls[0]![0].questions[0]!
+      expect(card.question.split('\n')[0]).toBe(expected)
+      expect(card.detail).toContain(path)
+      expect(card.detail).toContain(rawInput.content)
+      expect(append.mock.calls[0]![0].data).toMatchObject({
+        phase: 'asked',
+        toolCall: { title: toolCall.title, rawInputHash: summarizeRawInputForAudit(toolCall.rawInput).hash },
+      })
+    }
+  })
+
   it.each([
     ['client_create_file', 'target_file', 'code_content', 'en', 'Content'],
     ['client_edit_file', 'TargetFile', 'CodeContent', 'zh', '内容'],

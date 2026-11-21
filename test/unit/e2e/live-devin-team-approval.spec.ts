@@ -252,6 +252,8 @@ function fixture(
         permissionProfile: 'devin',
         audit: {
           append: async (entry) => {
+            if (entry.data.phase !== 'asked' && entry.data.phase !== 'decided')
+              throw Error('Unexpected AI review in manual approval test')
             audit[entry.data.phase].push({ sessionId: lead.id, data: entry.data })
           },
         },

@@ -2,37 +2,17 @@
 
 import path from 'node:path'
 import type { AcpHostToolControlOutcome } from '../../contract/tool-control-outcome.ts'
-import { isSensitiveActivityField, redactSecretText } from '../../domain/observability/redaction.ts'
+import { redactActivityValue, redactSecretText } from '../../domain/observability/redaction.ts'
 import { activityPresentation, type AcpActivityPresentation } from '../../domain/policy/activity-presentation.ts'
 import type { ExternalDelegationLiveFact } from '../../domain/subagent/external-delegation.ts'
 import { ACP_ACTIVITY_RAW_MAX, type AcpActivityKind, type AcpActivityStatus } from '../../persistence/sidecar.ts'
 import type { AcpSessionNotification } from '../../protocol/v1/types.ts'
 import type { AcpToolCallSnapshot } from './tool-call-reducer.ts'
 
-function redactActivityValue(value: unknown, depth = 0): unknown {
-  if (depth > 5) return '[nested value omitted]'
-  if (typeof value === 'string') {
-    const redacted = redactSecretText(value)
-    return redacted.length > 4_096 ? `${redacted.slice(0, 4_096)}… [truncated]` : redacted
-  }
-  if (Array.isArray(value)) return value.slice(0, 64).map((item) => redactActivityValue(item, depth + 1))
-  if (value !== null && typeof value === 'object') {
-    const result: Record<string, unknown> = {}
-    for (const [key, item] of Object.entries(value).slice(0, 128)) {
-      result[key] =
-        redactSecretText(key).toLowerCase() !== key.toLowerCase() || isSensitiveActivityField(key, item)
-          ? '[redacted]'
-          : redactActivityValue(item, depth + 1)
-    }
-    return result
-  }
-  return value
-}
-
 export function activityRawDetail(value: unknown): string {
   if (value === undefined) return ''
   try {
-    return JSON.stringify(redactActivityValue(value))
+    return JSON.stringify(redactActivityValue(value, 4_096))
   } catch {
     return '[activity detail unavailable]'
   }

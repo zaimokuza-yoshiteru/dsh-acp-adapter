@@ -32,7 +32,8 @@ async function fixture() {
       async apply(scope: Context) {
         await installInstalledProfileRegistry(scope, {
           agents: { get: () => ({}) },
-          toolApprovalDefault: { get: () => 'auto' },
+          aiApproval: { get: () => false },
+          devinReviewModel: { get: () => 'swe-2-high' },
         })
       },
     })

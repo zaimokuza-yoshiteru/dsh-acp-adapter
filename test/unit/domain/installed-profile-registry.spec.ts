@@ -23,6 +23,7 @@ import { withSessionFacts } from '../../support/session-facts.ts'
 //
 // 纯内存测试：不 spawn 进程（probe 行为在 llm-stub.spec.ts 用真 mock 覆盖）。
 
+import { ApprovalReviewScope } from '../../../src/host/approval-review/scope.ts'
 import { AcpProfileAdapter } from '../../../src/host/composition/profile-adapter.ts'
 import { Config } from '../../../src/host/composition/config.ts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -93,7 +94,8 @@ class FakeSettingsProvider {
   onChange: () => void = () => {}
   readonly config = {
     agents: { get: () => acpSettingsSchema(this.section).agents },
-    toolApprovalDefault: { get: () => acpSettingsSchema(this.section).toolApprovalDefault },
+    aiApproval: { get: () => acpSettingsSchema(this.section).aiApproval },
+    devinReviewModel: { get: () => acpSettingsSchema(this.section).devinReviewModel },
   }
   private watchers: WatchCallback[] = []
 
@@ -390,7 +392,6 @@ describe('runtime 身份与配置兼容', () => {
 
   it('runtime 参与 probe 缓存键（runtime 绑定变化必须重探）', () => {
     const base = acpProbeConfigKey(devinAgent)
-    expect(JSON.parse(base)).toEqual({ command: 'devin', args: ['acp'], envKeys: [], envHashes: [], runtime: null })
     expect(acpProbeConfigKey({ ...devinAgent, runtime: 'devin' })).not.toBe(base)
     expect(acpProbeConfigKey({ ...devinAgent, runtime: 'devin' })).not.toBe(
       acpProbeConfigKey({ ...devinAgent, runtime: 'claude' }),
@@ -401,22 +402,50 @@ describe('runtime 身份与配置兼容', () => {
   })
 })
 
-describe('acpSettingsSchema', () => {
-  it('空/缺省 section 解析为零 agents', () => {
-    expect(acpSettingsSchema(undefined)).toEqual({
-      agents: {},
-      toolApprovalDefault: 'auto',
-    })
-    expect(acpSettingsSchema({})).toEqual({ agents: {}, toolApprovalDefault: 'auto' })
-    expect(acpSettingsSchema({ agents: {} })).toEqual({
-      agents: {},
-      toolApprovalDefault: 'auto',
-    })
-    expect(acpSettingsSchema({ agents: {}, searchableModelPicker: true })).toEqual({
-      agents: {},
-      toolApprovalDefault: 'auto',
-    })
+it('requires one explicit opt-in for existing and newly added reviewers, independent of saved models', async () => {
+  const { ctx, settings } = fakeHarness()
+  const openCode = { name: 'OpenCode', command: 'opencode', args: ['acp'], env: {} }
+  settings.seed({
+    agents: { devin: devinAgent, work: { ...openCode, openCodeReviewModel: 'local/fast' }, other: fooAgent },
+    devinAiApproval: true,
+    toolApprovalDefault: 'auto',
   })
+  const create = vi.spyOn(ApprovalReviewScope, 'forProfile')
+  const configure = vi.spyOn(ApprovalReviewScope.prototype, 'configure')
+  const seam = { localExecution: true as const, spawn: vi.fn(), resolveExecutable: vi.fn() }
+  await installInstalledProfileRegistry(ctx, settings.config, { subprocess: { ok: true, seam } })
+  expect(create).not.toHaveBeenCalled()
+  await settings.mutate([{ op: 'set', path: ['aiApproval'], value: true }])
+  expect(create.mock.calls.map(([id]) => id).sort()).toEqual(['devin', 'work'])
+  expect(configure).toHaveBeenCalledWith(expect.objectContaining({ name: 'Devin' }), 'swe-2-high')
+  expect(configure).toHaveBeenCalledWith(expect.objectContaining({ name: 'OpenCode' }), 'local/fast')
+  await settings.mutate([{ op: 'set', path: ['agents', 'new-work'], value: openCode }])
+  expect(configure).toHaveBeenCalledWith(openCode, '')
+  const scopes = create.mock.results.map(({ value }) => value as ApprovalReviewScope)
+  expect(scopes).toHaveLength(3)
+  expect(scopes.every((scope) => scope.enabled)).toBe(true)
+  await settings.mutate([{ op: 'set', path: ['aiApproval'], value: false }])
+  expect(scopes.every((scope) => !scope.enabled)).toBe(true)
+  expect(settings.config.agents.get().work?.openCodeReviewModel).toBe('local/fast')
+  expect(seam.spawn).not.toHaveBeenCalled()
+})
+
+describe('acpSettingsSchema', () => {
+  it('validates the opt-in reviewer and its exact model before publishing volatile settings', () => {
+    const enabled = Config({ aiApproval: true, devinReviewModel: 'reviewer-2' })
+    expect(enabled.aiApproval.get()).toBe(true)
+    expect(enabled.devinReviewModel.get()).toBe('reviewer-2')
+    expect(() => acpSettingsSchema({ aiApproval: 'false' })).toThrow('boolean')
+    for (const model of ['', ' bad', 'model\nname', '--cloud', 'a'.repeat(513), null]) {
+      expect(() => acpSettingsSchema({ devinReviewModel: model })).toThrow('model')
+    }
+  })
+  it.each([undefined, {}, { agents: {} }, { agents: {}, searchableModelPicker: true }])(
+    'resolves an empty or legacy settings section to the defaults (%j)',
+    (section) => {
+      expect(acpSettingsSchema(section)).toEqual({ agents: {}, aiApproval: false, devinReviewModel: 'swe-2-high' })
+    },
+  )
 
   it('解析合法 agents 并补默认值（args/env），保留 loginHint', () => {
     const resolved = acpSettingsSchema({
@@ -474,7 +503,8 @@ describe('acpSettingsSchema', () => {
     })
     expect(resolved).toEqual({
       agents: { devin: { name: 'Devin', command: 'devin', args: [], env: {} } },
-      toolApprovalDefault: 'auto',
+      aiApproval: false,
+      devinReviewModel: 'swe-2-high',
     })
   })
 

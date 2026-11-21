@@ -41,6 +41,16 @@
   line-height: 20px;
   font-weight: 500;
 }
+.preferenceRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.reviewModelValue {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .notice {
   margin: 0;
   font-size: 12px;
@@ -49,15 +59,21 @@
 }
 .error {
   margin: 0;
+  overflow-wrap: anywhere;
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-state-error-primary);
 }
 .hint {
   margin: 0;
+  overflow-wrap: anywhere;
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-label-tertiary);
+}
+.guideLink {
+  color: var(--dsw-alias-link);
+  text-decoration: underline;
 }
 .addActions {
   display: flex;
