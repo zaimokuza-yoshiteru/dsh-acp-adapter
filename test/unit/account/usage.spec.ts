@@ -42,6 +42,17 @@ describe('Agent account reads', () => {
   it('accepts explicit local CLI launches and declines unsupported contexts', async () => {
     const codex = { ...devin, runtime: 'codex' as const, command: 'codex-acp', args: [] }
     expect(accountUsageProvider('custom', codex)).toBe('codex')
+    expect(
+      accountUsageProvider('custom', { ...codex, env: { CODEX_HOME: '.project-login' } }, 'darwin'),
+    ).toBeUndefined()
+    expect(accountUsageProvider('custom', { ...codex, env: { CODEX_PATH: './bin/codex' } }, 'darwin')).toBeUndefined()
+    expect(accountUsageProvider('custom', codex, 'linux', { MODEL_PROVIDER: 'enterprise' })).toBeUndefined()
+    expect(
+      accountUsageProvider('custom', { ...codex, env: { model_provider: '' } }, 'win32', {
+        MODEL_PROVIDER: 'enterprise',
+      }),
+    ).toBe('codex')
+    expect(accountUsageProvider('custom', { ...codex, env: { model_provider: 'enterprise' } }, 'win32')).toBeUndefined()
     const { runtime: _runtime, ...manual } = devin
     expect(accountUsageProvider('manual', manual)).toBe('devin')
     expect(accountUsageProvider('manual', { ...manual, command: 'codex-acp', args: [] })).toBe('codex')
@@ -85,7 +96,7 @@ describe('Agent account reads', () => {
                 rateLimits: {
                   secondary: {},
                   primary: { usedPercent: 100, windowDurationMins: 300, resetsAt: 1850000000 },
-                  credits: { balance: '0' },
+                  credits: { hasCredits: true, unlimited: false, balance: '0' },
                 },
               }
       p.stdout.write(JSON.stringify({ id: msg.id, result }) + '\n')
@@ -136,6 +147,14 @@ describe('Agent account reads', () => {
       expect(calls).toEqual(['initialize', 'initialized', 'account/read'])
     },
   )
+
+  it.each([
+    [{ hasCredits: true, unlimited: true, balance: '0' }, { kind: 'unlimited' }],
+    [{ hasCredits: true, unlimited: false, balance: null }, { kind: 'available' }],
+    [{ hasCredits: false, unlimited: false, balance: '25' }, null],
+  ])('respects workspace credit access when a raw balance is not authoritative', (credits, expected) => {
+    expect(codexFields({ account: { type: 'chatgpt' } }, { rateLimits: { credits } }).credits).toEqual(expected)
+  })
 
   it.each([null, 'alternate-default'])('shows every metered window once, default first (limit ID %s)', (limitId) => {
     const account = { account: { type: 'chatgpt', planType: 'pro', email: 'private@example.test' } }
@@ -192,6 +211,7 @@ describe('Agent account reads', () => {
     expect((await again).status).toBe('unsupported')
     expect(spawn).toHaveBeenCalledTimes(3)
     expect(devinPlan('Email: hidden\nPlan: https://id/token\nTier: 3').plan).toBeNull()
+    expect(devinPlan('Plan:\r\nInternal Team\r\n').plan).toBeNull()
   })
 
   it('stops a pending account pipe on unload and never serves a late result', async () => {

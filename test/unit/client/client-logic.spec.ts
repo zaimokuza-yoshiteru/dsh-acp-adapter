@@ -678,6 +678,18 @@ describe(' env 密钥掩码（draftFromAgent / validateAgentDraft / dropMaskedEn
     expect('maskedEnv' in draftFromAgent('foo', fooConfig)).toBe(false)
   })
 
+  it('keeps saved Codex authentication and provider JSON out of the editor and preserves them on save', () => {
+    const env = {
+      DEFAULT_AUTH_REQUEST: JSON.stringify({ methodId: 'api-key', _meta: { 'api-key': { apiKey: 'hidden-api-key' } } }),
+      CODEX_CONFIG: JSON.stringify({ model_providers: { work: { http_headers: { 'X-Internal': 'hidden-header' } } } }),
+      CODEX_CONFIG_PATH: '/visible/config',
+    }
+    const config = { ...secretConfig, env }
+    const draft = draftFromAgent('codex', config)
+    expect(draft.envText).toBe('CODEX_CONFIG_PATH=/visible/config')
+    expect(validateAgentDraft(draft, { codex: config }, 'codex').config?.env).toEqual(env)
+  })
+
   it('validateAgentDraft：掩码键原样合回 config.env；同名显式重填优先（轮换值）', () => {
     const draft = draftFromAgent('secretive', secretConfig)
     // 不动文本框：掩码值原样保留

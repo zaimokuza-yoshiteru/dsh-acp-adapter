@@ -7,14 +7,20 @@ import type { AcpAccountProvider } from './remote.ts'
 
 export type { AcpAccountUsageView, AcpAccountWindow, AcpAccountProvider } from './remote.ts'
 
+function absolutePath(value: string, platform?: string): boolean {
+  const windows = /^(?:[A-Za-z]:[\\/]|\\\\)/.test(value)
+  return platform === 'win32' ? windows : value.startsWith('/') || (platform === undefined && windows)
+}
+
 /** Only direct, local launches with an unambiguous login context support account reads. */
 export function accountUsageProvider(
   id: string,
   config: Pick<AcpAgentConfig, 'command' | 'args' | 'env' | 'runtime'>,
   platform?: string,
+  inherited?: Readonly<Record<string, string | undefined>>,
 ): AcpAccountProvider | undefined {
   // A relative path belongs to the Agent's workspace. A settings-page query has no such cwd.
-  if (/[\\/]/.test(config.command) && !/^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(config.command)) return undefined
+  if (/[\\/]/.test(config.command) && !absolutePath(config.command, platform)) return undefined
   if (retiredAgentReason(id, config)) return undefined
   const runtime = effectiveRuntimeOf(id, config)
   const file = config.command.split(/[\\/]/).at(-1)?.toLowerCase()
@@ -22,10 +28,21 @@ export function accountUsageProvider(
   if (
     (runtime === undefined || runtime === 'codex') &&
     /^codex-acp(?:\.(?:cmd|exe))?$/.test(file ?? '') &&
-    config.args.length === 0 &&
-    !['DEFAULT_AUTH_REQUEST', 'MODEL_PROVIDER', 'CODEX_CONFIG'].some((key) => config.env[key])
-  )
+    config.args.length === 0
+  ) {
+    // The wrapper's ACP path applies these overrides; its 'cli app-server' path skips them.
+    // The local subprocess provider inherits these non-secret-shaped keys; profile overrides win.
+    const envValue = (name: string) => {
+      const key = platform === 'win32' ? Object.keys(config.env).findLast((key) => key.toUpperCase() === name) : name
+      return (key ? config.env[key] : undefined) ?? inherited?.[name]
+    }
+    if (['DEFAULT_AUTH_REQUEST', 'MODEL_PROVIDER', 'CODEX_CONFIG'].some(envValue)) return undefined
+    const home = envValue('CODEX_HOME')
+    const binary = envValue('CODEX_PATH')
+    if (home && !absolutePath(home, platform)) return undefined
+    if (binary && /[\\/]/.test(binary) && !absolutePath(binary, platform)) return undefined
     return 'codex'
+  }
   if (
     (runtime === undefined || runtime === 'antigravity') &&
     (platform === undefined || platform === 'darwin') &&
@@ -99,6 +116,15 @@ export function accountUsageLinks(
   const claude = launchArgs(config, 'claude-agent-acp', /^@agentclientprotocol\/claude-agent-acp(?:@[\w.+-]+)?$/)
   if ((!runtime || runtime === 'claude') && claude?.length === 0) {
     return [{ site: 'provider', url: 'https://code.claude.com/docs/en/costs' }]
+  }
+  const copilot = launchArgs(config, 'copilot', /^@github\/copilot(?:@[\w.+-]+)?$/)
+  if (!runtime && copilot?.length === 1 && copilot[0] === '--acp') {
+    return [
+      {
+        site: 'provider',
+        url: 'https://docs.github.com/en/copilot/how-tos/manage-and-track-spending/monitor-ai-usage',
+      },
+    ]
   }
   const qwen = launchArgs(config, 'qwen', /^@qwen-code\/qwen-code(?:@[\w.+-]+)?$/)
   if (

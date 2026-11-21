@@ -18,6 +18,12 @@ it.each([
     windows: [],
   }
   expect(accountUsageLines(empty, t, language)).toEqual([])
+  expect(accountUsageLines({ ...empty, credits: { kind: 'unlimited' } }, t, language)).toEqual([
+    t('accountCreditsUnlimited'),
+  ])
+  expect(accountUsageLines({ ...empty, credits: { kind: 'available' } }, t, language)).toEqual([
+    t('accountCreditsAvailable'),
+  ])
   expect(accountUsageLines({ ...empty, plan: 'Business' }, t, language)).toEqual([
     t('accountPlan', { plan: 'Business' }),
   ])

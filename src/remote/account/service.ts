@@ -46,7 +46,7 @@ export class AccountUsageService {
     const profile = profiles.get(id)
     if (!profile || this.closed || !this.subprocess.ok || this.subprocess.seam.localExecution !== true)
       return UNSUPPORTED
-    const provider = accountUsageProvider(id, profile, this.platform)
+    const provider = accountUsageProvider(id, profile, this.platform, process.env)
     const seam = this.subprocess.seam
     if (!provider || (provider === 'antigravity' && !seam.spawnTerminal)) return UNSUPPORTED
     let entry = this.entries.get(id)

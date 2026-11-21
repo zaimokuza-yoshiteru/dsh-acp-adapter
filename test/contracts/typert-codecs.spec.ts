@@ -71,5 +71,15 @@ describe('generated RPC codecs from the published factory generator', () => {
       }
       expect(() => result.parse({ providers: [{ ...base, state: 'unknown' }], liveSessions: null })).toThrow()
     })
+
+    it(`${face}: transports explicit account credit access alongside decimal balances`, () => {
+      const codec = descriptors.find((d) => d.method === 'accountUsage')!.result.create()
+      const base = { status: 'ready', provider: 'codex', checkedAt: 1, plan: 'Business', windows: [] }
+      for (const credits of ['0', '1.25', { kind: 'unlimited' }, { kind: 'available' }, null]) {
+        const view = { ...base, credits }
+        expect(codec.parse(view)).toEqual(view)
+      }
+      expect(() => codec.parse({ ...base, credits: { kind: 'unknown' } })).toThrow()
+    })
   }
 })

@@ -37,7 +37,8 @@ describe('ACP Agent control presentation', () => {
     const other = firstTurnIntentKey('other', 'acp-test')
     const choice = { kind: 'config' as const, id: 'approval', value: 'ask' }
     const intent = beginFirstTurnIntent(key, 2, choice)
-    expect(confirmsFirstTurnIntent(snapshot(), intent)).toBe(true)
+    expect(confirmsFirstTurnIntent(snapshot(), intent)).toBe(false)
+    expect(confirmsFirstTurnIntent(snapshot({ firstPromptCommitted: true }), intent)).toBe(true)
     expect(confirmsFirstTurnIntent(snapshot({ freshness: 'stale' }), intent)).toBe(false)
     expect(readFirstTurnIntent(other)).toBeNull()
     expect(confirmsFirstTurnIntent(snapshot({ preselectionRevision: 2, preselected: [choice] }), intent)).toBe(false)

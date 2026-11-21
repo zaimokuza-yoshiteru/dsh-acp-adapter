@@ -37,7 +37,8 @@ export const ACP_ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
  * `maskedEnv` and are preserved on save unless explicitly replaced or removed.
  * This display rule does not control the Host subprocess environment.
  */
-const ACP_SECRET_ENV_KEY_PATTERN = /KEY|PASSWORD|SECRET|TOKEN/i
+// The Codex wrapper also accepts credentials and custom authorization headers inside these JSON values.
+const ACP_SECRET_ENV_KEY_PATTERN = /KEY|PASSWORD|SECRET|TOKEN|^(?:DEFAULT_AUTH_REQUEST|CODEX_CONFIG)$/i
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false

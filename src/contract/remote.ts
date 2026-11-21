@@ -30,8 +30,8 @@ export interface AcpAccountUsageView {
   readonly provider: AcpAccountProvider | null
   readonly checkedAt: number | null
   readonly plan: string | null
-  /** Remaining provider credits, in the provider's own units. */
-  readonly credits: string | null
+  /** A decimal balance in provider units, or the explicit access reported in place of a balance. */
+  readonly credits: string | { readonly kind: 'available' | 'unlimited' } | null
   readonly windows: readonly AcpAccountWindow[]
 }
 
@@ -524,6 +524,8 @@ export interface AcpAgentSessionSnapshotView {
   readonly preselection?: true
   readonly preselectionRevision?: number
   readonly preselected?: readonly AcpAgentSessionOptionWrite[]
+  /** The persisted binding has settled at least one prompt on this Agent route. */
+  readonly firstPromptCommitted?: true
   readonly sessionId: string
   readonly profileId: string
   readonly modeWritable?: boolean

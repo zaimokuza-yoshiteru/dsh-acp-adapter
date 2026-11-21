@@ -20,8 +20,16 @@ function percent(value: unknown, maximum: number): value is number {
 
 export function devinPlan(output: string): AccountFields {
   const text = output.replace(/\x1b\[[0-9;]*m/g, '')
-  const match = /^\s*Plan:\s*([^\r\n]+)$/im.exec(text)
+  const match = /^[\t ]*Plan:[\t ]*([^\r\n]*)$/im.exec(text)
   return { plan: label(match?.[1]), credits: null, windows: [] }
+}
+
+function codexCredits(value: unknown): AccountFields['credits'] {
+  const credits = record(value)
+  if (credits.unlimited === true) return { kind: 'unlimited' }
+  if (credits.hasCredits !== true) return null
+  const balance = credits.balance
+  return typeof balance === 'string' && /^\d{1,20}(?:\.\d{1,12})?$/.test(balance) ? balance : { kind: 'available' }
 }
 
 export function codexFields(accountResult: unknown, limitsResult: unknown): AccountFields {
@@ -32,7 +40,6 @@ export function codexFields(accountResult: unknown, limitsResult: unknown): Acco
   if (account.type !== 'chatgpt') return { plan: null, credits: null, windows: [] }
   const response = record(limitsResult)
   const limits = record(response.rateLimits)
-  const balance = record(limits.credits).balance
   const windows = codexWindows(limits)
   // The app server repeats its backward-compatible snapshot in the metered map,
   // under "codex" when the source did not specify a limit ID.
@@ -47,7 +54,7 @@ export function codexFields(accountResult: unknown, limitsResult: unknown): Acco
   }
   return {
     plan: label(account.planType),
-    credits: typeof balance === 'string' && /^\d{1,20}(?:\.\d{1,12})?$/.test(balance) ? balance : null,
+    credits: codexCredits(limits.credits),
     windows,
   }
 }

@@ -49,11 +49,11 @@ export function finishFirstTurnIntent(key: string, intent: string): void {
 }
 
 export function confirmsFirstTurnIntent(snapshot: AcpAgentSessionSnapshotView, intent: string): boolean {
-  // The Host stops offering first-turn controls once another client has
-  // already delivered the first message for this same Agent and session.
+  // Another client can settle the first message while this tab is disconnected.
+  // The binding still proves delivery when the Agent process is no longer live.
   if (
     !snapshot.preselection &&
-    snapshot.freshness === 'live' &&
+    snapshot.firstPromptCommitted === true &&
     snapshot.preselectionRevision === undefined &&
     !snapshot.preselected?.length
   )

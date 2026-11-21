@@ -12,6 +12,7 @@ import { modeIntentBindingKey } from '../../persistence/sidecar.ts'
 import type { AcpBindingData, AcpBindingLookup, AcpModeIntent, AcpRecoveryState } from '../../persistence/sidecar.ts'
 import type { AcpOptionsSnapshotRecord } from '../../persistence/options-snapshot.ts'
 import type { AcpRuntimeContextUsage } from '../../runtime/session/session-runtime.ts'
+import { confirmsAgentOption } from './first-turn-options.ts'
 
 /** The control owner may inspect and configure an established runtime, never start a prompt. */
 interface SessionControlRuntime {
@@ -98,6 +99,11 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
     const pending = compatible && intent?.bindingKey === modeIntentBindingKey(binding.binding) ? intent.modeId : null
     return {
       ...snapshot,
+      ...(binding?.status === 'ok' &&
+      binding.binding.provider === `acp-${this.profileId}` &&
+      binding.binding.committedPromptOrdinal > 0
+        ? { firstPromptCommitted: true }
+        : {}),
       modeWritable: compatible && (snapshot.freshness === 'stale' || snapshot.editable),
       pendingModeId:
         pending !== null &&
@@ -338,25 +344,13 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
         await runtime.setConfigOption(request.id, request.value)
       }
       this.assertRuntimeOwner(sessionId, runtime)
-      if (
-        request.kind === 'mode' ||
-        runtime.configOptions?.some(
-          (option) =>
-            option.id === request.id &&
-            (normalizeAcpConfigOptionKey(option.id) === 'mode' ||
-              normalizeAcpConfigOptionKey(option.category ?? '') === 'mode'),
-        )
-      ) {
-        const intent = await this.access.storage?.readModeIntent(sessionId)
-        if (intent !== undefined) await this.access.storage?.clearModeIntent(sessionId, intent)
-      }
       await this.access.persistSnapshot(sessionId, runtime)
+      if (!confirmsAgentOption(runtime, request))
+        throw LlmError.fromFailure({
+          message: 'The Agent did not confirm the selected setting',
+          code: 'ACP_CONFIG_SYNC_FAILED',
+        })
       if (selectionBeforeWrite !== undefined) {
-        if (!this.confirmedModeSelection(runtime, selectionBeforeWrite))
-          throw LlmError.fromFailure({
-            message: 'Agent did not confirm the selected mode',
-            code: 'ACP_CONFIG_SYNC_FAILED',
-          })
         const bindingAfter = await this.readBindingForUserMode(sessionId)
         if (
           bindingAfter === undefined ||
@@ -367,6 +361,8 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
             code: 'ACP_BINDING_UNAVAILABLE',
           })
         this.rememberConfirmedUserMode(sessionId, runtime, selectionBeforeWrite, bindingAfter)
+        const intent = await this.access.storage?.readModeIntent(sessionId)
+        if (intent !== undefined) await this.access.storage?.clearModeIntent(sessionId, intent)
       }
       return this.liveAgentSessionSnapshot(sessionId, runtime)
     })

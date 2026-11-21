@@ -36,7 +36,9 @@ function quotaLabel(window: UsageWindow, t: AcpTranslate): string {
 export function accountUsageLines(view: AcpAccountUsageView, t: AcpTranslate, locale: string): string[] {
   const lines: string[] = []
   if (view.plan) lines.push(t('accountPlan', { plan: view.plan }))
-  if (view.credits !== null) lines.push(t('accountCredits', { credits: view.credits }))
+  if (typeof view.credits === 'string') lines.push(t('accountCredits', { credits: view.credits }))
+  else if (view.credits)
+    lines.push(t(view.credits.kind === 'unlimited' ? 'accountCreditsUnlimited' : 'accountCreditsAvailable'))
   for (const window of view.windows) {
     let line = t('accountRemaining', {
       window: quotaLabel(window, t),

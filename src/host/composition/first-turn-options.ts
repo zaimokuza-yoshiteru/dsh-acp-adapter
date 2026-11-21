@@ -37,6 +37,10 @@ function current(source: OptionSource, choice: AcpAgentSessionOptionWrite): bool
     : source.configOptions?.find((option) => option.id === choice.id)?.currentValue === choice.value
 }
 
+export function confirmsAgentOption(source: OptionSource, choice: AcpAgentSessionOptionWrite): boolean {
+  return offersFirstTurnOption(source, choice) && current(source, choice)
+}
+
 export function updatedPreselection(
   previous: readonly AcpAgentSessionOptionWrite[],
   choice: AcpAgentSessionOptionWrite,
@@ -57,7 +61,7 @@ export async function confirmFirstTurnOptions(
   if (selection.generation !== generation) throw preselectionUnavailable()
   const verify = () => {
     signal?.throwIfAborted()
-    if (!selection.choices.every((choice) => offersFirstTurnOption(runtime, choice) && current(runtime, choice)))
+    if (!selection.choices.every((choice) => confirmsAgentOption(runtime, choice)))
       throw LlmError.fromFailure({
         code: 'ACP_CONFIG_SYNC_FAILED',
         message: 'The Agent did not confirm the selected settings. No message was sent.',

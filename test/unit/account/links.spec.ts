@@ -57,10 +57,25 @@ describe('manual account usage guides', () => {
   })
 
   it('keeps unsupported, conflicting and lookalike launches out', () => {
+    expect(links({ command: 'npx', args: ['@other/copilot', '--acp'] })).toEqual([])
+    expect(links({ command: 'copilot', args: ['--acp'], runtime: 'devin' })).toEqual([])
     expect(links({ command: 'npx', args: ['-y', '@other/qwen-code@latest', '--acp'] })).toEqual([])
     expect(links({ command: 'sh', args: ['-c', 'codebuddy --acp'], runtime: 'codebuddy' })).toEqual([])
     expect(links({ command: 'qwen', args: ['--acp', '--unknown'] })).toEqual([])
     expect(links({ command: 'claude-agent-acp', args: [], runtime: 'devin' })).toEqual([])
     expect(links({ runtime: 'kimi' })).toEqual([])
+  })
+
+  it('shows the same billing guide for local and registry GitHub Copilot launches without querying an account', () => {
+    const direct = { ...buddy, command: 'copilot', args: ['--acp'] }
+    const expected = [
+      {
+        site: 'provider',
+        url: 'https://docs.github.com/en/copilot/how-tos/manage-and-track-spending/monitor-ai-usage',
+      },
+    ]
+    expect(links(direct)).toEqual(expected)
+    expect(links({ command: 'npx.cmd', args: ['-y', '@github/copilot@1.0.114', '--acp'] })).toEqual(expected)
+    expect(accountUsageProvider('github-copilot-cli', direct)).toBeUndefined()
   })
 })

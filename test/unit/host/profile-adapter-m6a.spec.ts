@@ -84,9 +84,12 @@ function runtimeFor(
         throw new Error('set_config_option failed')
       calls.push([id, value])
       if (behavior.confirm === false) return
-      currentOptions = currentOptions?.map((option) =>
-        option.id !== id ? option : option.type === 'select' ? { ...option, currentValue: String(value) } : option,
-      )
+      currentOptions = currentOptions?.map((option) => {
+        if (option.id !== id) return option
+        return option.type === 'select'
+          ? { ...option, currentValue: String(value) }
+          : { ...option, currentValue: Boolean(value) }
+      })
       if (id === 'model' && behavior.reasoningAfterModel !== undefined) {
         currentOptions = currentOptions?.map((option) =>
           option.id !== 'thinking' || option.type !== 'select'
@@ -333,7 +336,12 @@ describe('ACP M6a session configuration convergence', () => {
     expect(snapshot.modes?.map((mode) => mode.id)).toEqual(['code', 'plan'])
     expect(snapshot.configOptions?.some((option) => option.id === 'model')).toBe(true)
     expect(snapshot.configOptions?.some((option) => option.id === 'auto_compact')).toBe(true)
-    await adapter.setAgentSessionOption('session-controls', { kind: 'config', id: 'auto_compact', value: false })
+    const changed = await adapter.setAgentSessionOption('session-controls', {
+      kind: 'config',
+      id: 'auto_compact',
+      value: false,
+    })
+    expect(changed.configOptions?.find((option) => option.id === 'auto_compact')?.currentValue).toBe(false)
     expect(calls).not.toContainEqual(['model', false])
   })
 
