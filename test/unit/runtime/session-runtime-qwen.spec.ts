@@ -105,6 +105,7 @@ function observedAgentTurns(runtime: AcpSessionRuntime) {
       readonly agentTurns: readonly {
         readonly buffer: readonly AcpSessionNotification[]
         readonly listener: unknown
+        readonly workSeq: number
         readonly ended: { readonly stopReason?: string } | undefined
       }[]
     }
@@ -402,61 +403,79 @@ describe('Qwen Code background tasks', () => {
     ).rejects.toMatchObject({ reason: 'missing-terminal' })
   })
 
-  it.each(['shell', 'notification'])(
-    'keeps a silent announced turn alive across reporting windows with matching %s activity',
-    async (activity) => {
+  it.each([
+    ['shell', true],
+    ['notification', true],
+    ['foreign-task', false],
+    ['foreign-session', false],
+    ['idle', false],
+    ['unrelated-shell', false],
+    ['wrong-turn-shell', false],
+    ['session', false],
+  ] as const)(
+    'renews the announced turn reporting window for %s activity only when it matches (%s)',
+    async (activity, matches) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-qwen-report-'))
+      roots.push(root)
+      const stepFile = path.join(root, 'heartbeat')
+      fs.writeFileSync(stepFile, '0')
       const jobs = recordingJobs()
       const runtime = createRuntime(
         { qwenTaskJobs: jobs.starter, unannouncedIdleMs: 80 },
-        {
-          FAKE_QWEN_BACKGROUND_ACTIVITY: activity,
-          FAKE_QWEN_BACKGROUND_DELAY_MS: '350',
-        },
+        { FAKE_QWEN_BACKGROUND_ACTIVITY: activity, FAKE_QWEN_BACKGROUND_STEP_FILE: stepFile },
       )
-      const mirrored = jobs.next()
-      await runtime.prompt([{ type: 'text', text: 'background' }], () => undefined)
-      await (
-        await mirrored
-      ).outcome
-      const updates: AcpSessionNotification[] = []
-      const start = Date.now()
-      const response = await runtime.prompt(
-        [{ type: 'text', text: 'wake' }],
-        (n) => updates.push(n),
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        { adoptAgentTurn: true },
-      )
-      expect(response.stopReason).toBe('end_turn')
-      expect(Date.now() - start).toBeGreaterThan(250)
-      expect(texts(updates)).toContain('The background command printed done.')
-      expect(runtime.pendingAgentTurnFailure).toBeUndefined()
-    },
-  )
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      try {
+        const mirrored = jobs.next()
+        await wirePhase(runtime.prompt([{ type: 'text', text: 'background' }], () => undefined))
+        await wirePhase(mirrored.then((job) => job.outcome))
+        const updates: AcpSessionNotification[] = []
+        const outcome = runtime
+          .prompt(
+            [{ type: 'text', text: 'wake' }],
+            (n) => updates.push(n),
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            { adoptAgentTurn: true },
+          )
+          .then(
+            (response) => ({ response }),
+            (error: unknown) => ({ error }),
+          )
+        await waitForWireState(() => observedAgentTurns(runtime).some((turn) => turn.listener !== undefined))
+        const turn = observedAgentTurns(runtime)[0]!
+        const heartbeat = async (step: number) => {
+          const previous = turn.workSeq
+          fs.writeFileSync(stepFile, String(step))
+          await waitForWireState(() => turn.workSeq > previous)
+        }
 
-  it.each(['foreign-task', 'foreign-session', 'idle', 'unrelated-shell', 'wrong-turn-shell', 'session'])(
-    'does not let %s snapshots keep an announced turn alive',
-    async (activity) => {
-      const jobs = recordingJobs()
-      const runtime = createRuntime(
-        { qwenTaskJobs: jobs.starter, unannouncedIdleMs: 80 },
-        {
-          FAKE_QWEN_BACKGROUND_ACTIVITY: activity,
-          FAKE_QWEN_BACKGROUND_DELAY_MS: '350',
-        },
-      )
-      const mirrored = jobs.next()
-      await runtime.prompt([{ type: 'text', text: 'background' }], () => undefined)
-      await (
-        await mirrored
-      ).outcome
-      await expect(
-        runtime.prompt([{ type: 'text', text: 'wake' }], () => undefined, undefined, undefined, undefined, undefined, {
-          adoptAgentTurn: true,
-        }),
-      ).rejects.toMatchObject({ reason: 'missing-terminal' })
+        // All preceding wire updates have arrived before the first tick. Only the
+        // next heartbeat can extend the deadline while the child withholds its end.
+        await heartbeat(1)
+        await vi.advanceTimersByTimeAsync(79)
+        expect(runtime.pendingAgentTurnFailure).toBeUndefined()
+        await heartbeat(2)
+        await vi.advanceTimersByTimeAsync(1)
+        if (matches) {
+          expect(runtime.pendingAgentTurnFailure).toBeUndefined()
+          await vi.advanceTimersByTimeAsync(78)
+          await heartbeat(3)
+          await vi.advanceTimersByTimeAsync(79)
+          fs.writeFileSync(stepFile, 'finish')
+          expect(await wirePhase(outcome)).toMatchObject({ response: { stopReason: 'end_turn' } })
+          expect(texts(updates)).toContain('The background command printed done.')
+        } else {
+          expect(await wirePhase(outcome)).toMatchObject({ error: { reason: 'missing-terminal' } })
+          expect(texts(updates)).not.toContain('The background command printed done.')
+        }
+      } finally {
+        vi.useRealTimers()
+        fs.writeFileSync(stepFile, 'finish')
+        await runtime.close()
+      }
     },
   )
 

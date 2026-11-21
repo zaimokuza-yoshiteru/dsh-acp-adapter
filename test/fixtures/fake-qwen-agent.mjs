@@ -202,7 +202,9 @@ async function runBackground(withQuestion) {
       status: 'in_progress',
       _meta: activityMeta,
     })
-  const ticker = activity === undefined ? undefined : setInterval(() => backgroundWork(turnId, activity), 20)
+  const stepFile = process.env.FAKE_QWEN_BACKGROUND_STEP_FILE
+  const ticker =
+    activity === undefined || stepFile ? undefined : setInterval(() => backgroundWork(turnId, activity), 20)
   ticker?.unref()
   if (process.env.FAKE_QWEN_WRONG_END !== undefined) {
     send({
@@ -215,7 +217,20 @@ async function runBackground(withQuestion) {
       },
     })
   }
-  await new Promise((resolve) => setTimeout(resolve, Number(process.env.FAKE_QWEN_BACKGROUND_DELAY_MS ?? 20)))
+  if (stepFile) {
+    let previous = '0'
+    while (!backgroundTurn.ended) {
+      const step = readFileSync(stepFile, 'utf8')
+      if (step === 'finish') break
+      if (step && step !== previous) {
+        backgroundWork(turnId, activity)
+        previous = step
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+  } else {
+    await new Promise((resolve) => setTimeout(resolve, Number(process.env.FAKE_QWEN_BACKGROUND_DELAY_MS ?? 20)))
+  }
   if (ticker !== undefined) clearInterval(ticker)
   if (backgroundTurn.ended) return
   if (activity === 'shell' || activity === 'wrong-turn-shell' || activity === 'foreign-session')

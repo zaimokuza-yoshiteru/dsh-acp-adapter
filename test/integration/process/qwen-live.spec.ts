@@ -7,11 +7,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { isDeepStrictEqual } from 'node:util'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import type * as acp from '@agentclientprotocol/sdk'
 import { AcpSessionRuntime, type AcpSessionRuntimeOptions } from '../../../src/runtime/session/session-runtime.ts'
 import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
 import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts'
+import { qwenLiveCronApproval, qwenLiveCronInput } from '../../fixtures/qwen-live-cron.ts'
 import { createQwenQuestionHandler } from '../../../src/domain/policy/qwen-question.ts'
 import type { QwenTaskJobOutcome, QwenTaskJobStarter } from '../../../src/runtime/session/qwen-background.ts'
 import type { AcpSessionNotification } from '../../../src/protocol/v1/types.ts'
@@ -66,8 +68,9 @@ function observeSchedule(notification: AcpSessionNotification): void {
       cron: typeof raw.cron === 'string' && /^[\d*,/ -]{1,100}$/.test(raw.cron) ? raw.cron : 'unsupported',
       recurring: typeof raw.recurring === 'boolean' ? raw.recurring : 'missing',
       durable: typeof raw.durable === 'boolean' ? raw.durable : 'missing',
-      sessionMode: raw.sessionMode === 'current' || raw.sessionMode === 'unbound' ? raw.sessionMode : 'omitted',
+      sessionMode: Object.hasOwn(raw, 'sessionMode') ? 'specified' : 'omitted',
       expectedPrompt: raw.prompt === 'Reply with exactly CRONFIRED',
+      exact: isDeepStrictEqual(raw, qwenLiveCronInput),
     }
   }
   if (typeof update.status === 'string') snapshot.status = update.status
@@ -115,10 +118,10 @@ afterEach(async () => {
   if (failures.length > 0) throw new AggregateError(failures, 'Qwen live runtime cleanup failed')
 })
 
-function runtime(extra: Partial<AcpSessionRuntimeOptions> = {}): AcpSessionRuntime {
+function runtime(extra: Partial<AcpSessionRuntimeOptions> = {}, approvalMode?: 'default'): AcpSessionRuntime {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-qwen-live-'))
   roots.push(root)
-  const argv = [process.execPath, CLI, '--acp']
+  const argv = [process.execPath, CLI, '--acp', ...(approvalMode ? ['--approval-mode', approvalMode] : [])]
   const env: Record<string, string> = {}
   for (const key of [...BASE_ENV_KEYS, ...ENV_KEYS]) {
     const value = process.env[key]
@@ -167,9 +170,9 @@ function runtime(extra: Partial<AcpSessionRuntimeOptions> = {}): AcpSessionRunti
 }
 
 async function selectLiveModel(live: AcpSessionRuntime): Promise<void> {
+  await live.start()
   if (MODEL === undefined) return
   liveFacts.requestedModel = MODEL
-  await live.start()
   const option = live.configOptions?.find(
     (entry) => entry.type === 'select' && (entry.category === 'model' || entry.id === 'model'),
   )
@@ -276,12 +279,26 @@ describe.skipIf(!LIVE)('live Qwen Code ACP', () => {
       jobs.push({ label, done: hooks.done })
       return { cancel: () => hooks.cancel() }
     }
-    const live = runtime({ qwenTaskJobs: starter })
+    const approve = qwenLiveCronApproval(() => live.acpSessionId)
+    const live: AcpSessionRuntime = runtime(
+      {
+        qwenTaskJobs: starter,
+        onPermissionRequest: async (request, signal) => {
+          const response = approve(request, signal)
+          liveFacts.cronPermission = response.outcome.outcome
+          return response
+        },
+      },
+      'default',
+    )
     await selectLiveModel(live)
+    const mode = live.configOptions?.find((option) => option.id === 'mode' && option.category === 'mode')
+    liveFacts.approvalMode = mode?.currentValue
+    expect(mode?.currentValue).toBe('default')
     const first: AcpSessionNotification[] = []
     await live.prompt(
       prompt(
-        'Call cron_create with exactly these arguments: {"cron":"* * * * *","prompt":"Reply with exactly CRONFIRED","recurring":false,"durable":false}. Omit sessionMode. This is a single session-only task; do not calculate a clock time or use shell scheduling. After the tool confirms creation, reply with exactly SCHEDULED. If creation fails or the tool is unavailable, report the failure instead.',
+        `Call cron_create with exactly these arguments: ${JSON.stringify(qwenLiveCronInput)}. Omit sessionMode. This is a single session-only task; do not calculate a clock time or use shell scheduling. After the tool confirms creation, reply with exactly SCHEDULED. If creation fails or the tool is unavailable, report the failure instead.`,
       ),
       (n) => {
         first.push(n)
@@ -292,7 +309,14 @@ describe.skipIf(!LIVE)('live Qwen Code ACP', () => {
     liveFacts.firstReply = text(first).trim().slice(-200)
     expect([...scheduleCalls.values()]).toContainEqual({
       tool: 'cron_create',
-      input: { cron: '* * * * *', recurring: false, durable: false, sessionMode: 'omitted', expectedPrompt: true },
+      input: {
+        cron: '* * * * *',
+        recurring: false,
+        durable: false,
+        sessionMode: 'omitted',
+        expectedPrompt: true,
+        exact: true,
+      },
       status: 'completed',
     })
     const deadline = Date.now() + 150_000
