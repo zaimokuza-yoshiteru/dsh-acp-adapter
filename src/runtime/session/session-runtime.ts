@@ -236,14 +236,16 @@ export class AcpPromptNotDispatchedError extends Error {
 
   constructor(
     readonly cancelled = false,
-    reason?: 'agent-settings',
+    reason?: 'agent-settings' | 'working-location',
   ) {
     super(
       cancelled
         ? 'The ACP prompt was cancelled before it was sent.'
         : reason === 'agent-settings'
           ? 'The Agent settings changed before this request was sent. Review the settings and retry.'
-          : 'The ACP connection changed before this request was sent. Retry to continue the original session.',
+          : reason === 'working-location'
+            ? 'The working location selected for this request changed. Restore it before retrying.'
+            : 'The ACP connection changed before this request was sent. Retry to continue the original session.',
     )
     this.name = 'AcpPromptNotDispatchedError'
   }

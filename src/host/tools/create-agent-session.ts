@@ -12,7 +12,8 @@ import {
   isAcpModelRouteWithinBounds,
 } from '../../contract/model-selection.ts'
 import type { IndependentSessionRequests } from '../../persistence/independent-session.ts'
-import { createHandoffDestination } from '../handoff/destination.ts'
+import { createHandoffDestination, transferLocation } from '../handoff/destination.ts'
+import { sameTransferLocation, type AcpTransferLocation } from '../../contract/handoff.ts'
 
 const taskSource = 'dsh-acp-adapter/agent-task'
 
@@ -25,6 +26,7 @@ declare module '@deepseek-ai/dsh-llm' {
       agent: string
       model: string
       profileIdentity: string
+      launchScope?: AcpTransferLocation
     }
   }
 }
@@ -189,13 +191,15 @@ export function installCreateAgentSession(
         agent.status === 'running'
       scope.on(
         'agent/pre-step',
-        async ({ modelSelection }, next) => {
+        async ({ agent, modelSelection }, next) => {
           const decision = await next()
           if (decision.kind !== 'enter') return decision
           for (const { source } of decision.messages) {
             if (
               source.kind === taskSource &&
               (closing ||
+                (source.launchScope !== undefined &&
+                  !sameTransferLocation(transferLocation(scope, agent.session, 'execution'), source.launchScope)) ||
                 modelSelection.provider !== acpRouteId(source.agent) ||
                 modelSelection.model !== source.model ||
                 targetProfile(source.agent) !== source.profileIdentity)
@@ -217,9 +221,13 @@ export function installCreateAgentSession(
           createHandoffDestination(scope, source, target, id, check, existingOnly),
         submit: async (id, args, sourceSessionId, requestKey, profileIdentity) => {
           const target = scope.agents.get(SessionId(id))
+          const origin = scope.agents.get(SessionId(sourceSessionId))
+          const launchScope = origin && transferLocation(scope, origin.session, 'placement')
           const selected = target?.model.current()
           if (
             !target ||
+            !launchScope ||
+            !sameTransferLocation(transferLocation(scope, target.session, 'execution'), launchScope) ||
             target.status !== 'idle' ||
             selected?.provider !== acpRouteId(args.agent) ||
             selected.model !== acpDeclaredModelRoute(args.model) ||
@@ -239,6 +247,7 @@ export function installCreateAgentSession(
                 agent: args.agent,
                 model: selected.model,
                 profileIdentity,
+                launchScope,
               },
             }),
           )
@@ -283,11 +292,15 @@ export function installCreateAgentSession(
             throw new Error(
               'ACP_SESSION_OWNER_REQUIRED: Ask the workspace owner to create a session from their desktop.',
             )
+          const placement = transferLocation(scope, source.session, 'placement')
+          if (!placement) throw new Error('ACP_SESSION_TARGET_CHANGED: The owning workspace is unavailable.')
           const work = createIndependentSession(deps, source.id, owner, args, () => {
             exec.signal.throwIfAborted()
             scope.fiber.assertActive()
             if (closing || !liveRoot(source) || authority.owner(source.session) !== owner)
               throw new Error('ACP_SESSION_OWNER_REQUIRED: The owning conversation is no longer active.')
+            if (!sameTransferLocation(transferLocation(scope, source.session, 'placement'), placement))
+              throw new Error('ACP_SESSION_TARGET_CHANGED: The owning workspace changed.')
           })
           pending.add(work)
           try {

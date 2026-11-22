@@ -5,16 +5,20 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import { RemoteError, type Principal } from '@deepseek-ai/dsh-typert-protocol'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { AcpHandoffCommand, AcpHandoffView } from '../../contract/handoff.ts'
+import { sameTransferLocation } from '../../contract/handoff.ts'
 import type { AcpSidecar } from '../../persistence/sidecar.ts'
 import type { HandoffRecord } from '../../persistence/handoff.ts'
 import {
   mainAgent,
+  UnlistedHandoffModel,
   checkHandoffModel,
   changedSession,
   createHandoffDestination,
   handoffWorkspaces,
   observeHandoffSession,
+  observedWorkingDirectory,
   handoffSessions,
+  transferLocation,
 } from './destination.ts'
 import { deliveryPrompt, handoffReceipt, ownsHandoffMessage, summaryPrompt } from './messages.ts'
 
@@ -31,7 +35,7 @@ function view(record: HandoffRecord): AcpHandoffView {
     revision: record.revision,
     sourceSessionId: record.sourceSessionId,
     phase: record.phase,
-    destinationSessionId: record.destinationSessionId,
+    destinationSessionId: record.destinationUnavailable ? null : record.destinationSessionId,
     target: { provider, model, ...(reasoningEffort ? { reasoningEffort } : {}) },
     document: record.document,
     allowHistory: record.allowHistory,
@@ -47,6 +51,11 @@ function pending(agent: Agent, id: string, part: 'summary' | 'delivery') {
 }
 function invalid() {
   return new RemoteError('gateway/bad-request', 'Invalid session handoff request.', {})
+}
+function staleDraft() {
+  return new RemoteError('session/agent-busy', 'The handoff draft changed in another window.', {
+    reason: 'HANDOFF_STALE_DRAFT',
+  })
 }
 
 export class AcpHandoffs extends Service {
@@ -70,6 +79,11 @@ export class AcpHandoffs extends Service {
           if (m.source.kind !== 'acp-handoff') return true
           const record = this.store.readHandoff(agent.id, m.source.operationId)
           if (!record || this.closed || !this.sameProfiles(record)) return false
+          if (
+            m.source.launchScope &&
+            !sameTransferLocation(transferLocation(ctx, agent.session, 'execution'), m.source.launchScope)
+          )
+            return false
           return m.source.part === 'summary'
             ? record.phase === 'summarizing' &&
                 record.sourceSessionId === agent.id &&
@@ -141,7 +155,7 @@ export class AcpHandoffs extends Service {
         if (!current) {
           if (command.kind === 'status') return null
           if (command.kind !== 'begin') throw changedSession()
-          return view(await this.begin(sessionId, command, allowed, principal))
+          return this.begin(sessionId, command, allowed, principal)
         }
         allowed(current.sourceSessionId)
         if (current.destinationSessionId) allowed(current.destinationSessionId)
@@ -153,9 +167,12 @@ export class AcpHandoffs extends Service {
             current.target.reasoningEffort !== command.target.reasoningEffort)
         )
           throw invalid()
-        if (command.kind === 'cancel') return view(await this.cancel(current, allowed))
+        if (command.kind === 'cancel') {
+          if (current.phase === 'draft' && command.revision !== current.revision) throw staleDraft()
+          return this.cancel(current, allowed)
+        }
         if (command.kind === 'save' || command.kind === 'send') {
-          if (current.phase !== 'draft') return view(current)
+          if (current.phase !== 'draft') return current
           if (current.revision !== command.revision) {
             if (
               command.kind === 'save' &&
@@ -163,10 +180,8 @@ export class AcpHandoffs extends Service {
               current.allowHistory === command.allowHistory &&
               current.instruction === command.instruction
             )
-              return view(current)
-            throw new RemoteError('session/agent-busy', 'The handoff draft changed in another window.', {
-              reason: 'HANDOFF_STALE_DRAFT',
-            })
+              return current
+            throw staleDraft()
           }
           const edited = {
             ...current,
@@ -174,15 +189,18 @@ export class AcpHandoffs extends Service {
             instruction: command.instruction,
             allowHistory: command.allowHistory,
           }
-          return view(
-            command.kind === 'save' ? this.store.writeHandoff(edited) : await this.send(edited, allowed, principal),
-          )
+          return command.kind === 'save' ? this.store.writeHandoff(edited) : this.send(edited, allowed, principal)
         }
-        return view(await this.refresh(current, allowed))
+        return this.refresh(current, allowed)
       })
     this.requests.set(key, operation)
     try {
-      return await operation
+      const record = await operation
+      if (!record) return null
+      authorize(record.sourceSessionId)
+      // An edited draft can contain private input from the destination even after it disappears.
+      if (record.destinationSessionId) authorize(record.destinationSessionId)
+      return view(record)
     } finally {
       if (this.requests.get(key) === operation) this.requests.delete(key)
     }
@@ -194,7 +212,11 @@ export class AcpHandoffs extends Service {
     authorize: (id: string) => void,
     principal?: Principal,
   ) {
-    const previous = this.store.readHandoff(sessionId)
+    let previous = this.store.readHandoff(sessionId)
+    if (previous?.sourceSessionId === sessionId && previous.phase === 'draft') {
+      if (previous.destinationSessionId) authorize(previous.destinationSessionId)
+      previous = await this.refresh(previous, authorize)
+    }
     if (previous?.sourceSessionId === sessionId && ['summarizing', 'draft'].includes(previous.phase))
       throw changedSession()
     const targetIdentity = this.profileIdentity(command.target.provider)
@@ -225,7 +247,8 @@ export class AcpHandoffs extends Service {
       signal.throwIfAborted()
       authorize(sessionId)
       const location = this.sourceLocation(sessionId, agent.session.header.cwd)
-      if (!location) throw changedSession()
+      const launchScope = transferLocation(this.ctx, agent.session, 'execution')
+      if (!location || !launchScope) throw changedSession()
       const record = this.store.writeHandoff({
         id: command.id,
         sourceSessionId: sessionId,
@@ -252,6 +275,7 @@ export class AcpHandoffs extends Service {
             part: 'summary',
             operationId: record.id,
             launchIdentity: record.sourceIdentity,
+            launchScope,
             ...(principal && { principal }),
           },
           content: [{ type: 'text', text: summaryPrompt(record.locale) }],
@@ -263,6 +287,18 @@ export class AcpHandoffs extends Service {
   }
 
   private async refresh(record: HandoffRecord, authorize: (id: string) => void) {
+    if (record.destinationSessionId && (record.phase === 'draft' || record.phase === 'queued')) {
+      if (await this.destinationGone(record.destinationSessionId)) {
+        authorize(record.sourceSessionId)
+        authorize(record.destinationSessionId)
+        return this.store.writeHandoff({
+          ...record,
+          phase: 'interrupted',
+          destinationUnavailable: true,
+          allowHistory: false,
+        })
+      }
+    }
     if (record.phase !== 'summarizing' && record.phase !== 'queued') return record
     const source = record.phase === 'summarizing'
     const id = source ? record.sourceSessionId : record.destinationSessionId!
@@ -282,20 +318,35 @@ export class AcpHandoffs extends Service {
     if (!receipt.ok || (source && (!receipt.text || receipt.text.length > 65536)))
       return this.store.writeHandoff({ ...record, phase: 'interrupted' })
     if (!source) return this.store.writeHandoff({ ...record, phase: 'completed' })
-    if (!this.sameProfiles(record) || !this.sourceStillLocated(record, observed.header.cwd))
+    const observedCwd = observedWorkingDirectory(observed.header, observed.events)
+    if (!this.sameProfiles(record) || !this.sourceStillLocated(record, observedCwd))
       return this.store.writeHandoff({ ...record, phase: 'interrupted', document: receipt.text })
-    const target = view(record).target
-    const destination = await createHandoffDestination(
-      this.ctx,
-      record.sourceSessionId,
-      target,
-      record.requestedDestinationId,
-      (id) => {
-        authorize(record.sourceSessionId)
-        if (!this.sameProfiles(record) || !this.sourceStillLocated(record, observed.header.cwd)) throw changedSession()
-        if (id) authorize(id)
-      },
-    )
+    if (record.creationAttempted && (await this.destinationGone(record.requestedDestinationId))) {
+      authorize(record.sourceSessionId)
+      return this.store.writeHandoff({ ...record, phase: 'interrupted', document: receipt.text })
+    }
+    let destination: string
+    try {
+      destination = await createHandoffDestination(
+        this.ctx,
+        record.sourceSessionId,
+        view(record).target,
+        record.requestedDestinationId,
+        (id) => {
+          authorize(record.sourceSessionId)
+          if (!this.sameProfiles(record) || !this.sourceStillLocated(record, observedCwd)) throw changedSession()
+          if (id) authorize(id)
+        },
+        record.creationAttempted === true,
+        () => {
+          record = this.store.writeHandoff({ ...record, creationAttempted: true })
+        },
+      )
+    } catch (error) {
+      if (!(error instanceof UnlistedHandoffModel)) throw error
+      authorize(record.sourceSessionId)
+      return this.store.writeHandoff({ ...record, phase: 'interrupted', document: receipt.text })
+    }
     authorize(destination)
     return this.store.writeHandoff({
       ...record,
@@ -303,6 +354,19 @@ export class AcpHandoffs extends Service {
       phase: this.sameProfiles(record) ? 'draft' : 'interrupted',
       document: receipt.text,
     })
+  }
+
+  private async destinationGone(id: string) {
+    const target = SessionId(id)
+    const registry = handoffWorkspaces(this.ctx)
+    if (!registry) throw changedSession()
+    if (registry.archivedSessionIds.includes(target)) return true
+    const live = handoffSessions(this.ctx)
+    if (live.get(target)) return false
+    const storage = this.ctx.get('sessionPersistence', false)
+    if (!storage) throw changedSession()
+    const stored = await storage.stat(target)
+    return registry.archivedSessionIds.includes(target) || (!stored && !live.get(target))
   }
 
   private async cancel(record: HandoffRecord, authorize: (id: string) => void) {
@@ -357,8 +421,10 @@ export class AcpHandoffs extends Service {
       signal.throwIfAborted()
       authorize(record.sourceSessionId)
       authorize(id)
+      const launchScope = { workspaceId: record.workspaceId, cwd: record.sourceCwd }
       if (
-        !this.sourceStillLocated(record, origin.header.cwd) ||
+        !this.sourceStillLocated(record, observedWorkingDirectory(origin.header, origin.events)) ||
+        !sameTransferLocation(transferLocation(this.ctx, agent.session, 'execution'), launchScope) ||
         !emptyInbox(agent) ||
         current?.provider !== target.provider ||
         current.model !== target.model ||
@@ -376,6 +442,7 @@ export class AcpHandoffs extends Service {
             part: 'delivery',
             operationId: record.id,
             launchIdentity: record.targetIdentity,
+            launchScope,
             ...(principal && { principal }),
           },
           content: [{ type: 'text', text: deliveryPrompt(record) }],

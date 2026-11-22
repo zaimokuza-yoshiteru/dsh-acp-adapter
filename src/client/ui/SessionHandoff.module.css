@@ -63,6 +63,17 @@
   line-height: 1.5;
 }
 
+.task {
+  display: grid;
+  gap: 4px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+}
+
+.task textarea {
+  color: var(--dsw-alias-label-primary);
+}
+
 .history {
   flex-wrap: nowrap;
   font-size: 13px;
@@ -90,4 +101,12 @@
 
 .retainedDocument summary {
   cursor: pointer;
+}
+
+/* Match the native editor's touch size so focusing the draft does not zoom the page. */
+@media (pointer: coarse) {
+  .document,
+  .instruction {
+    font-size: 16px;
+  }
 }

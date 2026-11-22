@@ -17,12 +17,18 @@ function same(left: unknown, right: AcpHandoffTarget) {
 }
 
 interface PickerWrite {
-  owner: Session
-  target: AcpHandoffTarget
   namespace: string
-  revision: number
+  initialRevision: number
   previous: object
+  targets: AcpHandoffTarget[]
+  awaitingRestore: Map<Session, AcpHandoffTarget>
   update: PromiseWithResolvers<void>
+}
+
+function knownRevision(write: PickerWrite, revision: number, value: unknown): boolean {
+  if (revision === write.initialRevision) return true
+  const target = write.targets[revision - write.initialRevision - 1]
+  return target !== undefined && same(value, target)
 }
 
 /** RC.5's native picker writes the profile preference even for a provisional cross-backend selection. */
@@ -36,6 +42,7 @@ export class HandoffPickerDefault {
   ) {
     ctx.on('session/event', (session, event) => {
       if (event.type !== 'model/selection' || session === this.restoring) return
+      const previous = this.pending
       this.pending = undefined
       const source = session.requestHeader()?.config.provider
       if (!source || source === event.data.provider || (!owns(source) && !owns(event.data.provider))) return
@@ -48,22 +55,35 @@ export class HandoffPickerDefault {
         .get('settings', false)
         ?.describe({ redactSecrets: true })
         .find((item) => item.ns === ns)
-      if (!entry || same(entry.value, event.data) || !entry.user || typeof entry.user !== 'object') return
-      this.pending = {
-        owner: session,
-        target: event.data,
-        namespace: ns,
-        revision: entry.revision,
-        previous: entry.user,
-        update: Promise.withResolvers<void>(),
+      if (!entry || !entry.user || typeof entry.user !== 'object') return
+      const continuing = previous?.namespace === ns && knownRevision(previous, entry.revision, entry.value)
+      if (!continuing && same(entry.value, event.data)) return
+      const write: PickerWrite = continuing
+        ? previous
+        : {
+            namespace: ns,
+            initialRevision: entry.revision,
+            previous: entry.user,
+            targets: [],
+            awaitingRestore: new Map(),
+            update: Promise.withResolvers<void>(),
+          }
+      // The stock picker serializes profile saves, including those from other windows.
+      // Retain the baseline while the profile follows exactly those provisional writes.
+      if (!same(write.targets.at(-1), event.data)) {
+        write.targets.push(event.data)
+        write.update = Promise.withResolvers<void>()
       }
+      write.awaitingRestore.set(session, event.data)
+      this.pending = write
     })
     ctx.on('settings/document-updated', (ns, revision) => {
       const captured = this.pending
-      if (captured?.namespace === ns && revision > captured.revision) captured.update.resolve()
+      if (captured?.namespace === ns && revision >= captured.initialRevision + captured.targets.length)
+        captured.update.resolve()
     })
     ctx.on('session/disposed', (session) => {
-      if (this.pending?.owner === session) this.pending = undefined
+      if (this.pending?.awaitingRestore.has(session)) this.pending = undefined
     })
   }
 
@@ -85,7 +105,9 @@ export class HandoffPickerDefault {
       this.restoring = undefined
     }
     const captured = this.pending
-    if (captured?.owner === agent.session && same(captured.target, target)) {
+    if (captured && same(captured.awaitingRestore.get(agent.session), target)) {
+      captured.awaitingRestore.delete(agent.session)
+      if (captured.awaitingRestore.size) return
       await this.compensate(captured, authorize)
       if (this.pending === captured) {
         // This continuation belongs to the restoring RPC. The settings event fires
@@ -98,12 +120,15 @@ export class HandoffPickerDefault {
   }
 
   private async compensate(captured: PickerWrite, authorize: () => void) {
-    if (this.pending !== captured) return
+    if (this.pending !== captured || captured.awaitingRestore.size) return
     const settings = this.ctx.get('settings', false)
     const current = settings?.describe({ redactSecrets: true }).find((item) => item.ns === captured.namespace)
-    if (this.pending !== captured || !settings || !current || current.revision === captured.revision) return
+    if (this.pending !== captured || !settings || !current) return
+    const expectedRevision = captured.initialRevision + captured.targets.length
+    const matches = knownRevision(captured, current.revision, current.value)
+    if (matches && current.revision < expectedRevision) return
     this.pending = undefined
-    if (current.revision !== captured.revision + 1 || !same(current.value, captured.target)) return
+    if (!matches || current.revision !== expectedRevision) return
     authorize()
     try {
       // The Host validates the revision again inside the config editor's serialized mutation.

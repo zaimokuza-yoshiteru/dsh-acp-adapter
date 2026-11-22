@@ -363,6 +363,18 @@ async function registerUi(ctx: ClientContext): Promise<void> {
       AcpActivityNode,
     ),
   )
+  const transitionModelLabels = {
+    loadModelCatalog: async () => {
+      const result = await ctx.remote.session.modelCatalog()
+      return result.ok ? result.value : null
+    },
+    profileName: (provider: string) => {
+      const profiles = settingsScope.getSnapshot().value?.agents
+      const id = Object.keys(profiles ?? {}).find((candidate) => `acp-${candidate}` === provider)
+      return id === undefined ? undefined : profiles?.[id]?.name
+    },
+  }
+
   const openHandoffSession = (id: string) => openIndependentChild(ctx, id as SessionId)
   const handoffs = new SessionHandoffClient(
     (session, command) => acpRemote.handoff(session, command),
@@ -377,7 +389,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     },
     () => ctx.layout.beginNavigation(),
   )
-  ctx.on('connection/reset', () => handoffs.resetNavigation())
+  ctx.on('connection/reset', () => handoffs.reconnect())
   ctx.effect(() => () => handoffs.dispose(), 'dsh-acp: session handoffs')
   const coordinator = new CrossBackendCoordinator(ctx, managedRoutes.store, handoffs)
   ctx.slots.inject('conversation.input.dock', () =>
@@ -387,7 +399,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
         id: 'dsh-acp-session-handoff',
         order: 88,
         locale: 'acpActivity',
-        inject: () => ({ client: handoffs, openSession: openHandoffSession }),
+        inject: () => ({ client: handoffs, openSession: openHandoffSession, access: sessionAccessSource }),
       },
       HandoffDock,
     ),
@@ -405,18 +417,23 @@ async function registerUi(ctx: ClientContext): Promise<void> {
       for (const id of drafts) {
         if (mounted.has(id)) continue
         const access = ctx.get('remoteAccess') as unknown as ClientRemoteAccess | undefined
-        if (!access) continue
+        const source = handoffs.get(id)?.sourceSessionId
+        if (!access || !source) continue
         const unmount = access.whenResourceAccess('session', id, 'dshAcp/handoff', () =>
-          ctx.slots.register(
-            {
-              name: 'conversation.composer',
-              priority: -2,
-              locale: 'acpActivity',
-              select: (owner: ComposerChainProps) =>
-                owner.sessionId === id && !owner.pendingInteraction ? true : null,
-              inject: () => ({ client: handoffs, openSession: openHandoffSession }),
-            },
-            HandoffComposer,
+          access.whenResourceAccess('session', source, 'session/events', () =>
+            access.whenResourceAccess('session', id, 'session/events', () =>
+              ctx.slots.register(
+                {
+                  name: 'conversation.composer',
+                  priority: -2,
+                  locale: 'acpActivity',
+                  select: (owner: ComposerChainProps) =>
+                    owner.sessionId === id && !owner.pendingInteraction ? true : null,
+                  inject: () => ({ client: handoffs, openSession: openHandoffSession, ...transitionModelLabels }),
+                },
+                HandoffComposer,
+              ),
+            ),
           ),
         )
         mounted.set(id, unmount)
@@ -592,17 +609,6 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     ),
   )
   ctx.effect(() => coordinator.start(), 'dsh-acp: model transition coordinator')
-  const transitionModelLabels = {
-    loadModelCatalog: async () => {
-      const result = await ctx.remote.session.modelCatalog()
-      return result.ok ? result.value : null
-    },
-    profileName: (provider: string) => {
-      const profiles = settingsScope.getSnapshot().value?.agents
-      const id = Object.keys(profiles ?? {}).find((candidate) => `acp-${candidate}` === provider)
-      return id === undefined ? undefined : profiles?.[id]?.name
-    },
-  }
   ctx.slots.inject('shell.overlay', () =>
     ctx.slots.register(
       {

@@ -5,10 +5,19 @@ export interface AcpHandoffTarget {
   readonly reasoningEffort?: string
 }
 
+export interface AcpTransferLocation {
+  readonly workspaceId: string | null
+  readonly cwd: string
+}
+
+export function sameTransferLocation(actual: AcpTransferLocation | undefined, expected: AcpTransferLocation) {
+  return actual?.workspaceId === expected.workspaceId && actual.cwd === expected.cwd
+}
+
 export type AcpHandoffCommand =
   | { readonly kind: 'begin'; readonly id: string; readonly target: AcpHandoffTarget; readonly locale: 'zh' | 'en' }
   | { readonly kind: 'status'; readonly id?: string }
-  | { readonly kind: 'cancel'; readonly id: string }
+  | { readonly kind: 'cancel'; readonly id: string; readonly revision?: number }
   | {
       readonly kind: 'save' | 'send'
       readonly id: string

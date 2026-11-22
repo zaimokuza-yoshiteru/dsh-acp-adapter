@@ -21,6 +21,7 @@ import { unsentModelSwitchRecord } from '../../domain/session/unsent-model-switc
 import { readCommittedModelRetry } from './managed-model-resend.ts'
 import { permitsManagedModelScope, permitsOrdinaryModelScope } from './managed-model.ts'
 import { acpModelSelection } from '../../contract/model-selection.ts'
+import { transferLocation } from '../handoff/destination.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -152,6 +153,9 @@ export function acpSessionView(
     inheritedEventCount: session.inheritedEventCount,
     get workingDirectory() {
       return ctx.get('workingDirectory')?.get(session)
+    },
+    get transferLocation() {
+      return transferLocation(ctx, session, 'execution')
     },
     get seq() {
       return session.seq

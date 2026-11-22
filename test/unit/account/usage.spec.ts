@@ -70,7 +70,17 @@ describe('Agent account reads', () => {
       () => new Map([['custom', devin]]),
     )
     expect((await remote.read('custom', true)).status).toBe('unsupported')
-    expect((await service(new Map([['custom', agy]]), {}, 'win32').read('custom', true)).status).toBe('unsupported')
+    const spawnTerminal = vi.fn()
+    for (const platform of ['win32', 'linux', 'darwin']) {
+      const terminal = platform === 'darwin' ? {} : { spawnTerminal }
+      const profile = { ...agy, command: 'agy' }
+      expect(await service(new Map([['custom', profile]]), terminal, platform).read('custom', true)).toMatchObject({
+        status: 'unsupported',
+        provider: 'antigravity',
+        checkedAt: null,
+      })
+    }
+    expect(spawnTerminal).not.toHaveBeenCalled()
   })
 
   it('opens only read-only Codex RPCs on the configured wrapper, returning no account identifiers', async () => {

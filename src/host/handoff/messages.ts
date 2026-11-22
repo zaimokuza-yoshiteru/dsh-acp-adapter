@@ -3,6 +3,7 @@ import type { Principal } from '@deepseek-ai/dsh-typert-protocol'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-agent'
 import type { HandoffRecord } from '../../persistence/handoff.ts'
+import type { AcpTransferLocation } from '../../contract/handoff.ts'
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
@@ -11,6 +12,7 @@ declare module '@deepseek-ai/dsh-llm' {
       operationId: string
       part: 'summary' | 'delivery'
       launchIdentity: string | null
+      launchScope?: AcpTransferLocation
       principal?: Principal
     }
   }

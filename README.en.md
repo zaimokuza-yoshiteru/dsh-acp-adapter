@@ -70,9 +70,9 @@ Choose the optional **ACP** mode to let the Agent manage conversation context. T
 
 Use the selector beside the ACP composer to choose a work or permission mode offered by the current Agent. You can choose before your first message. The adapter waits for the Agent to confirm before sending. Use `/permission` to change permissions for DSH bridge tools.
 
-**Switch models within a conversation.** Choose a CodeBuddy or OpenCode model directly in the model menu. The adapter confirms the model with the Agent before sending. You can switch models in the same main conversation. Switching Agents or moving between ACP and native DSH opens a blank chat in the same mode by default. To continue the work, choose **Hand off session**, edit the document prepared by the source conversation, and send it. You can let the new Agent look up completed messages from before the handoff or send just the document. Your original draft stays in place.
+**Switch models within a conversation.** Choose a CodeBuddy or OpenCode model directly in the model menu. The adapter confirms the model with the Agent before sending. You can switch models in the same main conversation. Switching Agents or moving between ACP and native DSH opens a blank chat in the same mode by default. To continue the work, choose **Hand off session**, edit the document prepared by the source conversation, and send it. History access is enabled by default. The new chat can look up user and assistant text from turns completed before the handoff. Clear the checkbox to share only the document. Your original draft stays in place.
 
-From your main chat, you can ask the Agent to open an independent session with a named model from an installed Agent. The `create_agent_session` tool accepts an optional first task. Open the resulting chat from the original conversation.
+From your main chat, you can ask the Agent to open an independent session with a named model from an installed Agent. The `create_agent_session` tool accepts an optional first task. You can open the new chat from the original conversation. The independent chat has no access to the source history.
 
 ## Working in a session
 

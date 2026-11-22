@@ -44,11 +44,13 @@ export class AccountUsageService {
       }
     }
     const profile = profiles.get(id)
-    if (!profile || this.closed || !this.subprocess.ok || this.subprocess.seam.localExecution !== true)
-      return UNSUPPORTED
+    if (!profile || this.closed) return UNSUPPORTED
     const provider = accountUsageProvider(id, profile, this.platform, process.env)
+    if (!provider) return UNSUPPORTED
+    if (!this.subprocess.ok || this.subprocess.seam.localExecution !== true) return { ...UNSUPPORTED, provider }
     const seam = this.subprocess.seam
-    if (!provider || (provider === 'antigravity' && !seam.spawnTerminal)) return UNSUPPORTED
+    if (provider === 'antigravity' && (this.platform !== 'darwin' || !seam.spawnTerminal))
+      return { ...UNSUPPORTED, provider }
     let entry = this.entries.get(id)
     if (!entry) {
       entry = { key: key(id, profile), stop: new AbortController() }

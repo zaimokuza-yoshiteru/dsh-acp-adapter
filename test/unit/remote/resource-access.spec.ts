@@ -201,6 +201,8 @@ describe('ACP resources through the published Gateway and Peer', () => {
         },
       }),
     })
+    const session = { id: SessionId('first') }
+    h.ctx.provide('sessions', { get: () => session, flush: async () => true })
     const args = { target: { sessionId: 'first', provider: 'acp-test', preselectionRevision: 3 } }
     const clear = () =>
       h.ctx.typertGateway.invoke({

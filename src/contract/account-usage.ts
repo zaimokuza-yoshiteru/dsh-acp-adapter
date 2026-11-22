@@ -12,7 +12,7 @@ function absolutePath(value: string, platform?: string): boolean {
   return platform === 'win32' ? windows : value.startsWith('/') || (platform === undefined && windows)
 }
 
-/** Only direct, local launches with an unambiguous login context support account reads. */
+/** Identify a direct CLI profile. The Host also checks its local execution and terminal capabilities. */
 export function accountUsageProvider(
   id: string,
   config: Pick<AcpAgentConfig, 'command' | 'args' | 'env' | 'runtime'>,
@@ -45,7 +45,6 @@ export function accountUsageProvider(
   }
   if (
     (runtime === undefined || runtime === 'antigravity') &&
-    (platform === undefined || platform === 'darwin') &&
     file === 'agy' &&
     config.args[0] === 'acp' &&
     (config.args.length === 1 || (config.args.length === 2 && config.args[1] === '--stdio'))

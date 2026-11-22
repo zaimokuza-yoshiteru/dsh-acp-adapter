@@ -6,7 +6,8 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Principal } from '@deepseek-ai/dsh-typert-protocol'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { readGrantedHandoff } from '../handoff/history-grant.ts'
-import { handoffWorkspaces } from '../handoff/destination.ts'
+import { handoffWorkspaces, observedWorkingDirectory, transferLocation } from '../handoff/destination.ts'
+import { sameTransferLocation } from '../../contract/handoff.ts'
 
 const PAGE_CHARS = 8000
 const unavailable = () =>
@@ -63,12 +64,16 @@ export function handoffHistoryPage(events: readonly SessionEvent[], throughSeq: 
 function sharesLocation(
   ctx: Context,
   source: SessionHeader,
-  target: SessionHeader,
+  events: readonly SessionEvent[],
+  targetSession: Session,
   sourceCwd: string,
   workspaceId?: string,
 ) {
   const registry = handoffWorkspaces(ctx)
+  const target = targetSession.header
   if (!registry || source.id === target.id || source.origin === 'subagent' || target.origin === 'subagent') return false
+  const expected = { workspaceId: workspaceId ?? null, cwd: sourceCwd }
+  if (!sameTransferLocation(transferLocation(ctx, targetSession, 'execution'), expected)) return false
   if ([source.id, target.id].some((id) => registry.archivedSessionIds.includes(id))) return false
   const memberships = registry
     .list()
@@ -81,7 +86,10 @@ function sharesLocation(
         workspace.sessionIds.includes(source.id) &&
         workspace.sessionIds.includes(target.id),
     )
-  return sourceCwd === source.cwd && source.cwd === target.cwd
+  const liveSource = ctx.get('sessions', false)?.get(source.id)
+  return liveSource
+    ? sameTransferLocation(transferLocation(ctx, liveSource, 'execution'), expected)
+    : observedWorkingDirectory(source, events) === sourceCwd
 }
 
 function recordPrincipal(principals: Set<Principal>, message: UserMessage) {
@@ -189,7 +197,7 @@ export function installHandoffHistory(ctx: Context): void {
             current.sourceSessionId !== grant.sourceSessionId ||
             current.throughSeq !== grant.throughSeq ||
             source.header.id !== grant.sourceSessionId ||
-            !sharesLocation(scope, source.header, agent.session.header, current.sourceCwd, current.workspaceId)
+            !sharesLocation(scope, source.header, source.events, agent.session, current.sourceCwd, current.workspaceId)
           )
             throw unavailable()
           return JSON.stringify(handoffHistoryPage(source.events, grant.throughSeq, cursor))

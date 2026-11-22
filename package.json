@@ -394,6 +394,7 @@
     "@deepseek-ai/dsh-config-editor": "0.2.2-rc.5",
     "@deepseek-ai/dsh-deepseek-account": "0.2.2-rc.5",
     "@deepseek-ai/dsh-error": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-experimental-liveshare-protocol": "0.2.2-rc.5",
     "@deepseek-ai/dsh-experimental-speech-to-text": "0.2.2-rc.5",
     "@deepseek-ai/dsh-experimental-worktree": "0.2.2-rc.5",
     "@deepseek-ai/dsh-fs": "0.2.2-rc.5",

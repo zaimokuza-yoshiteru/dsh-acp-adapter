@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { LlmAdapter, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
@@ -53,6 +53,7 @@ it('hands off the edited document once, preserves the source draft and never sel
     const trace: string[] = []
     const evidence = process.env.DSH_E2E_EVIDENCE_DIR
     if (evidence) {
+      mkdirSync(evidence, { recursive: true })
       page.on('pageerror', (err) => trace.push(err.message))
       page.on('response', (response) => {
         if (!response.url().includes('/api/dshAcp/handoff')) return
@@ -74,6 +75,59 @@ it('hands off the edited document once, preserves the source draft and never sel
           .catch(() => {})
       })
     }
+    async function checkLayout(surface: 'switch' | 'editor') {
+      const panel = surface === 'switch' ? page.getByRole('dialog') : page.locator('[data-acp-handoff-editor]')
+      const pointer = await page.context().newCDPSession(page)
+      try {
+        for (const width of [1360, 390]) {
+          await page.setViewportSize({ width, height: width === 390 ? 844 : 920 })
+          await pointer.send('Emulation.setTouchEmulationEnabled', { enabled: width === 390 })
+          for (const lang of ['zh', 'en']) {
+            const zh = lang === 'zh'
+            await host.ctx.settings.replace('locale', { preference: lang })
+            const theme = zh && width === 390 ? 'dark' : 'light'
+            await host.ctx.settings.replace('ui-theme', { preference: theme })
+            await expect
+              .poll(() => page.evaluate(() => globalThis.document.documentElement.style.colorScheme))
+              .toBe(theme)
+            const action = panel.getByRole('button', {
+              name: surface === 'switch' ? (zh ? '新建空白会话' : 'Start a blank session') : zh ? '发送' : 'Send',
+              exact: true,
+            })
+            await action.waitFor()
+            if (surface === 'editor') {
+              await panel.getByText(zh ? /交接给 .*Mock Model B/ : /Handoff to .*Mock Model B/).waitFor()
+              const field = panel.getByRole('textbox', { name: zh ? '交接文档' : 'Handoff document', exact: true })
+              if (width === 390) {
+                expect(
+                  await field.evaluate(
+                    (el) => matchMedia('(pointer: coarse)').matches && parseFloat(getComputedStyle(el).fontSize) >= 16,
+                  ),
+                ).toBe(true)
+              }
+            }
+            const bounds = await action.boundingBox()
+            expect(
+              bounds &&
+                bounds.x >= 0 &&
+                bounds.x + bounds.width <= width &&
+                bounds.y >= 0 &&
+                bounds.y + bounds.height <= (page.viewportSize()?.height ?? 0),
+            ).toBe(true)
+            expect(await panel.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true)
+            if (evidence)
+              await page.screenshot({
+                path: join(evidence, `handoff-${surface}-${lang}-${width}-${theme}.png`),
+                animations: 'disabled',
+              })
+          }
+        }
+      } finally {
+        await pointer.send('Emulation.setTouchEmulationEnabled', { enabled: false })
+        await pointer.detach()
+        await page.setViewportSize({ width: 1360, height: 920 })
+      }
+    }
     await page.goto(host.authenticatedUrl)
     await connectFreshWorkspace(page, host.workspaceCwd)
     const settled = host.whenTurnSettled()
@@ -92,7 +146,11 @@ it('hands off the edited document once, preserves the source draft and never sel
     await handoff.hover()
     await page.getByRole('tooltip').filter({ hasText: 'review and edit' }).waitFor()
     await dialog.getByRole('button', { name: 'Start a blank session', exact: true }).waitFor()
-    await handoff.click()
+    await checkLayout('switch')
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).last().focus()
+    await page.keyboard.press('Tab')
+    expect(await handoff.evaluate((el) => globalThis.document.activeElement === el)).toBe(true)
+    await page.keyboard.press('Enter')
     const editor = page.locator('[data-acp-handoff-editor]')
     const document = editor.getByRole('textbox', { name: 'Handoff document' })
     try {
@@ -104,7 +162,22 @@ it('hands off the edited document once, preserves the source draft and never sel
       }
       throw error
     }
+    await checkLayout('editor')
+    let failedSaves = 0
+    await page.route('**/api/dshAcp/handoff', async (route) => {
+      if (route.request().postDataJSON()?.payload?.args?.command?.kind !== 'save') return route.continue()
+      failedSaves++
+      await route.abort('connectionreset')
+    })
     await document.fill('SHARED_BRIEF')
+    const retrySave = editor.getByRole('button', { name: 'Retry save', exact: true })
+    await retrySave.waitFor()
+    // Navigation must not discard the most recent edit while persistence is unavailable.
+    await editor.getByRole('button', { name: 'View original session', exact: true }).click()
+    await expect.poll(() => failedSaves).toBeGreaterThan(1)
+    expect(await document.inputValue()).toBe('SHARED_BRIEF')
+    await page.unroute('**/api/dshAcp/handoff')
+    await retrySave.click()
     await editor.getByRole('checkbox').uncheck()
     const save = page.waitForResponse(
       (response) =>

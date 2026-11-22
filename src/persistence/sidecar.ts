@@ -2379,11 +2379,14 @@ class SidecarStore implements AcpSidecar {
       : id === undefined
         ? db
             .prepare(
-              `SELECT payload FROM session_handoffs WHERE source = ? OR destination = ?
+              `SELECT payload FROM session_handoffs
+            WHERE rowid = (SELECT MAX(rowid) FROM session_handoffs WHERE source = ?)
+               OR destination = ?
             ORDER BY CASE WHEN json_extract(payload, '$.phase') IN ('summarizing','draft','queued') THEN 0
-                          WHEN destination = ? THEN 1 ELSE 2 END, rowid DESC LIMIT 1`,
+                          WHEN source = ? AND json_extract(payload, '$.phase') = 'interrupted' THEN 1
+                          WHEN destination = ? THEN 2 ELSE 3 END, rowid DESC LIMIT 1`,
             )
-            .get(sessionId, sessionId, sessionId)
+            .get(sessionId, sessionId, sessionId, sessionId)
         : db
             .prepare('SELECT payload FROM session_handoffs WHERE id = ? AND (source = ? OR destination = ?)')
             .get(id, sessionId, sessionId)

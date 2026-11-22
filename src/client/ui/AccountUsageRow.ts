@@ -112,7 +112,13 @@ export function AccountUsageRow({
     return h(
       'div',
       { className: css.accountRow, 'data-dsh-acp-account': id },
-      expanded && read ? h('span', { role: 'status' }, t(view ? 'accountNotProvided' : 'accountReading')) : null,
+      expanded && read
+        ? h(
+            'span',
+            { role: 'status' },
+            t(view?.provider === 'antigravity' ? 'accountMacTerminal' : view ? 'accountNotProvided' : 'accountReading'),
+          )
+        : null,
       websites,
     )
   }

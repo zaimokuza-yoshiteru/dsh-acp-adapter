@@ -62,7 +62,7 @@ it('serializes a final document, instruction and history choice after a slow aut
   const request = vi
     .fn<HandoffRequest>()
     .mockReturnValueOnce(save.promise)
-    .mockResolvedValueOnce(success({ ...draft, phase: 'queued' }))
+    .mockResolvedValueOnce(success({ ...draft, phase: 'queued', revision: 3 }))
   const client = new SessionHandoffClient(request, vi.fn())
   const revision = { current: 1 }
   const earlier = client.change(
@@ -102,7 +102,7 @@ it.each(['navigated', 'disconnected'] as const)(
     const client = new SessionHandoffClient(request, open, () => navigation.signal)
     await client.begin('source', begin)
     if (reason === 'navigated') navigation.abort()
-    else client.resetNavigation()
+    else client.reconnect()
     await client.refresh('source')
     expect(open).not.toHaveBeenCalled()
     expect(client.get('source')?.destinationSessionId).toBe('target')
@@ -125,6 +125,8 @@ it('keeps the first conversation quiet and exposes a completed source document i
       client,
       sessionId: 'source',
       useAccess: () => true,
+      useSessions: () => false,
+      access: () => ({ getSnapshot: () => true, subscribe: () => () => {} }),
       useSessionRetainInfo: () => true,
       t: (key: string) => key,
     } as never)
@@ -135,4 +137,105 @@ it('keeps the first conversation quiet and exposes a completed source document i
   }
   const retained = tree.props.children.find((item) => item && item.type === 'details')!
   expect(retained.props.children[1]?.props).toMatchObject({ value: 'Finished summary', readOnly: true })
+})
+
+it('keeps an editor on a network failure but withdraws cached documents after authoritative absence or denial', async () => {
+  for (const result of [
+    { ok: true, value: null },
+    { ok: false, error: { code: 'dsh-acp/user-rejected', message: 'denied' } },
+  ] as const) {
+    const request = vi
+      .fn<HandoffRequest>()
+      .mockResolvedValueOnce(success(draft))
+      .mockRejectedValueOnce(new Error('Network interrupted'))
+      .mockResolvedValueOnce(result)
+    const client = new SessionHandoffClient(request, vi.fn())
+    await client.refresh('source')
+    await expect(client.refresh('target')).rejects.toThrow('Network interrupted')
+    expect(client.draftDestinations()).toEqual(['target'])
+    await client.refresh('target').catch(() => {})
+    expect(client.get('source')).toBeUndefined()
+    expect(client.get('target')).toBeUndefined()
+    expect(client.draftDestinations()).toEqual([])
+  }
+})
+
+it('reconnect reads current endpoints and ignores an earlier connection response', async () => {
+  const late = Promise.withResolvers<Awaited<ReturnType<HandoffRequest>>>()
+  const next = { ...draft, id: 'second', destinationSessionId: 'secondTarget' }
+  const request = vi
+    .fn<HandoffRequest>()
+    .mockResolvedValueOnce(success({ ...draft, phase: 'completed' }))
+    .mockReturnValueOnce(late.promise)
+    .mockResolvedValueOnce(success(next))
+  const client = new SessionHandoffClient(request, vi.fn())
+  await client.refresh('source')
+  const old = client.refresh('source')
+  client.reconnect()
+  await client.refresh('source')
+  expect(request).toHaveBeenLastCalledWith('source', { kind: 'status' })
+  late.resolve(success(draft))
+  await old
+  expect(client.get('source')?.id).toBe(next.id)
+  expect(client.draftDestinations()).toEqual(['secondTarget'])
+})
+
+it('withdraws the old target editor when the source reports that the target was removed', async () => {
+  const request = vi
+    .fn<HandoffRequest>()
+    .mockResolvedValueOnce(success(draft))
+    .mockResolvedValueOnce(success({ ...draft, destinationSessionId: null, phase: 'interrupted', revision: 2 }))
+  const client = new SessionHandoffClient(request, vi.fn())
+  await client.refresh('target')
+  await client.refresh('source')
+  expect(client.get('source')?.document).toBe(draft.document)
+  expect(client.get('target')).toBeUndefined()
+  expect(client.draftDestinations()).toEqual([])
+})
+
+it('does not restore a revoked draft from a late write or dispatch a queued edit', async () => {
+  const late = Promise.withResolvers<Awaited<ReturnType<HandoffRequest>>>()
+  const request = vi
+    .fn<HandoffRequest>()
+    .mockResolvedValueOnce(success(draft))
+    .mockReturnValueOnce(late.promise)
+    .mockResolvedValueOnce({ ok: false, error: { code: 'remote-access/denied', message: 'Access withdrawn' } })
+  const client = new SessionHandoffClient(request, vi.fn())
+  await client.refresh('target')
+  const edit = {
+    kind: 'save',
+    id: draft.id,
+    revision: 1,
+    document: 'private',
+    instruction: '',
+    allowHistory: true,
+  } as const
+  const first = client.change('target', edit)
+  const queued = client.change('target', edit)
+  await expect(client.refresh('source')).rejects.toThrow('Access withdrawn')
+  late.resolve(success({ ...draft, revision: 2 }))
+  for (const result of await Promise.allSettled([first, queued])) expect(result.status).toBe('rejected')
+  expect(request).toHaveBeenCalledTimes(3)
+  expect(client.get('source')).toBeUndefined()
+  expect(client.draftDestinations()).toEqual([])
+})
+
+it('uses the editor’s last accepted revision when discarding behind a pending save', async () => {
+  const save = Promise.withResolvers<Awaited<ReturnType<HandoffRequest>>>()
+  const request = vi
+    .fn<HandoffRequest>()
+    .mockReturnValueOnce(save.promise)
+    .mockResolvedValueOnce(success({ ...draft, phase: 'cancelled', revision: 3 }))
+  const client = new SessionHandoffClient(request, vi.fn()),
+    revision = { current: 1 }
+  const earlier = client.change(
+    'target',
+    { kind: 'save', id: draft.id, revision: 1, document: 'edited', instruction: '', allowHistory: false },
+    revision,
+  )
+  const cancel = client.change('target', { kind: 'cancel', id: draft.id, revision: 1 }, revision)
+  save.resolve(success({ ...draft, revision: 2 }))
+  await Promise.all([earlier, cancel])
+  expect(request).toHaveBeenLastCalledWith('target', { kind: 'cancel', id: draft.id, revision: 2 })
+  expect(client.get('target')?.phase).toBe('cancelled')
 })

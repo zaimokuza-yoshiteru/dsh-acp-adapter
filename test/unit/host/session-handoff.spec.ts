@@ -28,6 +28,7 @@ function conversation(id: string, selected: AcpHandoffTarget, established: boole
     id,
     status: 'idle',
     session: {
+      id,
       header: { id, cwd: '/project' },
       get seq() {
         return events.length
@@ -78,6 +79,10 @@ function fixture() {
   const target = { provider: 'acp-other', model: 'requested' }
   const profiles = new Map([['acp-other', 'verified-cli']])
   const workspaces: { id: string; path: string; sessionIds: string[] }[] = []
+  const archived: string[] = []
+  const directories = new Map<string, string>()
+  const stat = vi.fn(async (_id: string): Promise<object | undefined> => undefined)
+  const listModels = vi.fn(async () => [{ id: 'requested' }])
   const create = vi.fn((request: { sessionId: string }) => {
     sessions.set(request.sessionId, conversation(request.sessionId, { provider: 'native', model: 'default' }, false))
     return Promise.resolve({ sessionId: request.sessionId })
@@ -93,7 +98,8 @@ function fixture() {
     const services = {
       agents: { get: (id: string) => sessions.get(id)?.agent },
       sessions: { get: (id: string) => sessions.get(id)?.agent.session, flush: vi.fn(async () => true) },
-      workspaceRegistry: { list: () => workspaces, archivedSessionIds: [] },
+      workspaceRegistry: { list: () => workspaces, archivedSessionIds: archived },
+      workingDirectory: { get: (session: { id: string }) => directories.get(session.id) },
       sessionQuery: {
         observeSession: (id: string) => ({
           header: sessions.get(id)!.agent.session.header,
@@ -101,10 +107,10 @@ function fixture() {
           [Symbol.dispose]() {},
         }),
       },
-      sessionPersistence: { stat: async () => undefined },
+      sessionPersistence: { stat },
       agentDefaultModel: { saveSelection: defaultSelection },
       sessionController: { create, resolveAgent: (id: string) => ({ agent: sessions.get(id)!.agent }) },
-      llm: { listModels: () => [{ id: 'requested' }], resolveCallConfig: async () => ({}) },
+      llm: { listModels, resolveCallConfig: async () => ({}) },
     }
     for (const [key, value] of Object.entries(services)) root.provide(key, value)
     return new AcpHandoffs(root, store, (p) => profiles.get(p) ?? null)
@@ -118,7 +124,25 @@ function fixture() {
   const id = randomUUID()
   const allow = vi.fn()
   const begin = () => service.action('original', { kind: 'begin', id, target, locale: 'en' }, allow)
-  return { id, source, sessions, service, mount, create, defaultSelection, begin, allow, target, profiles, workspaces }
+  return {
+    store: stores[0]!,
+    id,
+    source,
+    sessions,
+    service,
+    mount,
+    create,
+    defaultSelection,
+    begin,
+    allow,
+    target,
+    profiles,
+    workspaces,
+    archived,
+    directories,
+    stat,
+    listModels,
+  }
 }
 
 it('recovers one editable draft and delivers only its edited text to the selected destination once', async () => {
@@ -224,6 +248,197 @@ it('retains the summary without transferring it if the source moved during gener
     document: 'completed at the original location',
   })
   expect(f.create).not.toHaveBeenCalled()
+})
+
+it.each(['workspace', 'cwd'])('keeps the document out of a destination with a changed %s', async (move) => {
+  const f = fixture()
+  await f.begin()
+  f.source.finish('private source summary')
+  const draft = (await f.service.action('original', { kind: 'status' }, f.allow))!
+  const id = draft.destinationSessionId!
+  const send = () =>
+    f.service.action(
+      id,
+      {
+        kind: 'send',
+        id: f.id,
+        revision: draft.revision,
+        document: draft.document,
+        allowHistory: true,
+        instruction: '',
+      },
+      f.allow,
+    )
+  if (move === 'workspace') f.workspaces.push({ id: 'other', path: '/project', sessionIds: [id] })
+  else f.directories.set(id, '/other')
+  await expect(send()).rejects.toMatchObject({ code: 'session/agent-busy' })
+  expect(f.sessions.get(id)!.agent.followup).not.toHaveBeenCalled()
+  f.workspaces.length = 0
+  f.directories.clear()
+  const current = (await f.service.action(id, { kind: 'status' }, f.allow))!
+  await f.service.action(
+    id,
+    {
+      kind: 'send',
+      id: f.id,
+      revision: current.revision,
+      document: current.document,
+      allowHistory: true,
+      instruction: '',
+    },
+    f.allow,
+  )
+  expect(f.sessions.get(id)!.agent.followup.mock.calls[0]![0].source).toMatchObject({
+    launchScope: { workspaceId: null, cwd: '/project' },
+  })
+})
+
+it('retries discovery errors but releases the source and keeps its document when the named model disappears', async () => {
+  const f = fixture()
+  await f.begin()
+  f.source.finish('finished summary')
+  const read = () => f.service.action('original', { kind: 'status' }, f.allow)
+  f.listModels.mockRejectedValueOnce(new Error('Agent probe disconnected'))
+  await expect(read()).rejects.toThrow('probe disconnected')
+  expect(f.create).not.toHaveBeenCalled()
+  f.listModels.mockResolvedValueOnce([])
+  expect(await read()).toMatchObject({ phase: 'interrupted', destinationSessionId: null, document: 'finished summary' })
+  expect(await f.mount().action('original', { kind: 'status' }, f.allow)).toMatchObject({ phase: 'interrupted' })
+  expect(f.create).not.toHaveBeenCalled()
+  expect(
+    await f.service.action('original', { kind: 'begin', id: randomUUID(), locale: 'en', target: f.target }, f.allow),
+  ).toMatchObject({ phase: 'summarizing' })
+})
+
+it.each(['archived', 'deleted'])('recovers the latest edited source document after its target is %s', async (state) => {
+  const f = fixture()
+  await f.begin()
+  f.source.finish('generated')
+  const draft = (await f.service.action('original', { kind: 'status' }, f.allow))!
+  const id = draft.destinationSessionId!
+  await f.service.action(
+    id,
+    {
+      kind: 'save',
+      id: f.id,
+      revision: draft.revision,
+      document: 'private edit',
+      instruction: 'verify',
+      allowHistory: true,
+    },
+    f.allow,
+  )
+  if (state === 'archived') f.archived.push(id)
+  else {
+    f.sessions.delete(id)
+    f.stat.mockRejectedValueOnce(new Error('unavailable storage'))
+    await expect(f.service.action('original', { kind: 'status' }, f.allow)).rejects.toThrow('unavailable storage')
+    f.stat.mockResolvedValueOnce({})
+    expect(await f.service.action('original', { kind: 'status' }, f.allow)).toMatchObject({
+      phase: 'draft',
+      destinationSessionId: id,
+    })
+  }
+  const read = () => f.mount().action('original', { kind: 'status' }, f.allow)
+  expect(await read()).toMatchObject({
+    phase: 'interrupted',
+    destinationSessionId: null,
+    allowHistory: false,
+    document: 'private edit',
+    instruction: 'verify',
+  })
+  const restricted = (session: string) => {
+    if (session === id) throw new Error('access revoked')
+  }
+  await expect(f.service.action('original', { kind: 'status' }, restricted)).rejects.toThrow('access revoked')
+  expect(await read()).toMatchObject({ phase: 'interrupted', destinationSessionId: null })
+  expect(
+    await f.service.action('original', { kind: 'begin', id: randomUUID(), locale: 'en', target: f.target }, f.allow),
+  ).toMatchObject({ phase: 'summarizing' })
+  expect(f.create).toHaveBeenCalledTimes(1)
+})
+
+it('never recreates a destination deleted after creation was accepted but its reply was lost', async () => {
+  const f = fixture()
+  await f.begin()
+  f.source.finish('complete')
+  let accepted = ''
+  f.create.mockImplementationOnce(({ sessionId }) => {
+    accepted = sessionId
+    f.sessions.set(sessionId, conversation(sessionId, f.target, false))
+    return Promise.reject(new Error('lost create reply'))
+  })
+  await expect(f.service.action('original', { kind: 'status' }, f.allow)).rejects.toThrow('lost create reply')
+  f.sessions.delete(accepted)
+  expect(await f.mount().action('original', { kind: 'status' }, f.allow)).toMatchObject({
+    phase: 'interrupted',
+    destinationSessionId: null,
+    document: 'complete',
+  })
+  expect(f.create).toHaveBeenCalledTimes(1)
+})
+
+it('requires the latest draft revision to discard from either session', async () => {
+  const f = fixture()
+  await f.begin()
+  f.source.finish('written')
+  const draft = (await f.service.action('original', { kind: 'status' }, f.allow))!
+  const id = draft.destinationSessionId!
+  const saved = (await f.service.action(
+    id,
+    {
+      kind: 'save',
+      id: f.id,
+      revision: draft.revision,
+      document: 'edited elsewhere',
+      instruction: '',
+      allowHistory: false,
+    },
+    f.allow,
+  ))!
+  for (const cancel of [
+    { kind: 'cancel', id: f.id } as const,
+    { kind: 'cancel', id: f.id, revision: draft.revision } as const,
+  ])
+    await expect(f.mount().action('original', cancel, f.allow)).rejects.toMatchObject({
+      details: { reason: 'HANDOFF_STALE_DRAFT' },
+    })
+  expect(await f.service.action(id, { kind: 'status' }, f.allow)).toMatchObject({
+    phase: 'draft',
+    document: 'edited elsewhere',
+  })
+  expect(
+    await f.service.action('original', { kind: 'cancel', id: f.id, revision: saved.revision }, f.allow),
+  ).toMatchObject({ phase: 'cancelled', document: '' })
+  expect(f.sessions.get(id)!.agent.followup).not.toHaveBeenCalled()
+})
+
+it('recovers an interrupted onward handoff on reload, then restores the link to the incoming conversation', async () => {
+  const f = fixture()
+  await f.begin()
+  const previous = f.store.readHandoff('original', f.id)!
+  await f.service.action('original', { kind: 'cancel', id: f.id }, f.allow)
+  const incoming = f.store.writeHandoff({
+    ...previous,
+    revision: 0,
+    id: randomUUID(),
+    sourceSessionId: 'earlier',
+    destinationSessionId: 'original',
+    phase: 'completed',
+  })
+  const onward = randomUUID()
+  const begin = (id: string) =>
+    f.service.action('original', { kind: 'begin', id, locale: 'en', target: f.target }, f.allow)
+  const read = () => f.mount().action('original', { kind: 'status' }, f.allow)
+  await begin(onward)
+  f.source.finish('keep the onward summary')
+  f.listModels.mockResolvedValueOnce([])
+  await f.service.action('original', { kind: 'status', id: onward }, f.allow)
+  expect(await read()).toMatchObject({ id: onward, phase: 'interrupted', document: 'keep the onward summary' })
+  const next = randomUUID()
+  await begin(next)
+  await f.service.action('original', { kind: 'cancel', id: next }, f.allow)
+  expect(await read()).toMatchObject({ id: incoming.id, sourceSessionId: 'earlier', phase: 'completed' })
 })
 
 it('refuses a changed target and never grants history from a document-only transfer', async () => {

@@ -2,10 +2,10 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type { SessionCreateRequest } from '@deepseek-ai/dsh-api-session-controller/types'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
-import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { LlmError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { SessionId, type Session, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
-import type { AcpHandoffTarget } from '../../contract/handoff.ts'
+import { sameTransferLocation, type AcpHandoffTarget, type AcpTransferLocation } from '../../contract/handoff.ts'
 
 interface HandoffWorkspace {
   readonly id: NonNullable<SessionCreateRequest['workspaceId']>
@@ -21,6 +21,28 @@ export function handoffWorkspaces(ctx: Context):
     }
   | undefined {
   return ctx.get('workspaceRegistry', false)
+}
+
+/** The active project defines placement for a new chat; execution follows its current directory. */
+export function transferLocation(
+  ctx: Context,
+  session: Session,
+  mode: 'placement' | 'execution',
+): AcpTransferLocation | undefined {
+  const registry = handoffWorkspaces(ctx)
+  if (!registry || registry.archivedSessionIds.includes(session.id)) return undefined
+  const workspace = registry.list().find((row) => row.sessionIds.includes(session.id))
+  const cwd =
+    (mode === 'placement' ? workspace?.path : undefined) ??
+    ctx.get('workingDirectory', false)?.get(session) ??
+    session.header.cwd
+  return cwd ? { workspaceId: workspace?.id ?? null, cwd } : undefined
+}
+
+/** A cold session's immutable header can predate a durable change of directory. */
+export function observedWorkingDirectory(header: SessionHeader, events: readonly SessionEvent[]) {
+  const change = events.findLast((event) => event.type === 'working-directory/change')
+  return change?.data.cwd ?? header.cwd
 }
 
 export function changedSession() {
@@ -53,15 +75,28 @@ export async function mainAgent(ctx: Context, sessionId: string) {
   return result.agent
 }
 
+/** The provider or model is absent from a known catalog. An unsuccessful discovery stays retryable. */
+export class UnlistedHandoffModel extends RemoteError<'session/model-unavailable'> {
+  constructor(target: AcpHandoffTarget) {
+    super('session/model-unavailable', 'Select an available model.', { provider: target.provider, model: target.model })
+  }
+}
+
 export async function checkHandoffModel(ctx: Context, target: AcpHandoffTarget) {
   const llm = ctx.get('llm')
   if (!llm) throw changedSession()
-  const rows = await llm.listModels(target.provider)
-  if (!rows.some((row) => row.id === target.model))
-    throw new RemoteError('session/model-unavailable', 'Select an available model.', {
-      provider: target.provider,
-      model: target.model,
-    })
+  try {
+    const rows = await llm.listModels(target.provider)
+    if (!rows.some((row) => row.id === target.model)) throw new UnlistedHandoffModel(target)
+  } catch (error) {
+    if (
+      error instanceof LlmError &&
+      error.code === 'NO_ADAPTER' &&
+      !llm.listProviders().some((p) => p.id === target.provider)
+    )
+      throw new UnlistedHandoffModel(target)
+    throw error
+  }
   const selected = {
     provider: target.provider,
     model: target.model,
@@ -79,6 +114,7 @@ export async function createHandoffDestination(
   requestedId: string,
   authorize: (destinationId?: string) => void,
   existingOnly = false,
+  beforeCreate?: () => void,
 ): Promise<string> {
   const controller = ctx.get('sessionController', false)
   const workspaces = handoffWorkspaces(ctx)
@@ -95,6 +131,7 @@ export async function createHandoffDestination(
   const exists = sessions.get(requested) ?? (await ctx.get('sessionPersistence', false)!.stat(requested))
   if (!exists && existingOnly) throw changedSession()
   authorize()
+  if (!exists) beforeCreate?.()
   const id = exists
     ? requested
     : (
@@ -109,8 +146,10 @@ export async function createHandoffDestination(
   await agent.runMaintenance(async (signal) => {
     using observed = await observeHandoffSession(ctx, id, signal)
     const currentWorkspace = workspaces.list().find((row) => row.sessionIds.includes(source.id))
+    const targetWorkspace = workspaces.list().find((row) => row.sessionIds.includes(id))
     if (
       currentWorkspace?.id !== workspace?.id ||
+      (targetWorkspace !== undefined && targetWorkspace.id !== workspace?.id) ||
       agent.session.header.cwd !== cwd ||
       agent.session.header.isSeeded ||
       agent.session.header.origin === 'subagent' ||
@@ -126,7 +165,15 @@ export async function createHandoffDestination(
     if (workspace && !workspace.sessionIds.includes(id)) await workspace.attachSession(id)
     signal.throwIfAborted()
     authorize(id)
-    if (agent.inbox.nextStep.length || agent.inbox.nextTurn.length || sessions.get(id) !== agent.session)
+    if (
+      !sameTransferLocation(transferLocation(ctx, agent.session, 'execution'), {
+        workspaceId: workspace?.id ?? null,
+        cwd,
+      }) ||
+      agent.inbox.nextStep.length ||
+      agent.inbox.nextTurn.length ||
+      sessions.get(id) !== agent.session
+    )
       throw changedSession()
     agent.model.select(selected)
     await sessions.flush(agent.session)

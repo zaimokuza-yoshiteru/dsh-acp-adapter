@@ -176,6 +176,8 @@ export function applySessionFact(previous: SessionFacts, event: SessionEventLike
 
 /** Live read face backed by native Session and projection services, not a log copy. */
 export interface SessionLike {
+  /** Current external tool execution location. Read again at transport dispatch. */
+  readonly transferLocation?: { readonly workspaceId: string | null; readonly cwd: string } | undefined
   dedicatedAcpRoute?(provider: string): boolean
   writeFirstTurnOptions?(options: z.infer<typeof firstTurnOptionsSchema>): void
   readCommittedModelRetry?(

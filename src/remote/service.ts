@@ -1417,6 +1417,14 @@ export class AcpRemoteService extends TypertRemoteService {
         if (signal.aborted) break
         const key = JSON.stringify(snapshot)
         if (key === previous) continue
+        // A reconnected composer can release its pending send from this frame even
+        // if the write RPC never returned. It needs the same checkpoint as the writer.
+        if (snapshot?.preselection && snapshot.preselectionRevision) {
+          await this.flushFirstTurnSelection(sessionId)
+          if (signal.aborted) break
+          if (!this.callerCanReadSession(sessionId) || !(await changes.canRead(sessionId)))
+            throw acpRemoteFailure('user-rejected', 'ACP Agent session access is not authorized')
+        }
         yield { type: previous === undefined ? 'opened' : 'changed', snapshot }
         previous = key
       }
@@ -1464,9 +1472,25 @@ export class AcpRemoteService extends TypertRemoteService {
     if (!authorized()) throw acpRemoteFailure('user-rejected', 'The session setting cannot be changed')
     const adapter = this.resolved.agentSessionControl?.(target.provider)
     if (!adapter?.setFirstTurnOption) throw acpRemoteFailure('resume-conflict', 'Agent settings are unavailable')
-    return preserveAcpFailure(async () =>
-      adapter.setFirstTurnOption!(target.sessionId, choice, authorized, target.preselectionRevision),
-    )
+    return preserveAcpFailure(async () => {
+      const snapshot = adapter.setFirstTurnOption!(target.sessionId, choice, authorized, target.preselectionRevision)
+      await this.flushFirstTurnSelection(target.sessionId)
+      if (!authorized()) throw acpRemoteFailure('user-rejected', 'The session setting cannot be changed')
+      return snapshot
+    })
+  }
+
+  /** The native session append is visible before its background writer persists it. */
+  private async flushFirstTurnSelection(sessionId: string): Promise<void> {
+    const sessions = this.ctx.get('sessions', false)
+    const session = sessions?.get(SessionId(sessionId))
+    if (!sessions || !session) throw acpRemoteFailure('resume-conflict', 'The session is unavailable.')
+    try {
+      if ((await sessions.flush(session)) && sessions.get(session.id) === session) return
+    } catch (cause) {
+      throw acpRemoteFailure('resume-conflict', 'The Agent setting could not be saved.', cause)
+    }
+    throw acpRemoteFailure('resume-conflict', 'The Agent setting could not be saved.')
   }
 
   private async agentSessionControlFor(sessionId: string): Promise<AcpAgentSessionControlLike> {

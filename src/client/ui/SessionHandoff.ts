@@ -10,6 +10,10 @@ import {
 } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
+import { crossBackendSelectionLabel } from './CrossBackendModal.ts'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import { useSessionActionAccess, type SessionAccessSource } from './session-action-access.ts'
 import type { AcpHandoffView } from '../../contract/handoff.ts'
 import type { HandoffFields, SessionHandoffClient } from '../coordinator/session-handoff.ts'
 import type { AcpLocaleKey } from './locales.ts'
@@ -44,18 +48,30 @@ export function HandoffDock({
   sessionId,
   useAccess,
   useSessionRetainInfo,
+  useSessions,
+  access,
   t,
-}: HandoffProps & PropsRuntime<'conversation.input.dock'>): ReactNode {
+}: HandoffProps & PropsRuntime<'conversation.input.dock'> & { access: SessionAccessSource }): ReactNode {
   const main = useSessionRetainInfo((info) => (info?.retainedBy.mainView ?? 0) > 0)
   const canRead = useAccess('dshAcp/handoff')
   const record = useRecord(client, sessionId)
+  const endpoints = record?.destinationSessionId ? [record.sourceSessionId, record.destinationSessionId] : [sessionId]
+  const readable = useSessionActionAccess(access, endpoints, 'session/events')
+  const allowed = canRead && endpoints.every((id) => readable.allows(id))
+  const connection = useSyncExternalStore(client.subscribe, client.connectionVersion)
+  const related = record?.sourceSessionId === sessionId ? record.destinationSessionId : record?.sourceSessionId
+  const relatedListed = useSessions((state) => !!related && Boolean(state.byId[related as SessionId]))
   const [error, setError] = useState<AcpLocaleKey>()
   const [busy, setBusy] = useState(false)
   const [dismissed, setDismissed] = useState<string>()
   const phase = record?.phase
   const polling = phase === 'summarizing' || phase === 'queued'
   useEffect(() => {
-    if (!main || !canRead) return
+    if (!allowed) {
+      client.forget(client.get(sessionId))
+      return
+    }
+    if (!main) return
     let current = true
     let timer: ReturnType<typeof setTimeout> | undefined
     const refresh = async () => {
@@ -71,14 +87,19 @@ export function HandoffDock({
           }, 1200)
       }
     }
+    const refocus = () => {
+      if (document.visibilityState !== 'hidden') void client.refresh(sessionId).catch(() => {})
+    }
+    window.addEventListener('focus', refocus)
     void refresh()
     return () => {
+      window.removeEventListener('focus', refocus)
       current = false
       clearTimeout(timer)
     }
-  }, [client, sessionId, canRead, main, polling])
+  }, [client, sessionId, allowed, main, polling, connection, relatedListed])
 
-  if (!main || !canRead || !record || phase === 'cancelled' || (phase === 'interrupted' && dismissed === record.id))
+  if (!main || !allowed || !record || phase === 'cancelled' || (phase === 'interrupted' && dismissed === record.id))
     return null
   const source = record.sourceSessionId === sessionId
   const other = source ? record.destinationSessionId : record.sourceSessionId
@@ -88,7 +109,8 @@ export function HandoffDock({
       await action()
       setError(undefined)
     } catch (err) {
-      setError(errorKey(err))
+      const key = errorKey(err)
+      setError(key === 'handoffDraftChanged' && source ? 'handoffSourceDraftChanged' : key)
     } finally {
       setBusy(false)
     }
@@ -128,7 +150,7 @@ export function HandoffDock({
       h(
         Button,
         {
-          variant: 'ghost',
+          variant: source && phase === 'draft' ? 'outline' : 'ghost',
           size: 'sm',
           disabled: busy,
           onClick: () => {
@@ -137,32 +159,77 @@ export function HandoffDock({
         },
         t(source ? 'handoffOpenDraft' : 'handoffOpenSource'),
       ),
-    phase === 'summarizing' || phase === 'interrupted'
+    phase === 'summarizing' || phase === 'interrupted' || (source && phase === 'draft')
       ? h(
           Button,
           {
-            variant: 'outline',
+            variant: phase === 'draft' ? 'ghost' : 'outline',
             size: 'sm',
             disabled: busy,
             onClick: () => {
               if (phase === 'interrupted') setDismissed(record.id)
-              else void act(() => client.change(sessionId, { kind: 'cancel', id: record.id }))
+              else
+                void act(async () => {
+                  try {
+                    await client.change(sessionId, {
+                      kind: 'cancel',
+                      id: record.id,
+                      ...(phase === 'draft' ? { revision: record.revision } : {}),
+                    })
+                  } catch (err) {
+                    await client.refresh(sessionId).catch(() => {})
+                    throw err
+                  }
+                })
             },
           },
-          t(phase === 'interrupted' ? 'crossBackendDismiss' : 'crossBackendCancel'),
+          t(
+            phase === 'interrupted'
+              ? 'crossBackendDismiss'
+              : phase === 'draft'
+                ? 'handoffDiscard'
+                : 'crossBackendCancel',
+          ),
         )
       : null,
     error && h('span', { role: 'alert', className: css.error }, t(error)),
   )
 }
 
-export function HandoffComposer(props: HandoffProps): ReactNode {
+type EditorProps = HandoffProps & {
+  loadModelCatalog(): Promise<ModelCatalog | null>
+  profileName(provider: string): string | undefined
+}
+
+export function HandoffComposer(props: EditorProps): ReactNode {
   const record = useRecord(props.client, props.sessionId)
   if (!record || record.phase !== 'draft' || record.destinationSessionId !== props.sessionId) return null
   return h(Draft, { ...props, record, key: record.id })
 }
 
-function Draft({ client, sessionId, openSession, record, t }: HandoffProps & { record: AcpHandoffView }): ReactNode {
+function Draft({
+  client,
+  sessionId,
+  openSession,
+  record,
+  t,
+  loadModelCatalog,
+  profileName,
+}: EditorProps & { record: AcpHandoffView }): ReactNode {
+  const [catalog, setCatalog] = useState<ModelCatalog | null>(null)
+  useEffect(() => {
+    let current = true
+    void loadModelCatalog().then(
+      (value) => {
+        if (current) setCatalog(value)
+      },
+      () => {},
+    )
+    return () => {
+      current = false
+    }
+  }, [loadModelCatalog])
+  const targetName = crossBackendSelectionLabel(record.target, catalog, profileName(record.target.provider), t)
   const [fields, setFields] = useState<HandoffFields>(() => ({
     document: record.document,
     instruction: record.instruction,
@@ -176,27 +243,30 @@ function Draft({ client, sessionId, openSession, record, t }: HandoffProps & { r
   const submitting = useRef(false)
   const [error, setError] = useState<AcpLocaleKey>()
   const timer = useRef<ReturnType<typeof setTimeout>>()
-  const save = () => {
+  const save = async () => {
     clearTimeout(timer.current)
     const edits = pending.current
-    if (!edits || submitting.current) return
+    if (!edits) return true
+    if (submitting.current) return false
     const number = ++saving.current
-    void client
-      .change(sessionId, { kind: 'save', id: record.id, revision: revision.current, ...edits }, revision)
-      .then(() => {
-        if (pending.current === edits) pending.current = null
-        if (alive.current && saving.current === number) setError(undefined)
-      })
-      .catch((err) => {
-        if (alive.current && saving.current === number)
-          setError(errorKey(err) === 'handoffDraftChanged' ? 'handoffDraftChanged' : 'handoffSaveFailed')
-      })
+    if (alive.current) setError(undefined)
+    try {
+      await client.change(sessionId, { kind: 'save', id: record.id, revision: revision.current, ...edits }, revision)
+      if (pending.current === edits) pending.current = null
+      return true
+    } catch (err) {
+      if (alive.current && saving.current === number)
+        setError(errorKey(err) === 'handoffDraftChanged' ? 'handoffDraftChanged' : 'handoffSaveFailed')
+      return false
+    }
   }
   useEffect(() => {
     alive.current = true
     return () => {
       alive.current = false
-      save()
+      const saved = client.get(sessionId)
+      if (saved?.id === record.id && saved.phase === 'draft') void save()
+      else clearTimeout(timer.current)
     }
   }, [client, sessionId, record.id])
   function edit(changes: Partial<HandoffFields>) {
@@ -214,7 +284,7 @@ function Draft({ client, sessionId, openSession, record, t }: HandoffProps & { r
     try {
       if (kind === 'send')
         await client.change(sessionId, { kind, id: record.id, revision: revision.current, ...fields }, revision)
-      else await client.change(sessionId, { kind, id: record.id })
+      else await client.change(sessionId, { kind, id: record.id, revision: revision.current }, revision)
       pending.current = null
     } catch (err) {
       // An interrupted reply can follow an accepted prompt. Read its durable state before offering Send again.
@@ -254,17 +324,21 @@ function Draft({ client, sessionId, openSession, record, t }: HandoffProps & { r
     h(
       'div',
       { className: css.header },
-      h('strong', null, t('handoffDocument')),
+      h('strong', null, t('handoffRecipient', { target: targetName })),
       h(
         Button,
         {
           variant: 'ghost',
           size: 'sm',
-          onClick: () => {
+          disabled: busy,
+          onClick: async () => {
+            setBusy(true)
             try {
-              openSession(record.sourceSessionId)
+              if ((await save()) && alive.current) openSession(record.sourceSessionId)
             } catch {
-              setError('crossBackendFailureOpen')
+              if (alive.current) setError('crossBackendFailureOpen')
+            } finally {
+              if (alive.current) setBusy(false)
             }
           },
         },
@@ -282,6 +356,19 @@ function Draft({ client, sessionId, openSession, record, t }: HandoffProps & { r
     }),
     h(
       'label',
+      { className: css.task },
+      t('handoffTask'),
+      h('textarea', {
+        className: css.instruction,
+        rows: 2,
+        maxLength: 32768,
+        value: fields.instruction,
+        disabled: busy,
+        onChange: (e: ChangeEvent<HTMLTextAreaElement>) => edit({ instruction: e.target.value }),
+      }),
+    ),
+    h(
+      'label',
       { className: css.history },
       h('input', {
         type: 'checkbox',
@@ -291,16 +378,7 @@ function Draft({ client, sessionId, openSession, record, t }: HandoffProps & { r
       }),
       t('handoffAllowHistory'),
     ),
-    h('textarea', {
-      'aria-label': t('handoffTask'),
-      placeholder: t('handoffTask'),
-      className: css.instruction,
-      rows: 2,
-      maxLength: 32768,
-      disabled: busy,
-      value: fields.instruction,
-      onChange: (e: ChangeEvent<HTMLTextAreaElement>) => edit({ instruction: e.target.value }),
-    }),
+
     error &&
       h(
         'p',
@@ -318,7 +396,9 @@ function Draft({ client, sessionId, openSession, record, t }: HandoffProps & { r
               },
               t('handoffReload'),
             )
-          : null,
+          : error === 'handoffSaveFailed'
+            ? h(Button, { size: 'sm', disabled: busy, onClick: () => void save() }, t('handoffRetrySave'))
+            : null,
       ),
     h(
       'div',

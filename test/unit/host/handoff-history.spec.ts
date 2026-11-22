@@ -66,25 +66,32 @@ describe('history handed to an independent session', () => {
   })
 
   function historyFixture() {
-    const { session, events, cut } = transcript()
+    const { session, cut } = transcript()
     const source = SessionId('source'),
       dest = SessionId('destination')
     const row = { id: 'workspace', path: '/project', sessionIds: [source, dest] }
-    const grant = { sourceSessionId: source, throughSeq: cut, workspaceId: row.id, sourceCwd: row.path }
+    const grant: { sourceSessionId: string; throughSeq: number; workspaceId?: string; sourceCwd: string } = {
+      sourceSessionId: source,
+      throughSeq: cut,
+      workspaceId: row.id,
+      sourceCwd: row.path,
+    }
     const historyFor = vi.fn(async (_id: string): Promise<typeof grant | undefined> => grant)
     const duringRead = vi.fn()
     const observeSession = vi.fn(async (id: string) => {
       if (id === dest)
         return { header: { id: dest }, events: [{ type: 'turn/start', data: { turn: 1 } }], [Symbol.dispose]() {} }
       duringRead()
-      return { header: session.header, events, [Symbol.dispose]() {} }
+      return { header: { ...session.header, cwd: '/project' }, events: session.snapshotEvents(), [Symbol.dispose]() {} }
     })
     const register = vi.fn()
     const audiences: { sessionIds: string[] }[] = []
     const decide = vi.fn(() => ({ kind: 'allow' }))
+    const directories = new Map<string, string>()
     const services = {
       acpHandoffs: { historyFor },
       workspaceRegistry: { list: () => [row], archivedSessionIds: [] },
+      workingDirectory: { get: (session: { id: string }) => directories.get(session.id) },
       remoteAccess: { decide },
       liveshareShares: { list: async () => ({ shares: audiences }) },
     }
@@ -101,7 +108,7 @@ describe('history handed to an independent session', () => {
     } as unknown as Context)
     const [tool, options] = register.mock.calls[0]!
     const exec = {
-      agent: { id: dest, session: { header: { id: dest } }, inbox: { nextStep: [] } },
+      agent: { id: dest, session: { id: dest, header: { id: dest, cwd: '/project' } }, inbox: { nextStep: [] } },
       signal: new AbortController().signal,
     }
     const guestSteers = () =>
@@ -110,7 +117,22 @@ describe('history handed to an independent session', () => {
         turn: 1,
         message: { source: { kind: 'user', principal: { kind: 'share-viewer', shareId: 'link' } } },
       })
-    return { tool, options, source, dest, row, grant, historyFor, exec, audiences, decide, duringRead, guestSteers }
+    return {
+      tool,
+      options,
+      source,
+      dest,
+      row,
+      grant,
+      historyFor,
+      exec,
+      audiences,
+      decide,
+      duringRead,
+      guestSteers,
+      directories,
+      session,
+    }
   }
 
   it('resolves the grant from the executing destination and rechecks it after the source read', async () => {
@@ -125,6 +147,18 @@ describe('history handed to an independent session', () => {
     historyFor.mockResolvedValue(undefined)
     expect(await options.when(exec)).toBe(false)
     await expect(tool.execute({}, exec)).rejects.toThrow('unavailable')
+  })
+
+  it('rechecks an ungrouped destination and the latest durable directory of a cold source on every read', async () => {
+    const f = historyFixture()
+    f.row.sessionIds.length = 0
+    delete f.grant.workspaceId
+    expect(await f.tool.execute({}, f.exec)).toContain('messages')
+    f.duringRead.mockImplementationOnce(() => f.directories.set(f.dest, '/moved'))
+    await expect(f.tool.execute({}, f.exec)).rejects.toThrow('unavailable')
+    f.directories.clear()
+    f.session.append('working-directory/change', { cwd: '/another' })
+    await expect(f.tool.execute({}, f.exec)).rejects.toThrow('unavailable')
   })
 
   it('withholds the durable result if a destination audience lacks the source, even on an owner turn', async () => {

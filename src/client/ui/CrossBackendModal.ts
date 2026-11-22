@@ -158,7 +158,7 @@ export function CrossBackendModal({
       description,
       closeLabel: t(modelSwitch ? 'crossBackendKeepModel' : 'crossBackendCancel'),
       backdropBlur: false,
-      ...(css.dialog === undefined ? {} : { className: css.dialog }),
+      className: [css.dialog, canHandoff && css.handoffDialog].filter(Boolean).join(' '),
       ...(css.content === undefined ? {} : { contentClassName: css.content }),
       footer: h(
         'div',
@@ -217,7 +217,7 @@ export function CrossBackendModal({
       ),
     },
     error === null
-      ? null
+      ? undefined
       : h(
           'div',
           null,

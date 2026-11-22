@@ -5,18 +5,20 @@ import { launchBrowser, newEnglishPage } from './browser.ts'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { pluginRecordOf, SessionId } from '@deepseek-ai/dsh-session'
 import { expect, it, vi } from 'vitest'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
 import type { ComposerProbe } from './fixtures/render-probe/client.ts'
 import type { AcpRemoteService } from '../../src/remote/service.ts'
+import { firstTurnOptionsRecord } from '../../src/domain/session/first-turn-options.ts'
 
 it('adds an optional ACP preset without replacing defaults or native compositions', async () => {
   const host = await launchAdapterWorld({ renderProbe: true })
   let browser: TestBrowser | undefined
   let restoreWrite: (() => void) | undefined
   const delayedWrite = Promise.withResolvers<void>()
+  const durable = Promise.withResolvers<void>()
   const evidence = join(root, '.local/e2e-acp-preset')
   mkdirSync(evidence, { recursive: true })
   try {
@@ -158,9 +160,35 @@ it('adds an optional ACP preset without replacing defaults or native composition
     await agentMode.click()
     await page.getByRole('menuitem', { name: 'Use current Agent settings' }).click()
     await card.locator('[data-acp-intent-pending]').waitFor({ state: 'hidden' })
+    // The option was appended, but neither the write reply nor the live stream
+    // may release this composer's Send until the Host durability checkpoint settles.
+    const acpId = SessionId((await card.getAttribute('data-conversation-session'))!)
+    const checkpoint = vi.fn()
+    const offCheckpoint = host.ctx.on('session/flush', async (owner) => {
+      if (owner.id !== acpId) return
+      checkpoint()
+      await durable.promise
+    })
     await agentMode.click()
     await page.getByRole('menuitem', { name: /^Plan\b/ }).click()
     delayedWrite.resolve()
+    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalled(), { timeout: 5000 })
+    await card.locator('[data-acp-intent-pending]').waitFor()
+    await draft.press('Enter')
+    await send.click()
+    expect(readFileSync(join(host.workspaceCwd, 'agent.log'), 'utf8')).not.toContain('--> session/prompt ')
+    durable.resolve()
+    offCheckpoint()
+    await card.locator('[data-acp-intent-pending]').waitFor({ state: 'hidden' })
+    const stored = await host.ctx.sessionPersistence.open(acpId, 'read')
+    try {
+      const record = (await stored.read()).events
+        .map(pluginRecordOf)
+        .findLast((item) => item?.type === firstTurnOptionsRecord)
+      expect(record?.data).toMatchObject({ choices: [{ kind: 'config', id: 'mode', value: 'plan' }] })
+    } finally {
+      await stored.close()
+    }
     await expect.poll(() => agentMode.innerText()).toBe('Plan')
     restoreWrite()
     restoreWrite = undefined
@@ -211,6 +239,7 @@ it('adds an optional ACP preset without replacing defaults or native composition
     expect(host.ctx.agentPresets.defaultId).toBe('standard')
     expect(errors).toEqual([])
   } finally {
+    durable.resolve()
     delayedWrite.resolve()
     restoreWrite?.()
     await browser?.close()

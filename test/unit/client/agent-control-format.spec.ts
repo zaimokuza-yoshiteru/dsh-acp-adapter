@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   agentControlFooter,
   agentControlLabel,
@@ -32,6 +32,45 @@ const snapshot = (overrides: Partial<AcpAgentSessionSnapshotView> = {}): AcpAgen
 })
 
 describe('ACP Agent control presentation', () => {
+  it('isolates a relay viewer’s pending send to its admitted share on the same mount', () => {
+    const sessionId = 'same-session'
+    const base = 'https://relay.example/mount/'
+    const key = () => firstTurnIntentKey(sessionId, 'acp-agent', base + '?shareId=untrusted&token=private')
+    const owner = key()
+    const view = (shareId: string) =>
+      vi.stubGlobal('__DSH_LIVESHARE_VIEWER__', { basePath: '/mount', shareId, sessionId })
+    view('first-share')
+    const first = key()
+    const intent = beginFirstTurnIntent(first, 0, { kind: 'mode', id: 'plan' })
+    try {
+      expect(readFirstTurnIntent(owner)).toBeNull()
+      expect(first).not.toMatch(/untrusted|private/)
+      view('other-share')
+      expect(readFirstTurnIntent(key())).toBeNull()
+      finishFirstTurnIntent(key(), intent)
+      view('first-share')
+      expect(readFirstTurnIntent(key())).toBe(intent)
+    } finally {
+      finishFirstTurnIntent(first, intent)
+      vi.unstubAllGlobals()
+    }
+  })
+  it('keeps pending sends separate across same-origin Host mounts and reuses them on a reconnect', () => {
+    const key = (path: string) => firstTurnIntentKey('same-session', 'acp-agent', 'https://dsh.example' + path)
+    const source = key('/first/')
+    const reconnected = key('/first/index.html?token=private#session')
+    const other = key('/second/')
+    const intent = beginFirstTurnIntent(source, 0, { kind: 'mode', id: 'plan' })
+    try {
+      expect(reconnected).toBe(source)
+      expect(reconnected).not.toContain('private')
+      expect(readFirstTurnIntent(other)).toBeNull()
+      finishFirstTurnIntent(other, intent)
+      expect(readFirstTurnIntent(reconnected)).toBe(intent)
+    } finally {
+      finishFirstTurnIntent(source, intent)
+    }
+  })
   it('reconciles an unknown write only against a newer Host revision with the same intent', () => {
     const key = firstTurnIntentKey('session', 'acp-test')
     const other = firstTurnIntentKey('other', 'acp-test')

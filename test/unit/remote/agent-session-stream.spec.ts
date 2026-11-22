@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { AcpRemoteService } from '../../../src/remote/service.ts'
+import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
+import { AcpRemoteService, type AcpAgentSessionControlLike } from '../../../src/remote/service.ts'
 import type { AcpAgentSessionSnapshotView, AcpRecoveryView } from '../../../src/contract/remote.ts'
 
 const snapshot = (): AcpAgentSessionSnapshotView => ({
@@ -15,7 +16,10 @@ const snapshot = (): AcpAgentSessionSnapshotView => ({
   note: null,
 })
 
-function setup() {
+function setup(
+  ctx = new Context(),
+  firstTurn?: Pick<AcpAgentSessionControlLike, 'firstTurnControls' | 'setFirstTurnOption'>,
+) {
   let bound = false
   let current = snapshot()
   let recovery: AcpRecoveryView = {
@@ -34,7 +38,7 @@ function setup() {
   const listeners = new Set<() => void>()
   const read = vi.fn(async () => current)
   const readRecovery = vi.fn(async () => recovery)
-  const service = new AcpRemoteService(new Context(), {
+  const service = new AcpRemoteService(ctx, {
     registry: { agents: () => new Map(), probeCacheFor: () => undefined },
     backendFacts: {
       readBindingProvider: async () => (bound ? 'acp-generic' : undefined),
@@ -43,7 +47,11 @@ function setup() {
     },
     ownedSessionReadGate: async (id) => id === 'session',
     recoveryStateStore: { read: readRecovery },
-    agentSessionControl: () => ({ agentSessionSnapshot: read, setAgentSessionOption: async () => current }),
+    agentSessionControl: () => ({
+      ...firstTurn,
+      agentSessionSnapshot: read,
+      setAgentSessionOption: async () => current,
+    }),
     agentSessionChanges: {
       canRead: (id) => id === 'session',
       subscribe: (_id, notify) => {
@@ -117,6 +125,48 @@ describe('Agent controls snapshot stream', () => {
     reconnect.abort()
     await second.next()
     expect(state.listeners.size).toBe(0)
+  })
+
+  it('withholds the preselection receipt and reconnect frame after a failed checkpoint, then retries the buffered setting', async () => {
+    const ctx = new Context()
+    const release = Promise.withResolvers<void>()
+    const bothEntered = Promise.withResolvers<void>()
+    const target = { sessionId: 'session', provider: 'acp-generic', preselectionRevision: 0 }
+    const choice = { kind: 'mode', id: 'plan' } as const
+    const chosen = { ...snapshot(), preselection: true, preselectionRevision: 1, preselected: [choice] } as const
+    const abort = new AbortController()
+    try {
+      await ctx.plugin(SessionStore)
+      ctx.sessions.create(SessionId(target.sessionId))
+      let entries = 0
+      const failing = ctx.on('session/flush', async () => {
+        if (++entries === 2) bothEntered.resolve()
+        await release.promise
+        throw new Error('storage is offline')
+      })
+      const state = setup(ctx, { firstTurnControls: () => chosen, setFirstTurnOption: () => chosen })
+      const changed = state.service.setAgentSessionOption(target, choice)
+      const stream = state.service.agentSessionFollow(target, abort.signal)[Symbol.asyncIterator]()
+      const results = Promise.allSettled([changed, stream.next()])
+      await bothEntered.promise
+      const stillPending = Symbol()
+      expect(await Promise.race([results, Promise.resolve(stillPending)])).toBe(stillPending)
+      release.resolve()
+      for (const result of await results)
+        expect(result).toMatchObject({ status: 'rejected', reason: { code: 'dsh-acp/resume-conflict' } })
+      failing()
+      const flushed = vi.fn()
+      ctx.on('session/flush', flushed)
+      const recovered = state.service.agentSessionFollow(target, abort.signal)[Symbol.asyncIterator]()
+      expect((await recovered.next()).value).toMatchObject({ type: 'opened', snapshot: chosen })
+      expect(flushed).toHaveBeenCalledOnce()
+      abort.abort()
+      await recovered.next()
+    } finally {
+      release.resolve()
+      abort.abort()
+      await ctx.fiber.dispose()
+    }
   })
 
   it('coalesces redundant updates, rejects unknown sessions, and surfaces real read failures', async () => {

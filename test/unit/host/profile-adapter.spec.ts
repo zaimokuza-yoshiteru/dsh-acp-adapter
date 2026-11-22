@@ -10,6 +10,7 @@ import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
 import { AcpProfileAdapter } from '../../../src/host/composition/profile-adapter.ts'
 import { ACP_AGENT_MANAGED_MODEL_ID } from '../../../src/contract/model-selection.ts'
 import { acpProbeConfigKey } from '../../../src/domain/session/agent-config.ts'
+import { profileLaunchIdentityHash } from '../../../src/domain/session/launch-fingerprint.ts'
 import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts'
 import { AcpRemoteService } from '../../../src/remote/service.ts'
 import type { DispatchLedgerStore, DispatchRecord } from '../../../src/runtime/session/dispatch-ledger.ts'
@@ -67,9 +68,19 @@ const durableSidecar = {
 } as unknown as AcpSidecar
 
 describe('AcpProfileAdapter generation and dispatch boundaries', () => {
-  it('refuses handoff content before connecting when the prepared CLI generation differs from the approved one', async () => {
+  it.each([
+    { kind: 'acp-handoff', operationId: 'handoff', part: 'delivery', launchIdentity: 'replaced' },
+    {
+      kind: 'dsh-acp-adapter/agent-task',
+      sourceSessionId: 'owner',
+      requestKey: 'task',
+      agent: 'test',
+      model: 'mock',
+      profileIdentity: 'replaced',
+    },
+  ] as const)('refuses $kind before connecting to a replacement CLI', async (source) => {
     const message = createUserMessage({
-      source: { kind: 'acp-handoff', operationId: 'handoff', part: 'delivery', launchIdentity: 'replaced' },
+      source,
       content: [{ type: 'text', text: 'private document' }],
     })
     let spawned = false
@@ -91,8 +102,101 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
         .stream(request('transfer', [message]))
         [Symbol.asyncIterator]()
         .next(),
-    ).rejects.toThrow('selected for this handoff changed')
+    ).rejects.toThrow('selected for this request changed')
     expect(spawned).toBe(false)
+  })
+  it.each(['delivery', 'task'] as const)('checks the %s workspace before acquiring an ACP transport', async (part) => {
+    const identity = profileLaunchIdentityHash('test', profile())
+    const launchScope = { workspaceId: 'original', cwd: '/workspace' }
+    const source =
+      part === 'delivery'
+        ? ({ kind: 'acp-handoff', operationId: 'handoff', part, launchIdentity: identity, launchScope } as const)
+        : ({
+            kind: 'dsh-acp-adapter/agent-task',
+            sourceSessionId: 'owner',
+            requestKey: 'task',
+            agent: 'test',
+            model: 'model-a',
+            profileIdentity: identity,
+            launchScope,
+          } as const)
+    const message = createUserMessage({ source, content: [{ type: 'text', text: 'private text' }] })
+    let spawned = false
+    const ledger = new Ledger()
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => profile(),
+      seam(),
+      () => Object.assign(session(message), { transferLocation: { workspaceId: 'moved', cwd: '/workspace' } }),
+      ledger,
+      undefined,
+      () => {
+        spawned = true
+        throw new Error('unexpected transport')
+      },
+      durableSidecar,
+    )
+    await expect(
+      adapter
+        .stream(request('transfer', [message]))
+        [Symbol.asyncIterator]()
+        .next(),
+    ).rejects.toThrow('working location')
+    expect(spawned).toBe(false)
+    expect(ledger.records).toHaveLength(0)
+  })
+  it('clears the exact dispatch guard when the working directory changes immediately before transmission', async () => {
+    const launchScope = { workspaceId: null, cwd: '/workspace' }
+    const message = createUserMessage({
+      source: {
+        kind: 'acp-handoff',
+        operationId: 'transfer',
+        part: 'delivery',
+        launchIdentity: profileLaunchIdentityHash('test', profile()),
+        launchScope,
+      },
+      content: [{ type: 'text', text: 'reviewed draft' }],
+    })
+    const live = Object.assign(session(message), { transferLocation: launchScope })
+    const ledger = new Ledger()
+    let wireAttempts = 0
+    let sawGuard = false
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => profile(),
+      seam(),
+      () => live,
+      ledger,
+      undefined,
+      () => ({
+        acpSessionId: 'remote',
+        start: async () => undefined,
+        prompt: async (...args) => {
+          sawGuard = ledger.records.length === 1
+          live.transferLocation = { ...launchScope, cwd: '/different' }
+          args[6]?.beforeDispatch?.()
+          wireAttempts++
+          return { stopReason: 'end_turn' } as never
+        },
+        close: async () => undefined,
+      }),
+      {
+        ...durableSidecar,
+        clearDispatch: async (_session: unknown, key?: string) => {
+          ledger.records = ledger.records.filter((r) => r.key !== key)
+        },
+      },
+    )
+    await expect(
+      (async () => {
+        for await (const _ of adapter.stream(request('transfer', [message]))) {
+          /* consume */
+        }
+      })(),
+    ).rejects.toMatchObject({ code: 'ACP_PROMPT_NOT_DISPATCHED' })
+    expect(wireAttempts).toBe(0)
+    expect(sawGuard).toBe(true)
+    expect(ledger.records).toEqual([])
   })
   it('shares one profile probe cache between picker and health, including recheck', async () => {
     const current = profile('shared-agent')

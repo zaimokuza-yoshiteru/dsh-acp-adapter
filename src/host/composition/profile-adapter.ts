@@ -10,6 +10,7 @@ import {
   type NormalizedActivity,
 } from './notification-activities.ts'
 import { ACP_ACTIVITY_RAW_MAX } from '../../persistence/sidecar.ts'
+import { sameTransferLocation } from '../../contract/handoff.ts'
 import { createCodeBuddyReviewRecorder } from './codebuddy-review.ts'
 import { SessionControls, acpSelectValues } from './session-controls.ts'
 import type {
@@ -2007,13 +2008,28 @@ export class AcpProfileAdapter extends LlmAdapter {
       // Verify the immutable generation before acquiring a transport or sending any context.
       if (
         messages.some(
-          (message) => message.source.kind === 'acp-handoff' && message.source.launchIdentity !== generation?.id,
+          ({ source }) =>
+            (source.kind === 'acp-handoff' && source.launchIdentity !== generation?.id) ||
+            (source.kind === 'dsh-acp-adapter/agent-task' && source.profileIdentity !== generation?.id),
         )
       )
         throw LlmError.fromFailure({
-          message: 'The Agent selected for this handoff changed.',
+          message: 'The Agent selected for this request changed.',
           code: 'ACP_PROMPT_NOT_DISPATCHED',
         })
+      const launchScopes = messages.flatMap(({ source }) =>
+        (source.kind === 'acp-handoff' || source.kind === 'dsh-acp-adapter/agent-task') && source.launchScope
+          ? [source.launchScope]
+          : [],
+      )
+      const verifyTransferLocation = (beforeWire = false) => {
+        if (launchScopes.some((expected) => !sameTransferLocation(session?.transferLocation, expected))) {
+          const error = new AcpPromptNotDispatchedError(false, 'working-location')
+          if (beforeWire) throw error
+          throw LlmError.fromFailure({ message: error.message, code: error.code }, { cause: error })
+        }
+      }
+      verifyTransferLocation()
       const sessionFacts = session?.facts
       const firstTurnDraft =
         sessionFacts?.firstTurnOptions?.provider === options.provider ? sessionFacts.firstTurnOptions : undefined
@@ -2802,6 +2818,7 @@ export class AcpProfileAdapter extends LlmAdapter {
           }
         }
         const bindingSettlementTarget = await self.readBindingSettlementTarget(sessionKey)
+        verifyTransferLocation()
         try {
           await self.ledger.begin({
             key: dispatchKey,
@@ -3518,9 +3535,10 @@ export class AcpProfileAdapter extends LlmAdapter {
             ...(approvalReviewAgent(self.profileId, profile) !== undefined ? { reviewInput: () => reviewInput } : {}),
             projection: validatedPrompt.projection,
             hostBodySignal,
-            ...(verifyDispatchModel || verifyFirstOptions
+            ...(verifyDispatchModel || verifyFirstOptions || launchScopes.length
               ? {
                   beforeDispatch: () => {
+                    verifyTransferLocation(true)
                     verifyDispatchModel?.()
                     verifyFirstOptions?.()
                   },
