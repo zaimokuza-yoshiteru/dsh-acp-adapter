@@ -12,6 +12,7 @@ import {
   agentControlFooter,
   primaryAgentControlGroup,
   type AgentControlChoice,
+  firstTurnIntentKey,
 } from './agent-session-controls.ts'
 import type { RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
 import { agentSessionStream } from '../data/agent-session-stream.ts'
@@ -22,7 +23,6 @@ import {
   beginFirstTurnIntent,
   confirmsFirstTurnIntent,
   finishFirstTurnIntent,
-  firstTurnIntentKey,
   firstTurnWriteTimeoutMs,
   guardFirstTurnSend,
   readFirstTurnIntent,

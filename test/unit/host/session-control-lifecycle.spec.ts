@@ -1,3 +1,4 @@
+import { firstTurnIntentKey } from '../../../src/client/ui/agent-session-controls.ts'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -11,7 +12,6 @@ import {
   beginFirstTurnIntent,
   confirmsFirstTurnIntent,
   finishFirstTurnIntent,
-  firstTurnIntentKey,
   readFirstTurnIntent,
 } from '../../../src/client/data/first-turn-intent.ts'
 

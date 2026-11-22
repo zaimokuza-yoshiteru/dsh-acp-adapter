@@ -6,6 +6,7 @@ import {
   formatContextTokenCount,
   lastSuccessfulModelChoice,
   primaryAgentControlGroup,
+  firstTurnIntentKey,
 } from '../../../src/client/ui/agent-session-controls.ts'
 import type { AcpAgentSessionSnapshotView } from '../../../src/client/data/acp-remote.ts'
 import { en, zh } from '../../../src/client/ui/locales.ts'
@@ -13,7 +14,6 @@ import {
   beginFirstTurnIntent,
   confirmsFirstTurnIntent,
   finishFirstTurnIntent,
-  firstTurnIntentKey,
   readFirstTurnIntent,
 } from '../../../src/client/data/first-turn-intent.ts'
 

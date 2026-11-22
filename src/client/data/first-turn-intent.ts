@@ -1,22 +1,8 @@
-import type { ViewerPageTarget } from '@deepseek-ai/dsh-experimental-liveshare-protocol'
 import type { AcpAgentSessionOptionWrite, AcpAgentSessionSnapshotView } from './acp-remote.ts'
 
 const pending = new Map<string, string>()
 const listeners = new Set<() => void>()
 export const firstTurnWriteTimeoutMs = 5_000
-
-export function firstTurnIntentKey(sessionId: string, provider: string, base = globalThis.document?.baseURI): string {
-  // Each DSH mount on one origin has a separate gateway and cookie path but shares tab storage.
-  // Its shell resolves API paths relative to the document directory, including from index.html.
-  const path = base ? new URL(base).pathname : ''
-  const mount = path.slice(0, path.lastIndexOf('/') + 1)
-  // A LiveShare relay serves multiple shares from one mount. Use its injected
-  // page identity, so arbitrary URL parameters never become persisted identifiers.
-  const page: typeof globalThis & { __DSH_LIVESHARE_VIEWER__?: ViewerPageTarget } = globalThis
-  return (
-    'dsh-acp:first-turn:' + JSON.stringify([mount, page.__DSH_LIVESHARE_VIEWER__?.shareId ?? null, sessionId, provider])
-  )
-}
 
 /** A dropped reply may outlive this component. Store just the choice and its
  * expected Host revision in this tab; drafts and permissions remain Host-owned. */
