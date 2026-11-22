@@ -78,7 +78,9 @@ it('hands off the edited document once, preserves the source draft and never sel
     async function checkLayout(surface: 'switch' | 'editor') {
       const panel =
         surface === 'switch'
-          ? page.getByRole('dialog', { name: /Changing Agents requires an independent session|切换 Agent 需要独立会话/ })
+          ? page.getByRole('dialog', {
+              name: /Changing Agents requires an independent session|切换 Agent 需要独立会话/,
+            })
           : page.locator('[data-acp-handoff-editor]')
       const pointer = await page.context().newCDPSession(page)
       try {
