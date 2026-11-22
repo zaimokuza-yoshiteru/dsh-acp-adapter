@@ -31,6 +31,9 @@ import type { AcpAgentConfig, AcpProviderHealth, AgentDraft, DraftError } from '
 import type { AcpLocaleKey } from './locales.ts'
 import type { AcpPanelSnapshot, HealthState } from '../data/stores/panel-store.ts'
 import css from './AcpSection.module.css'
+import { accountUsageLinks, accountUsageProvider, type AcpAccountUsageView } from '../../contract/account-usage.ts'
+import { acpProbeConfigKey } from '../../contract/agent-config.ts'
+import { AccountUsageRow } from './AccountUsageRow.ts'
 
 /** The section's translate seat (slot renderer binds it from the entry's `locale` declaration). */
 export type AcpTranslate = (key: AcpLocaleKey, params?: Record<string, string | number>) => string
@@ -40,6 +43,7 @@ export type UsePanelStore = <S>(selector: (snapshot: AcpPanelSnapshot) => S, equ
 
 /** The controller wire handed to the section (bound in apply; plain callbacks). */
 export interface AcpSectionWire {
+  accountUsage(id: string, refresh: boolean): Promise<AcpAccountUsageView>
   /** Passing true probes the configured Agents. The default reads their saved health. */
   refreshHealth(recheck?: boolean): void
   refreshAgentHealth(agentId: string): void
@@ -626,6 +630,20 @@ function AgentCard(props: {
       ),
     ),
   ]
+
+  const accountProvider = accountUsageProvider(id, config)
+  const accountLinks = accountUsageLinks(id, config)
+  if (!props.readOnly && !retired && (accountProvider || accountLinks.length)) {
+    children.push(
+      h(AccountUsageRow, {
+        key: `account:${acpProbeConfigKey(config)}`,
+        id,
+        t,
+        read: accountProvider ? panel.accountUsage : undefined,
+        links: accountLinks,
+      }),
+    )
+  }
 
   if (diagnostic !== undefined) {
     children.push(h('p', { key: 'diagnostic', className: css.error, role: 'alert' }, diagnostic))

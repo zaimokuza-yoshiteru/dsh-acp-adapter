@@ -6,13 +6,13 @@ Use ACP Agents in DSH with native sessions, tool approvals, and team collaborati
 
 ## Install
 
-This guide covers DSH `0.2.2-rc.5` with plugin [`0.2.2-rc.5.4`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.5.4). For DSH `0.2.2-rc.4`, use [plugin `0.2.2-rc.4.1`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.4.1).
+This guide covers DSH `0.2.2-rc.5` with plugin [`0.2.2-rc.5.5`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.5.5). For DSH `0.2.2-rc.4`, use [plugin `0.2.2-rc.4.1`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.4.1).
 
 **Recommended:** In DSH Creator mode, send:
 
-> Install and enable the ACP plugin: `@zaimokuza/dsh-acp-adapter@0.2.2-rc.5.4`.
+> Install and enable the ACP plugin: `@zaimokuza/dsh-acp-adapter@0.2.2-rc.5.5`.
 
-Confirm the installation when prompted. Alternatively, open **Plugins → Add plugin**, paste `@zaimokuza/dsh-acp-adapter@0.2.2-rc.5.4`, and install it. If prompted, select **Enable now**.
+Confirm the installation when prompted. Alternatively, open **Plugins → Add plugin**, paste `@zaimokuza/dsh-acp-adapter@0.2.2-rc.5.5`, and install it. If prompted, select **Enable now**.
 
 <details>
 <summary>Other installation methods: CLI, Git, and archive</summary>
@@ -23,18 +23,18 @@ Before using the Desktop CLI, fully quit the app; reopen it after the command co
 
 ```bash
 # Desktop
-dsh plugin --profile desktop add @zaimokuza/dsh-acp-adapter@0.2.2-rc.5.4
+dsh plugin --profile desktop add @zaimokuza/dsh-acp-adapter@0.2.2-rc.5.5
 
 # Web
-npx @deepseek-ai/dsh@0.2.2-rc.5 plugin --profile web add @zaimokuza/dsh-acp-adapter@0.2.2-rc.5.4
+npx @deepseek-ai/dsh@0.2.2-rc.5 plugin --profile web add @zaimokuza/dsh-acp-adapter@0.2.2-rc.5.5
 ```
 
 To install from Git or an archive, paste the Git address or .tgz download URL into the plugin manager.
 
 | Source                         | Example                                                                                                                                                    |
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Git                            | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.2-rc.5.4`                                                                             |
-| Prebuilt plugin archive (.tgz) | [Download 0.2.2-rc.5.4](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.2-rc.5.4/zaimokuza-dsh-acp-adapter-0.2.2-rc.5.4.tgz) |
+| Git                            | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.2-rc.5.5`                                                                             |
+| Prebuilt plugin archive (.tgz) | [Download 0.2.2-rc.5.5](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.2-rc.5.5/zaimokuza-dsh-acp-adapter-0.2.2-rc.5.5.tgz) |
 
 This archive includes compiled output and matches the npm package. GitHub's automatically generated Source code ZIP/TAR.GZ files are source archives, not built plugin packages. Uncached dependencies still require network access.
 
@@ -60,7 +60,7 @@ Launch and sign-in commands for common Agents:
 | Codex                                                      | `codex-acp`        | `codex login`                 |
 | Qwen Code                                                  | `qwen --acp`       | `qwen`                        |
 
-> To use WorkBuddy with DSH, connect through the CodeBuddy CLI. See the [ACP CLI reference](https://www.codebuddy.cn/docs/cli/cli-reference) and [CodeBuddy account and subscription details](https://www.codebuddy.cn/docs/ide/Account/pricing).
+Choose **Usage** next to the model picker to check the current Agent’s account. The panel stays open while you write or use other menus. Close it when you’re done. Codex reports its plan and quota, Devin reports its plan, and Antigravity on macOS can check both on request. Plugin details also offer account information. CodeBuddy (including WorkBuddy), Claude, Qwen, OpenCode and GitHub Copilot link to official usage guides.
 
 ## Choose a mode
 
@@ -68,12 +68,16 @@ Standard mode works with ACP Agents. Choose **Creator mode** to create plugins t
 
 Choose the optional **ACP** mode to let the Agent manage conversation context. This mode provides DSH tools and omits DSH plugin management, subagent, and compaction tools.
 
-**Switch models within a conversation.** Choose a CodeBuddy or OpenCode model directly in the model menu. The adapter confirms the model with the Agent before sending. You can switch models in the same main conversation. Switching to another Agent or a native DSH model opens a separate chat in the same mode. Your history and draft stay in the original chat.
+Use the selector beside the ACP composer to choose a work or permission mode offered by the current Agent. You can choose before your first message. The adapter waits for the Agent to confirm before sending. Use `/permission` to change permissions for DSH bridge tools.
+
+**Switch models within a conversation.** Choose a CodeBuddy or OpenCode model directly in the model menu. The adapter confirms the model with the Agent before sending. You can switch models in the same main conversation. Switching Agents or moving between ACP and native DSH opens a blank chat in the same mode by default. To continue the work, choose **Hand off session**, edit the document prepared by the source conversation, and send it. History access is enabled by default. The new chat can look up user and assistant text from turns completed before the handoff. Clear the checkbox to share only the document. Your original draft stays in place.
+
+From your main chat, you can ask the Agent to open an independent session with a named model from an installed Agent. The `create_agent_session` tool accepts an optional first task. You can open the new chat from the original conversation. The independent chat has no access to the source history.
 
 ## Working in a session
 
 - **AI approval.** If your organization restricts an Agent’s automatic modes, turn on AI approval in plugin details to reduce manual prompts. It is off by default. Eligible Devin and OpenCode requests can be allowed once after review. You decide when the model flags a request as high risk or cannot assess it. Each assessment appears in the session audit. [Supported configurations](docs/permission-policy.en.md#ai-approval)
-- **CodeBuddy security review.** The session audit shows security outcomes CodeBuddy reports for tools in this session, including blocked calls, results, and sandbox requests, and sensitive data protection. CodeBuddy handles routine automatic approvals internally.
+- **CodeBuddy security review.** The session audit shows security outcomes CodeBuddy reports for tools in this session, including blocked calls, results, and sandbox requests, and sensitive data protection. Choose CodeBuddy’s Default mode in the ACP preset when writes need individual confirmation.
 - **Queue and stop.** Press Enter during a turn to queue the next message. Agents that support continuation handle it in the same session. **Stop** cancels the current turn. Agents are responsible for stopping their own tools. Tools without a reported result stay unfinished.
 - **Members and tasks.** View subagent progress and handle member approvals in the main session. To share tasks, turn on **Agent Teams** in that session.
 
@@ -140,4 +144,4 @@ These are the official experimental plugins in DSH `0.2.2-rc.5`. Tool-based feat
 
 Export the safe summary JSON from **ACP Diagnostics**; it excludes message text, commands, paths, raw session IDs, and ACP credentials. DSH's native session-log ZIP may contain prompts, tool arguments, file paths, and attachments; inspect and redact it before sharing.
 
-For help, open an [issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) with the error reference, DSH/plugin versions, and redacted log excerpts. For this version, see the [native reuse boundaries](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.5.4/docs/native-reuse.en.md).
+For help, open an [issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) with the error reference, DSH/plugin versions, and redacted log excerpts. For this version, see the [native reuse boundaries](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.5.5/docs/native-reuse.en.md).

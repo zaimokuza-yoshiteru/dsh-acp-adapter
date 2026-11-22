@@ -37,6 +37,8 @@ import { AcpUiFeedback, followAcpQuestionLimitations, type AcpUiOutcome } from '
 import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import { UnroutedHistoryDock } from './ui/UnroutedHistoryDock.ts'
 import { UnsentModelSwitchInput } from './ui/UnsentModelSwitchInput.ts'
+import { SessionHandoffClient } from './coordinator/session-handoff.ts'
+import { HandoffComposer, HandoffDock } from './ui/SessionHandoff.ts'
 import { CrossBackendCoordinator } from './coordinator/cross-backend-coordinator.ts'
 import { AcpNativeForkCoordinator, type NativeForkFailure } from './coordinator/native-fork.ts'
 import { createNativeForkJournal } from './coordinator/native-fork-journal.ts'
@@ -45,7 +47,8 @@ import { CrossBackendModal } from './ui/CrossBackendModal.ts'
 import { AcpOutcomeToast } from './ui/AcpOutcomeToast.ts'
 import { AcpRecoveryDock } from './ui/AcpRecoveryDock.ts'
 import { AcpNativeForkRecovery } from './ui/AcpNativeForkRecovery.ts'
-import { AcpAgentControl } from './ui/AcpAgentControl.ts'
+import { AccountPlanControl } from './ui/AccountPlanControl.ts'
+import { AcpAgentControl, isNativePermissionSeat } from './ui/AcpAgentControl.ts'
 import {
   AcpExternalSubagentComposer,
   followExternalSubagentRecords,
@@ -59,6 +62,7 @@ import {
 } from './ui/AcpTeamManagement.ts'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type {} from '@deepseek-ai/dsh-client-ui-subagent/client'
+import { CreatedAgentSessions } from './ui/CreatedAgentSessions.ts'
 import { AcpTeamApprovals } from './ui/AcpTeamApprovals.ts'
 import type { AcpTeamApprovalActions } from './ui/AcpTeamApprovals.ts'
 import { followNativeSubagentUi } from './ui/native-team-ui-lifecycle.ts'
@@ -81,7 +85,6 @@ import { AcpAuditViewVisibility } from './ui/audit-view-visibility.ts'
 import { createAcpJsonStringWrapping, type AcpJsonStringWrapping } from './ui/json-tree.ts'
 import { en, zh } from './ui/locales.ts'
 import type { AcpRemoteLike } from './data/acp-remote.ts'
-import type { RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { IWorkspaces } from '@deepseek-ai/dsh-api-workspace-controller/client'
@@ -103,6 +106,7 @@ export const inject = [
   'sessions',
   'workspaces',
   'uiWorkspace',
+  'layout',
   'sidebarRight',
   'configForms',
   'remote.settings',
@@ -131,6 +135,26 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     const access = ctx.get('remoteAccess') as unknown as ClientRemoteAccess | undefined
     return typeof access?.source === 'function' ? access.source('session', sessionId, action) : undefined
   }
+  ctx.slots.inject('conversation.session.header.utilities', () =>
+    ctx.slots.register(
+      {
+        name: 'conversation.session.header.utilities',
+        id: 'dsh-acp-created-sessions',
+        order: 50,
+        locale: 'acpActivity',
+        inject: () => ({
+          access: sessionAccessSource,
+          navigate: (id: SessionId) => openIndependentChild(ctx, id),
+          load: async (source: string) => {
+            const result = await acpRemote.createdAgentSessions(source)
+            if (!result.ok) throw result.error
+            return result.value
+          },
+        }),
+      },
+      CreatedAgentSessions,
+    ),
+  )
   const journalHub = new AcpActivityJournalHub(acpRemote, ctx.remote)
   const sessions = ctx.get('sessions') as unknown as ISessions
   const workspaces = ctx.get('workspaces') as unknown as IWorkspaces
@@ -192,6 +216,11 @@ async function registerUi(ctx: ClientContext): Promise<void> {
   )
   const jsonStringWrapping = createAcpJsonStringWrapping()
   const panelWire: AcpSectionWire = {
+    accountUsage: async (id, refresh) => {
+      const result = await acpRemote.accountUsage(id, refresh)
+      if (!result.ok) throw new Error('Account information unavailable')
+      return result.value
+    },
     refreshHealth: (recheck) => {
       void panelController.refreshHealth(recheck)
     },
@@ -334,7 +363,89 @@ async function registerUi(ctx: ClientContext): Promise<void> {
       AcpActivityNode,
     ),
   )
-  const coordinator = new CrossBackendCoordinator(ctx, managedRoutes.store)
+  const transitionModelLabels = {
+    loadModelCatalog: async () => {
+      const result = await ctx.remote.session.modelCatalog()
+      return result.ok ? result.value : null
+    },
+    profileName: (provider: string) => {
+      const profiles = settingsScope.getSnapshot().value?.agents
+      const id = Object.keys(profiles ?? {}).find((candidate) => `acp-${candidate}` === provider)
+      return id === undefined ? undefined : profiles?.[id]?.name
+    },
+  }
+
+  const openHandoffSession = (id: string) => openIndependentChild(ctx, id as SessionId)
+  const handoffs = new SessionHandoffClient(
+    (session, command) => acpRemote.handoff(session, command),
+    (source, destination) => {
+      if (
+        ctx.sidebarRight.mounted.getSnapshot() === source &&
+        document.visibilityState !== 'hidden' &&
+        !document.activeElement?.closest('[data-sidebar-right-session]') &&
+        sessionAccessSource(destination, 'session/follow')?.getSnapshot()
+      )
+        openHandoffSession(destination)
+    },
+    () => ctx.layout.beginNavigation(),
+  )
+  ctx.on('connection/reset', () => handoffs.reconnect())
+  ctx.effect(() => () => handoffs.dispose(), 'dsh-acp: session handoffs')
+  const coordinator = new CrossBackendCoordinator(ctx, managedRoutes.store, handoffs)
+  ctx.slots.inject('conversation.input.dock', () =>
+    ctx.slots.register(
+      {
+        name: 'conversation.input.dock',
+        id: 'dsh-acp-session-handoff',
+        order: 88,
+        locale: 'acpActivity',
+        inject: () => ({ client: handoffs, openSession: openHandoffSession, access: sessionAccessSource }),
+      },
+      HandoffDock,
+    ),
+  )
+  ctx.slots.inject('conversation.composer', () => {
+    const mounted = new Map<string, () => void>()
+    const sync = () => {
+      const drafts = new Set(handoffs.draftDestinations())
+      for (const [id, dispose] of mounted) {
+        if (!drafts.has(id)) {
+          dispose()
+          mounted.delete(id)
+        }
+      }
+      for (const id of drafts) {
+        if (mounted.has(id)) continue
+        const access = ctx.get('remoteAccess') as unknown as ClientRemoteAccess | undefined
+        const source = handoffs.get(id)?.sourceSessionId
+        if (!access || !source) continue
+        const unmount = access.whenResourceAccess('session', id, 'dshAcp/handoff', () =>
+          access.whenResourceAccess('session', source, 'session/events', () =>
+            access.whenResourceAccess('session', id, 'session/events', () =>
+              ctx.slots.register(
+                {
+                  name: 'conversation.composer',
+                  priority: -2,
+                  locale: 'acpActivity',
+                  select: (owner: ComposerChainProps) =>
+                    owner.sessionId === id && !owner.pendingInteraction ? true : null,
+                  inject: () => ({ client: handoffs, openSession: openHandoffSession, ...transitionModelLabels }),
+                },
+                HandoffComposer,
+              ),
+            ),
+          ),
+        )
+        mounted.set(id, unmount)
+      }
+    }
+    const unsubscribe = handoffs.subscribe(sync)
+    sync()
+    return () => {
+      unsubscribe()
+      for (const dispose of mounted.values()) dispose()
+    }
+  })
   // The native catalog owns discovery/navigation; ACP contributes only its settings action.
   ctx.inject(['remote.subagents', 'uiSession'], (teamCtx) => {
     const loadMembers = async (sessionId: SessionId) => {
@@ -498,17 +609,6 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     ),
   )
   ctx.effect(() => coordinator.start(), 'dsh-acp: model transition coordinator')
-  const transitionModelLabels = {
-    loadModelCatalog: async () => {
-      const result = await ctx.remote.session.modelCatalog()
-      return result.ok ? result.value : null
-    },
-    profileName: (provider: string) => {
-      const profiles = settingsScope.getSnapshot().value?.agents
-      const id = Object.keys(profiles ?? {}).find((candidate) => `acp-${candidate}` === provider)
-      return id === undefined ? undefined : profiles?.[id]?.name
-    },
-  }
   ctx.slots.inject('shell.overlay', () =>
     ctx.slots.register(
       {
@@ -529,6 +629,8 @@ async function registerUi(ctx: ClientContext): Promise<void> {
         inject: () => ({
           coordinator,
           ...transitionModelLabels,
+          sessionAccessSource,
+          language: (): 'zh' | 'en' => (ctx.locale.resolveText({ en: 'en', zh: 'zh' }) === 'zh' ? 'zh' : 'en'),
         }),
       },
       CrossBackendModal,
@@ -563,6 +665,76 @@ async function registerUi(ctx: ClientContext): Promise<void> {
       AcpRecoveryDock,
     ),
   )
+  // One default-model lookup per catalog generation, shared by all mounted composers.
+  type Selection = { provider: string; model: string }
+  let defaultRead: Promise<Selection | undefined> | undefined
+  const defaultListeners = new Set<() => void>()
+  const getDefaultSelection = (): Promise<Selection | undefined> => {
+    if (defaultRead) return defaultRead
+    const current: Promise<Selection | undefined> = ctx.remote.session.modelCatalog().then(
+      (result) => {
+        if (defaultRead !== current) return undefined
+        if (result.ok) return result.value.default
+        defaultRead = undefined
+      },
+      () => {
+        if (defaultRead === current) defaultRead = undefined
+        return undefined
+      },
+    )
+    defaultRead = current
+    return current
+  }
+  const composerDefault = {
+    getDefaultProvider: async () => (await getDefaultSelection())?.provider,
+    watchDefaultProvider: (changed: () => void) => {
+      defaultListeners.add(changed)
+      return () => {
+        defaultListeners.delete(changed)
+      }
+    },
+  }
+  const invalidateDefault = () => {
+    defaultRead = undefined
+    for (const changed of defaultListeners) changed()
+  }
+  ctx.effect(() => {
+    const stop = [
+      ctx.remote.$on('settings/document-updated', invalidateDefault),
+      ctx.remote.$on('llm/adapters-updated', invalidateDefault),
+      ctx.remote.$on('llm/models-updated', invalidateDefault),
+      ctx.remote.$on('credentials/record-updated', invalidateDefault),
+      ctx.remote.$on('credentials/reference-updated', invalidateDefault),
+      ctx.on('connection/reset', invalidateDefault),
+    ]
+    return () => {
+      for (const dispose of stop) dispose()
+    }
+  }, 'dsh-acp: composer default model')
+  const openPlans = new WeakMap<object, ReturnType<typeof createSnapshotStore<boolean>>>()
+  ctx.slots.inject('conversation.input.right', () =>
+    ctx.slots.register(
+      {
+        name: 'conversation.input.right',
+        id: 'dsh-acp-account-plan',
+        order: 90,
+        locale: 'acpActivity',
+        inject: (sessionId) => {
+          const binding = sessions.binding(sessionId)
+          const visibility = (binding && openPlans.get(binding)) ?? createSnapshotStore(false)
+          if (binding) openPlans.set(binding, visibility)
+          return {
+            getDefaultSelection,
+            watchDefaultProvider: composerDefault.watchDefaultProvider,
+            hooks: { routeOwnership: managedRoutes.store, accountSettings: settingsScope, planOpen: visibility },
+            setOpen: visibility.set,
+            read: panelWire.accountUsage,
+          }
+        },
+      },
+      AccountPlanControl,
+    ),
+  )
   ctx.slots.inject('conversation.input.left', () =>
     ctx.slots.register(
       {
@@ -570,36 +742,37 @@ async function registerUi(ctx: ClientContext): Promise<void> {
         id: 'dsh-acp-agent-control',
         order: 80,
         locale: 'acpActivity',
-        inject: (): {
-          readonly remote: AcpRemoteLike
-          readonly streamFactory: RemoteStreamFactory
-          readonly hooks: { routeOwnership: typeof managedRoutes.store }
-          readonly getDefaultProvider: () => Promise<string | undefined>
-          readonly watchDefaultProvider: (changed: () => void) => () => void
-          readonly feedback: Pick<AcpUiFeedback, 'report'>
-          readonly sessionAccessSource: SessionAccessSource
-        } => ({
+        inject: () => ({
           remote: acpRemote,
           sessionAccessSource,
           streamFactory: ctx.remote,
-          hooks: { routeOwnership: managedRoutes.store },
+          hooks: {
+            routeOwnership: managedRoutes.store,
+            nativePermissionSeat: {
+              getSnapshot: () => {
+                const slot = 'conversation.input.permission'
+                if (!ctx.get('inputTriggers')) return false
+                const official = Array.from(ctx.get('loader')?.entries() ?? []).find(
+                  (entry) => entry.options.name === '@deepseek-ai/dsh-client-ui-permission-presets',
+                )
+                return isNativePermissionSeat(
+                  ctx.slots.entriesOfSlot(slot)[0],
+                  ctx.slots.entries(slot),
+                  official?.fiber?.name,
+                )
+              },
+              subscribe: (changed: () => void) => ctx.slots.subscribe('conversation.input.permission', changed),
+            },
+          },
+          nativeStopLabel: () => ctx.locale.bind('conversation')('input.stop'),
+          openToolPermissions: async (sessionId: string, signal: AbortSignal) => {
+            const scope = sessions.scope(sessionId as SessionId)
+            const triggers = scope && ctx.get('inputTriggers')?.sessionOf(scope)
+            // Use the native decorated command with its own confirmation and Session binding.
+            return (await triggers?.adjudicate('/permission', signal, { attachments: 0 })) === 'handled'
+          },
           feedback,
-          getDefaultProvider: async () => {
-            const result = await ctx.remote.session.modelCatalog()
-            return result.ok ? result.value.default.provider : undefined
-          },
-          watchDefaultProvider: (changed) => {
-            const disposers = [
-              ctx.remote.$on('settings/document-updated', changed),
-              ctx.remote.$on('llm/adapters-updated', changed),
-              ctx.remote.$on('credentials/record-updated', changed),
-              ctx.remote.$on('credentials/reference-updated', changed),
-              ctx.on('connection/reset', changed),
-            ]
-            return () => {
-              for (const dispose of disposers) dispose()
-            }
-          },
+          ...composerDefault,
         }),
       },
       AcpAgentControl,

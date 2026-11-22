@@ -6,13 +6,13 @@
 
 ## 安装
 
-本页适用于 DSH `0.2.2-rc.5` 和插件 [`0.2.2-rc.5.4`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.5.4)。如果使用 DSH `0.2.2-rc.4`，请选择[插件 `0.2.2-rc.4.1`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.4.1)。
+本页适用于 DSH `0.2.2-rc.5` 和插件 [`0.2.2-rc.5.5`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.5.5)。如果使用 DSH `0.2.2-rc.4`，请选择[插件 `0.2.2-rc.4.1`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.4.1)。
 
 **推荐：** 在 DSH 创造模式中发送：
 
-> 请安装并启用 ACP 插件：`@zaimokuza/dsh-acp-adapter@0.2.2-rc.5.4`。
+> 请安装并启用 ACP 插件：`@zaimokuza/dsh-acp-adapter@0.2.2-rc.5.5`。
 
-按提示确认安装。也可打开 **插件 → 添加插件**，粘贴 `@zaimokuza/dsh-acp-adapter@0.2.2-rc.5.4`。如果安装完成后提示启用，选择 **立即启用**。
+按提示确认安装。也可打开 **插件 → 添加插件**，粘贴 `@zaimokuza/dsh-acp-adapter@0.2.2-rc.5.5`。如果安装完成后提示启用，选择 **立即启用**。
 
 <details>
 <summary>其他安装方式：命令行、Git 与压缩包</summary>
@@ -23,18 +23,18 @@
 
 ```bash
 # Desktop
-dsh plugin --profile desktop add @zaimokuza/dsh-acp-adapter@0.2.2-rc.5.4
+dsh plugin --profile desktop add @zaimokuza/dsh-acp-adapter@0.2.2-rc.5.5
 
 # Web
-npx @deepseek-ai/dsh@0.2.2-rc.5 plugin --profile web add @zaimokuza/dsh-acp-adapter@0.2.2-rc.5.4
+npx @deepseek-ai/dsh@0.2.2-rc.5 plugin --profile web add @zaimokuza/dsh-acp-adapter@0.2.2-rc.5.5
 ```
 
 使用 Git 或压缩包安装时，将下表的 Git 地址或 .tgz 下载地址粘贴到插件管理器。
 
 | 来源              | 示例                                                                                                                                                   |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Git               | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.2-rc.5.4`                                                                         |
-| 预构建插件包 .tgz | [下载 0.2.2-rc.5.4](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.2-rc.5.4/zaimokuza-dsh-acp-adapter-0.2.2-rc.5.4.tgz) |
+| Git               | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.2-rc.5.5`                                                                         |
+| 预构建插件包 .tgz | [下载 0.2.2-rc.5.5](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.2-rc.5.5/zaimokuza-dsh-acp-adapter-0.2.2-rc.5.5.tgz) |
 
 此包包含编译产物，与 npm 发布包一致。GitHub 自动生成的 Source code ZIP/TAR.GZ 是源码归档，不是构建后的插件包；未缓存的依赖仍需联网安装。
 
@@ -60,7 +60,7 @@ npx @deepseek-ai/dsh@0.2.2-rc.5 plugin --profile web add @zaimokuza/dsh-acp-adap
 | Codex                                                      | `codex-acp`        | `codex login`        |
 | Qwen Code                                                  | `qwen --acp`       | `qwen`               |
 
-> WorkBuddy 用户可通过 CodeBuddy CLI 接入 DSH。参见 [ACP 命令参考](https://www.codebuddy.cn/docs/cli/cli-reference)和 [CodeBuddy 账号与订阅说明](https://www.codebuddy.cn/docs/ide/Account/pricing)。
+点击模型选择器旁的「套餐」可查看当前 Agent 的账户信息。气泡在编辑消息和操作其他菜单时保持打开，可手动关闭。Codex 显示套餐与额度，Devin 显示套餐，macOS 上的 Antigravity 支持按需查询套餐与配额。插件详情也有相同入口。CodeBuddy（含 WorkBuddy）、Claude、Qwen、OpenCode 和 GitHub Copilot 提供官方用量指南。
 
 ## 选择模式
 
@@ -68,12 +68,16 @@ npx @deepseek-ai/dsh@0.2.2-rc.5 plugin --profile web add @zaimokuza/dsh-acp-adap
 
 如需让 Agent 管理对话上下文，可选择 **ACP** 模式。此模式提供 DSH 工具，不加载 DSH 的插件管理、子代理和压缩工具。
 
-**在会话中切换模型**。在模型菜单里直接选择 CodeBuddy 或 OpenCode 的具体模型。插件会在发送前向 Agent 核对所选模型。同一个 Agent 的主会话可以换模型接着聊；改用另一个 Agent 或 DSH 原生模型时，会按原模式另开会话，历史和草稿留在原处。
+在 **ACP** 模式的输入框旁选择当前 Agent 提供的工作或权限模式。首条消息可以先选模式，Agent 确认后才会发送。DSH 桥接工具的权限仍可通过 `/permission` 调整。
+
+**在会话中切换模型**。在模型菜单里直接选择 CodeBuddy 或 OpenCode 的具体模型。插件会在发送前向 Agent 核对所选模型。同一个 Agent 的主会话可以换模型接着聊。跨 Agent 或在 ACP 和 DSH 原生模型间切换时，默认按原模式新建空白会话。要继续手头的工作，选择「交接会话」，编辑来源会话整理的文档后发送。「允许查阅交接前的原对话」默认勾选，新会话可按需查阅交接前已完成轮次中的用户和助手文本。取消勾选即可只交接文档。原会话保留草稿。
+
+你也可以在主会话让 Agent 用指定模型另开会话。`create_agent_session` 支持已安装的 Agent 和具名模型，传入任务后会在新会话启动首轮。你可以从原会话打开新会话。独立会话没有原会话的历史读取权。
 
 ## 使用会话
 
 - **AI 审批**。企业限制 Agent 的自动模式时，可在插件详情页开启 AI 审批，减少重复确认。默认关闭。支持的 Devin 和 OpenCode 请求经审查可允许一次，模型标为高风险或无法判断的请求由你确认，每次判断均可在会话审计中查看。[支持范围](docs/permission-policy.md#ai-审批)
-- **CodeBuddy 安全审查**。会话审计会显示 CodeBuddy 对本会话工具报告的安全结果，包括拦截工具调用、工具结果或沙箱权限请求，以及保护敏感数据。常规自动放行由 CodeBuddy 内部处理。
+- **CodeBuddy 安全审查**。会话审计会显示 CodeBuddy 对本会话工具报告的安全结果，包括拦截工具调用、工具结果或沙箱权限请求，以及保护敏感数据。需要逐次确认时，请在专用 ACP 模式选择 CodeBuddy 的 Default。
 - **排队与停止**。运行中按 Enter 可将下一条消息加入队列，支持续聊的 Agent 会在同一会话处理。点击停止按钮可取消当前轮次。Agent 负责停止其自带工具，未报告结果的工具会保留为未完成。
 - **成员与任务**。在主会话中可查看子代理进度并处理成员审批。需要共享任务时，打开本会话的 **Agent Teams** 开关。
 
@@ -140,4 +144,4 @@ npx @deepseek-ai/dsh@0.2.2-rc.5 plugin --profile web add @zaimokuza/dsh-acp-adap
 
 在 **ACP 诊断**中可导出安全摘要 JSON；其中不含消息正文、命令、路径、原始会话 ID 或 ACP 凭据。DSH 原生会话日志 ZIP 可能含提示词、工具参数、文件路径和附件；分享前请检查并移除敏感信息。
 
-需要求助时，向 [Issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) 附上错误编号、DSH/插件版本和已脱敏的日志片段。本版的技术边界见[原生复用说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.5.4/docs/native-reuse.md)。
+需要求助时，向 [Issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) 附上错误编号、DSH/插件版本和已脱敏的日志片段。本版的技术边界见[原生复用说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.5.5/docs/native-reuse.md)。

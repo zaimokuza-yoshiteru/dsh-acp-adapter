@@ -499,6 +499,7 @@ describe('AcpRemoteService current public surface', () => {
   it('generated descriptors contain only the current invocation set', () => {
     const ids = (TYPERT as { invocations: Array<{ id: string }> }).invocations.map(({ id }) => id.split('/').at(-1))
     expect(ids).toEqual([
+      'accountUsage',
       'activityDetail',
       'activityFollow',
       'activityPage',
@@ -509,6 +510,9 @@ describe('AcpRemoteService current public surface', () => {
       'auditTimeline',
       'backendOf',
       'boundSessions',
+      'clearAgentPreselection',
+      'createdAgentSessions',
+      'handoff',
       'health',
       'nativeForkScope',
       'ownedProviderRoutes',
@@ -517,6 +521,7 @@ describe('AcpRemoteService current public surface', () => {
       'recoveryFollow',
       'recoverySnapshot',
       'registerNativeFork',
+      'restoreHandoffSource',
       'retryModelSwitchInput',
       'retryOriginal',
       'setAgentSessionOption',

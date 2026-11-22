@@ -16,6 +16,10 @@ type Props = {
   readonly groups: readonly AgentControlGroup[]
   readonly footer?: readonly MenuEntry[]
   readonly label: string
+  readonly primaryGroup?: AgentControlGroup | undefined
+  readonly replacesPermission?: boolean
+  readonly pendingIntent?: boolean
+  readonly actions?: readonly { id: string; label: string; run(): void }[]
   readonly t: AgentControlTranslate
   readonly open: boolean
   readonly disabled?: boolean
@@ -33,6 +37,10 @@ export function AgentSessionMenu({
   groups,
   footer,
   label,
+  primaryGroup,
+  replacesPermission,
+  pendingIntent,
+  actions,
   t,
   open,
   disabled,
@@ -44,7 +52,9 @@ export function AgentSessionMenu({
   const [pane, setPane] = useState<string | null>(null)
   const anchor = useRef<HTMLSpanElement>(null)
   const firstContent = useRef<HTMLSpanElement>(null)
-  const group = groups.find((candidate) => candidate.id === pane)
+  const group = groups.find((candidate) => candidate.id === pane) ?? primaryGroup
+  const selected = group?.choices.find((choice) => choice.current)
+  const atRoot = pane === null || !groups.some((candidate) => candidate.id === pane)
   useEffect(() => {
     if (!open) setPane(null)
   }, [open])
@@ -57,49 +67,55 @@ export function AgentSessionMenu({
       ?.querySelector<HTMLButtonElement>('[role=menuitem]:not(:disabled)')
     if (first !== null && first !== undefined) focusWithoutRing(first)
   }, [open, group?.id])
-  const items: MenuEntry[] =
-    group === undefined
-      ? groups.map((item, index) => ({
-          id: item.id,
+  const groupRows = groups
+    .filter((item) => item.id !== primaryGroup?.id)
+    .map((item, index) => ({
+      id: `setting:${item.id}`,
+      label: h(
+        'span',
+        {
+          className: css.settingRow,
+          ref: group === undefined && index === 0 ? firstContent : undefined,
+          title: item.description ?? undefined,
+        },
+        h('span', { className: css.settingName }, item.name),
+        h('span', { className: css.currentValue, title: item.current }, item.current),
+        h(IconChevronRightOutlineMedium, null),
+      ),
+      disabled: item.choices.length === 0,
+    }))
+  const items: MenuEntry[] = []
+  if (group !== undefined) {
+    if (!atRoot)
+      items.push({
+        id: 'back',
+        label: h('span', { ref: firstContent }, t('agentControlBack')),
+        icon: h(IconChevronLeftOutlineMedium, null),
+      })
+    items.push(
+      { type: 'label', id: 'setting-title', text: group.name },
+      ...(group.description ? [{ type: 'label' as const, id: 'setting-description', text: group.description }] : []),
+      ...group.choices.flatMap((choice, index) => [
+        ...(choice.group !== undefined && choice.group !== group.choices[index - 1]?.group
+          ? [{ type: 'label' as const, id: `group:${index}`, text: choice.group }]
+          : []),
+        {
+          id: `choice:${choice.id}`,
+          disabled: choice.disabled,
           label: h(
             'span',
-            {
-              className: css.settingRow,
-              ref: index === 0 ? firstContent : undefined,
-              title: item.description ?? undefined,
-            },
-            h('span', { className: css.settingName }, item.name),
-            h('span', { className: css.currentValue, title: item.current }, item.current),
-            h(IconChevronRightOutlineMedium, null),
+            { className: css.choice, ref: atRoot && index === 0 ? firstContent : undefined },
+            choice.label,
+            choice.description ? h('span', { className: css.choiceDescription }, choice.description) : null,
           ),
-          disabled: item.choices.length === 0,
-        }))
-      : [
-          {
-            id: 'back',
-            label: h('span', { ref: firstContent }, t('agentControlBack')),
-            icon: h(IconChevronLeftOutlineMedium, null),
-          },
-          { type: 'label', id: 'setting-title', text: group.name },
-          ...(group.description
-            ? [{ type: 'label' as const, id: 'setting-description', text: group.description }]
-            : []),
-          ...group.choices.flatMap((choice, index) => [
-            ...(choice.group !== undefined && choice.group !== group.choices[index - 1]?.group
-              ? [{ type: 'label' as const, id: `group:${index}`, text: choice.group }]
-              : []),
-            {
-              id: choice.id,
-              disabled: choice.disabled,
-              label: h(
-                'span',
-                { className: css.choice },
-                choice.label,
-                choice.description ? h('span', { className: css.choiceDescription }, choice.description) : null,
-              ),
-            },
-          ]),
-        ]
+        },
+      ]),
+    )
+  }
+  if (atRoot) {
+    items.push(...groupRows)
+    for (const action of actions ?? []) items.push({ id: `action:${action.id}`, label: action.label })
+  }
   if (items.length === 0)
     items.push({
       id: 'unavailable',
@@ -108,7 +124,12 @@ export function AgentSessionMenu({
     })
   return h(
     'span',
-    { ref: anchor, className: css.menuAnchor },
+    {
+      ref: anchor,
+      className: css.menuAnchor,
+      'data-acp-permission-replacement': replacesPermission || undefined,
+      'data-acp-intent-pending': pendingIntent || undefined,
+    },
     h(Menu, {
       open,
       portal: true,
@@ -118,24 +139,31 @@ export function AgentSessionMenu({
       items,
       listClassName: css.menuList,
       anchorRef: anchor,
-      selectedId: group?.choices.find((choice) => choice.current)?.id,
+      selectedId: selected ? `choice:${selected.id}` : undefined,
       onClose: () => onOpenChange(false),
       onSelect: (id: string) => {
         if (id === 'back') {
           setPane(null)
           return
         }
-        if (group === undefined) {
-          if (groups.some((candidate) => candidate.id === id)) setPane(id)
+        const action = atRoot ? actions?.find((candidate) => `action:${candidate.id}` === id) : undefined
+        if (action !== undefined) {
+          onOpenChange(false)
+          action.run()
           return
         }
-        const choice = group.choices.find((candidate) => candidate.id === id)
+        const setting = atRoot ? groups.find((candidate) => `setting:${candidate.id}` === id) : undefined
+        if (setting) {
+          setPane(setting.id)
+          return
+        }
+        const choice = group?.choices.find((candidate) => `choice:${candidate.id}` === id)
         if (choice === undefined || choice.disabled || disabled) return
         onOpenChange(false)
         onSelect(choice)
       },
       anchor: h(Tooltip, {
-        label: t('agentControlTooltip'),
+        label: primaryGroup?.name ?? t('agentControlTooltip'),
         portal: true,
         side: 'top',
         disabled: open,

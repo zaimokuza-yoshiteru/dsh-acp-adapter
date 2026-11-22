@@ -49,7 +49,9 @@ const BASELINE_PACKAGES = PLATFORM_PACKAGES
  * 注册在 client root 的子 fiber 上）。消费 UI 必须在 mount 后通过子 fiber 显式
  * inject；顶层 Loader inject 会提前等待，未声明的直接 property read 则会被 Cordis 拒绝。
  */
-const OPTIONAL_SERVICE_READS = new Set(['conversation'])
+// The ACP composer keeps the original permission picker when its Loader owner
+// or the native /permission command carrier cannot be resolved.
+const OPTIONAL_SERVICE_READS = new Set(['conversation', 'loader', 'inputTriggers'])
 
 const failures: string[] = []
 const fail = (msg: string) => failures.push(msg)

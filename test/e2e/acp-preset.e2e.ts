@@ -2,17 +2,23 @@ import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import type {} from '@deepseek-ai/dsh-compaction'
 import type { TestBrowser } from './browser.ts'
 import { launchBrowser, newEnglishPage } from './browser.ts'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { pluginRecordOf, SessionId } from '@deepseek-ai/dsh-session'
 import { expect, it, vi } from 'vitest'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
+import type { ComposerProbe } from './fixtures/render-probe/client.ts'
+import type { AcpRemoteService } from '../../src/remote/service.ts'
+import { firstTurnOptionsRecord } from '../../src/domain/session/first-turn-options.ts'
 
 it('adds an optional ACP preset without replacing defaults or native compositions', async () => {
-  const host = await launchAdapterWorld()
+  const host = await launchAdapterWorld({ renderProbe: true })
   let browser: TestBrowser | undefined
+  let restoreWrite: (() => void) | undefined
+  const delayedWrite = Promise.withResolvers<void>()
+  const durable = Promise.withResolvers<void>()
   const evidence = join(root, '.local/e2e-acp-preset')
   mkdirSync(evidence, { recursive: true })
   try {
@@ -48,13 +54,15 @@ it('adds an optional ACP preset without replacing defaults or native composition
             HOME: host.workspaceCwd,
             MOCK_SCENARIO: 'regression',
             MOCK_PROFILE: 'codex',
-            MOCK_LOG: join(evidence, 'agent.log'),
+            MOCK_LOG: join(host.workspaceCwd, 'agent.log'),
           },
         },
       },
     })
     await vi.waitFor(() => expect(host.ctx.llm.listProviders().some((p) => p.id === 'acp-codex')).toBe(true))
     await host.ctx.agentDefaultModel.saveSelection({ provider: 'acp-codex', model: 'mock-model-a' })
+    const service = host.ctx.get('dshAcp') as AcpRemoteService
+    await service.health({ agentId: 'codex', recheck: true })
     browser = await launchBrowser({ headless: true })
     const page = await newEnglishPage(browser)
     const errors: string[] = []
@@ -89,12 +97,108 @@ it('adds an optional ACP preset without replacing defaults or native composition
       await menu.waitFor({ state: 'hidden' })
     }
     await page.setViewportSize({ width: 1440, height: 1000 })
-    const firstTurn = host.whenTurnSettled()
+    const card = page.locator('[data-conversation-session]').first()
+    const nativePermission = card.locator('[data-slot="conversation.input.permission"] button').first()
+    const agentMode = card.locator('[data-acp-permission-replacement] button').first()
+    await expect.poll(() => agentMode.innerText()).toBe('Code')
+    expect(await nativePermission.isVisible()).toBe(false)
+    // Mount a second real, independently bound composer in this document. A global
+    // CSS rule or a global priority override would remove its DSH permission entry.
+    for (const preset of ['ptc', 'minimal', 'cordis', 'standard']) {
+      await page.evaluate(
+        ({ cwd, preset }) => (globalThis.__DSH_ACP_COMPOSER_PROBE__ as ComposerProbe).showCompanion(cwd, preset),
+        { cwd: host.workspaceCwd, preset },
+      )
+      const other = page.locator(`[data-test-companion="${preset}"]`)
+      await other.locator('[data-slot="conversation.input.permission"] button').first().waitFor()
+      expect(await other.locator('[data-acp-permission-replacement]').count()).toBe(0)
+      expect(await agentMode.isVisible()).toBe(true)
+    }
+    const companion = page.locator('[data-test-companion="standard"]')
+    await page.screenshot({ path: join(evidence, 'dedicated-and-standard-composers.png') })
+    await page.evaluate(() => globalThis.__DSH_ACP_COMPOSER_PROBE__!.shadowPermission(true))
+    await expect.poll(() => page.getByRole('button', { name: 'External permission control' }).count()).toBe(2)
+    expect(await card.locator('[data-acp-permission-replacement]').count()).toBe(0)
+    await page.evaluate(() => globalThis.__DSH_ACP_COMPOSER_PROBE__!.shadowPermission(false))
+    await agentMode.click()
+    await page.getByRole('menuitem', { name: /^Plan\b/ }).waitFor()
+    await page.screenshot({ path: join(evidence, 'agent-options-before-first-message.png') })
+    await page.getByRole('menuitem', { name: 'DSH tool permissions', exact: true }).click()
+    const accessPicker = page.getByRole('option', { name: /Full access/i })
+    await accessPicker.waitFor()
+    await page.keyboard.press('Escape')
+    await accessPicker.waitFor({ state: 'hidden' })
     await writeComposerDraft(page, page.locator('[data-composer-input]').first(), 'E2E_ACP_PRESET')
-    await page.getByRole('button', { name: 'Send message', exact: true }).click()
+    const send = card.getByRole('button', { name: 'Send message', exact: true })
+    expect(await send.evaluate((button) => button.closest('[data-slot]')?.getAttribute('data-slot'))).toBe(
+      'conversation.composer.bar',
+    )
+    const prototype: AcpRemoteService = Object.getPrototypeOf(service)
+    const write = prototype.setAgentSessionOption
+    const delayed = vi.spyOn(prototype, 'setAgentSessionOption').mockImplementationOnce(async function (
+      this: AcpRemoteService,
+      ...args
+    ) {
+      await delayedWrite.promise
+      return write.apply(this, args)
+    })
+    restoreWrite = () => delayed.mockRestore()
+    await agentMode.click()
+    await page.getByRole('menuitem', { name: /^Plan\b/ }).click()
+    await vi.waitFor(() => expect(delayed).toHaveBeenCalledOnce())
+    await card.locator('[data-acp-intent-pending]').waitFor()
+    const draft = card.locator('[data-composer-input]')
+    await draft.press('Enter')
+    await send.click()
+    expect(readFileSync(join(host.workspaceCwd, 'agent.log'), 'utf8')).not.toContain('--> session/prompt ')
+    await writeComposerDraft(page, companion.locator('[data-composer-input]'), 'Independent draft')
+    await expect.poll(() => agentMode.innerText(), { timeout: 10_000 }).toBe('Confirm Agent setting')
+    await writeComposerDraft(page, draft, 'E2E_ACP_PRESET')
+    await draft.press('Enter')
+    await send.click()
+    expect(readFileSync(join(host.workspaceCwd, 'agent.log'), 'utf8')).not.toContain('--> session/prompt ')
+    await agentMode.click()
+    await page.getByRole('menuitem', { name: 'Use current Agent settings' }).click()
+    await card.locator('[data-acp-intent-pending]').waitFor({ state: 'hidden' })
+    // The option was appended, but neither the write reply nor the live stream
+    // may release this composer's Send until the Host durability checkpoint settles.
+    const acpId = SessionId((await card.getAttribute('data-conversation-session'))!)
+    const checkpoint = vi.fn()
+    const offCheckpoint = host.ctx.on('session/flush', async (owner) => {
+      if (owner.id !== acpId) return
+      checkpoint()
+      await durable.promise
+    })
+    await agentMode.click()
+    await page.getByRole('menuitem', { name: /^Plan\b/ }).click()
+    delayedWrite.resolve()
+    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalled(), { timeout: 5000 })
+    await card.locator('[data-acp-intent-pending]').waitFor()
+    await draft.press('Enter')
+    await send.click()
+    expect(readFileSync(join(host.workspaceCwd, 'agent.log'), 'utf8')).not.toContain('--> session/prompt ')
+    durable.resolve()
+    offCheckpoint()
+    await card.locator('[data-acp-intent-pending]').waitFor({ state: 'hidden' })
+    const stored = await host.ctx.sessionPersistence.open(acpId, 'read')
+    try {
+      const record = (await stored.read()).events
+        .map(pluginRecordOf)
+        .findLast((item) => item?.type === firstTurnOptionsRecord)
+      expect(record?.data).toMatchObject({ choices: [{ kind: 'config', id: 'mode', value: 'plan' }] })
+    } finally {
+      await stored.close()
+    }
+    await expect.poll(() => agentMode.innerText()).toBe('Plan')
+    restoreWrite()
+    restoreWrite = undefined
+    await page.evaluate(() => globalThis.__DSH_ACP_COMPOSER_PROBE__!.closeCompanion())
+    const firstTurn = host.whenTurnSettled()
+    await send.click()
     await page.getByText('E2E_ACP_PRESET_OK', { exact: true }).waitFor()
     const sessionId = await firstTurn
     const agent = host.ctx.agents.get(sessionId)!
+    expect(readFileSync(join(host.workspaceCwd, 'agent.log'), 'utf8')).toContain('preset prompt mode=plan')
     expect(host.ctx.agentPresets.presetForSession(agent.session)).toBe('acp-adapter')
     expect(host.ctx.agentPresets.serviceFor(agent, 'compaction')).toBeUndefined()
     await page.reload()
@@ -103,6 +207,7 @@ it('adds an optional ACP preset without replacing defaults or native composition
     const manager = host.ctx.pluginManager
     const entry = (await manager.listPlugins()).find((row) => row.moduleName === '@zaimokuza/dsh-acp-adapter')!
     expect(await manager.setPluginEnabled(entry.entryId, false)).toMatchObject({ application: 'applied' })
+    await nativePermission.waitFor()
     expect((await host.ctx.agentPresets.list()).some((row) => row.id === 'acp-adapter')).toBe(false)
     expect(host.ctx.agentPresets.presetForSession(agent.session)).toBe('acp-adapter')
     expect(await manager.setPluginEnabled(entry.entryId, true)).toMatchObject({ application: 'applied' })
@@ -115,6 +220,8 @@ it('adds an optional ACP preset without replacing defaults or native composition
     expect(await manager.setBundleEnabled('@zaimokuza/dsh-acp-adapter', true)).toMatchObject({ application: 'applied' })
     expect((await host.ctx.agentPresets.resolve('acp-adapter')).broken).toBeUndefined()
     expect(host.ctx.agentPresets.defaultId).toBe('standard')
+    await agentMode.waitFor()
+    expect(await nativePermission.isVisible()).toBe(false)
     await page.getByRole('button', { name: /^Select model, current Mock Model A/ }).click()
     await page.getByRole('menuitem', { name: /^Model/ }).click()
     await page.getByRole('menuitemradio', { name: 'Mock Model B', exact: true }).click()
@@ -132,6 +239,9 @@ it('adds an optional ACP preset without replacing defaults or native composition
     expect(host.ctx.agentPresets.defaultId).toBe('standard')
     expect(errors).toEqual([])
   } finally {
+    durable.resolve()
+    delayedWrite.resolve()
+    restoreWrite?.()
     await browser?.close()
     await host.close()
   }

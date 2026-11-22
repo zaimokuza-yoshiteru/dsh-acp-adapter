@@ -4,4 +4,4 @@
 2. Select **Add Agent** below. Saving the Agent starts a connection check.
 3. Start a new session and choose the Agent and model in the model menu.
 
-[Help](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.5.4/README.en.md#connect-an-agent) · [Report a problem](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues)
+[Help](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.5.5/README.en.md#connect-an-agent) · [Report a problem](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues)

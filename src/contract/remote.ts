@@ -13,6 +13,30 @@
  * @module @zaimokuza/dsh-acp-adapter/contract/remote
  */
 
+export type AcpAccountProvider = 'codex' | 'devin' | 'antigravity'
+export type { AcpCreatedAgentSession } from './created-agent-session.ts'
+export type { AcpHandoffCommand, AcpHandoffTarget, AcpHandoffView } from './handoff.ts'
+
+export interface AcpAccountWindow {
+  readonly key: string
+  /** Public metered quota name, when Codex reports a named or additional bucket. */
+  readonly bucketName?: string | null
+  readonly minutes: number | null
+  readonly remainingPercent: number
+  /** Unix milliseconds. */
+  readonly resetsAt: number | null
+}
+
+export interface AcpAccountUsageView {
+  readonly status: 'ready' | 'available' | 'unavailable' | 'unsupported' | 'signin-required'
+  readonly provider: AcpAccountProvider | null
+  readonly checkedAt: number | null
+  readonly plan: string | null
+  /** A decimal balance in provider units, or the explicit access reported in place of a balance. */
+  readonly credits: string | { readonly kind: 'available' | 'unlimited' } | null
+  readonly windows: readonly AcpAccountWindow[]
+}
+
 /** Stable ACP diagnostics preserved by the supported DSH typed Remote failure carrier. */
 export interface AcpRemoteErrorDetails {
   readonly kind: string | null
@@ -489,7 +513,21 @@ export interface AcpAgentModeView {
   readonly description?: string | null
 }
 
+/** A composer requesting pre-binding discovery must name its selected route. */
+export interface AcpSessionControlsTarget {
+  readonly sessionId: string
+  readonly provider: string
+  /** First-turn writes must name the revision displayed in this composer. */
+  readonly preselectionRevision?: number
+}
+
 export interface AcpAgentSessionSnapshotView {
+  /** Only a discovery hint. No write has been acknowledged by this conversation's Agent. */
+  readonly preselection?: true
+  readonly preselectionRevision?: number
+  readonly preselected?: readonly AcpAgentSessionOptionWrite[]
+  /** The persisted binding has settled at least one prompt on this Agent route. */
+  readonly firstPromptCommitted?: true
   readonly sessionId: string
   readonly profileId: string
   readonly modeWritable?: boolean

@@ -11,6 +11,7 @@ import { Config } from './config.ts'
 export { Config }
 import { installInstalledProfileRegistry } from './installed-profile-registry.ts'
 import { warnOnHostVersionMismatch } from './host-version.ts'
+import { installHandoffHistory } from '../tools/handoff-history.ts'
 
 export const name = 'dsh-acp-adapter'
 // Wait for the host-owned seams before creating routes. This avoids freezing a
@@ -27,6 +28,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     child.effect(() => child.settings.configure({ auto: false }, ctx.fiber))
   })
   await installInstalledProfileRegistry(ctx, config, { installRemote: true })
+  installHandoffHistory(ctx)
   installLegacySettingsImport(ctx)
 }
 

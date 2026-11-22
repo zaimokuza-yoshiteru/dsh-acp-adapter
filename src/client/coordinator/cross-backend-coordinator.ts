@@ -6,6 +6,8 @@ import type { IWorkspaces } from '@deepseek-ai/dsh-api-workspace-controller/clie
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { TypertClientRemote } from '@deepseek-ai/dsh-typert-protocol'
 import type { AcpOwnedRoutesView } from '../../contract/remote.ts'
+import type { SessionHandoffClient } from './session-handoff.ts'
+import type { AcpLocaleKey } from '../ui/locales.ts'
 import { includesRoute } from '../data/managed-routes.ts'
 import { acpAgentIdFromRoute } from '../../contract/agent-config.ts'
 import { acpDeclaredModelRoute, isAcpAgentManagedModel } from '../../contract/model-selection.ts'
@@ -44,6 +46,8 @@ export interface CrossBackendPending {
   readonly confirmable: boolean
   readonly busy: boolean
   readonly useDefault?: true
+  readonly canHandoff?: true
+  readonly handoffError?: AcpLocaleKey
 }
 
 interface CreatedSession {
@@ -133,6 +137,7 @@ export class CrossBackendCoordinator {
       getSnapshot(): AcpOwnedRoutesView
       subscribe(changed: () => void): () => void
     },
+    private readonly handoffs?: SessionHandoffClient,
   ) {}
 
   start(): () => void {
@@ -277,6 +282,40 @@ export class CrossBackendCoordinator {
       this.pending = this.queued.shift() ?? null
       this.emit()
     }
+  }
+
+  async beginHandoff(key: string, locale: 'zh' | 'en'): Promise<void> {
+    const pending = this.pending
+    if (!pending?.canHandoff || !pending.confirmable || pending.busy || key !== pending.ticket.key || !this.handoffs)
+      return
+    this.pending = { ...pending, busy: true }
+    this.emit()
+    try {
+      if (!(await this.verifyTicket(key))) throw new Error('Selection unavailable')
+      if (this.disposed || this.pending?.ticket.key !== key) return
+      await this.handoffs.begin(pending.ticket.sourceSessionId, {
+        kind: 'begin',
+        id: key,
+        locale,
+        target: pending.ticket.targetSelection,
+      })
+      if (this.pending?.ticket.key !== key) return
+      this.forget(key)
+      this.pending = this.queued.shift() ?? null
+    } catch (error) {
+      if (this.disposed || this.pending?.ticket.key !== key) return
+      const code = error instanceof Error && 'code' in error ? error.code : undefined
+      const handoffError =
+        code === 'session/agent-busy'
+          ? 'handoffSourceBusy'
+          : code === 'session/model-unavailable'
+            ? 'handoffTargetUnavailable'
+            : code === 'dsh-acp/user-rejected' || code === 'remote-access/denied'
+              ? 'handoffForbidden'
+              : 'handoffStartFailed'
+      this.pending = { ...pending, busy: false, handoffError }
+    }
+    this.emit()
   }
 
   async confirm(expectedKey?: string, useDefault = false): Promise<void> {
@@ -519,6 +558,15 @@ export class CrossBackendCoordinator {
         : { phase: 'restore-source', message: restored.message ?? 'source model restore failed' },
       ...(noLocation ? { blockingReason: 'no-location' as const } : {}),
       confirmable: restored.ok && !noLocation,
+      ...(restored.ok &&
+      !noLocation &&
+      !historicalSource &&
+      source !== undefined &&
+      source.provider !== ticket.targetSelection.provider &&
+      row?.blank === false &&
+      row.origin !== 'subagent'
+        ? { canHandoff: true as const }
+        : {}),
       busy: false,
     }
     if (this.pending === null) this.pending = pending
@@ -546,10 +594,13 @@ export class CrossBackendCoordinator {
       restoreSource: async (selection: CrossBackendModelSelection) => {
         if (!current()) return withdrawn
         try {
-          const result = await remote.session.selectModel({
-            sessionId: ticket.sourceSessionId as SessionId,
-            ...selection,
-          })
+          const result =
+            selection.provider !== ticket.targetSelection.provider
+              ? await remote.dshAcp.restoreHandoffSource(ticket.sourceSessionId, selection, ticket.targetSelection)
+              : await remote.session.selectModel({
+                  sessionId: ticket.sourceSessionId as SessionId,
+                  ...selection,
+                })
           return result.ok ? { ok: true } : { ok: false, message: result.error.message }
         } catch (error) {
           return { ok: false, message: error instanceof Error ? error.message : String(error) }

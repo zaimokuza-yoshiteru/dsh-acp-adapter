@@ -1,6 +1,6 @@
 {
   "name": "@zaimokuza/dsh-acp-adapter",
-  "version": "0.2.2-rc.5.4",
+  "version": "0.2.2-rc.5.5",
   "description": "Use AI agents from the DSH session UI.",
   "icon": "./icon.svg",
   "keywords": [
@@ -394,6 +394,7 @@
     "@deepseek-ai/dsh-config-editor": "0.2.2-rc.5",
     "@deepseek-ai/dsh-deepseek-account": "0.2.2-rc.5",
     "@deepseek-ai/dsh-error": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-experimental-liveshare-protocol": "0.2.2-rc.5",
     "@deepseek-ai/dsh-experimental-speech-to-text": "0.2.2-rc.5",
     "@deepseek-ai/dsh-experimental-worktree": "0.2.2-rc.5",
     "@deepseek-ai/dsh-fs": "0.2.2-rc.5",

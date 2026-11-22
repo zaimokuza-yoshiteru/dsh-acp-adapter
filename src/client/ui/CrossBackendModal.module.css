@@ -1,13 +1,17 @@
 .content {
   min-width: 0;
-  max-height: min(70vh, 560px);
+  min-height: 0;
   overflow-y: auto;
   overflow-wrap: anywhere;
 }
 
 .dialog {
   pointer-events: auto;
-  max-width: min(560px, calc(100vw - 32px));
+  max-height: 100%;
+}
+
+.dialog.handoffDialog {
+  width: min(480px, 100%);
 }
 
 .error {
@@ -44,4 +48,14 @@
   white-space: normal;
   height: auto;
   min-height: 36px;
+}
+
+@media (max-width: 480px) {
+  .handoffDialog .footer {
+    width: 100%;
+  }
+
+  .handoffDialog .footer > :last-child {
+    flex-basis: 100%;
+  }
 }

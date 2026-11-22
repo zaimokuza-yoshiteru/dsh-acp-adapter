@@ -99,6 +99,13 @@
   min-width: 0;
   max-width: 100%;
 }
+/* RC.5 exposes one permission seat for the whole client. Address the stock
+   occupant only in the composer whose dedicated Agent control is present. */
+:global([data-composer-card]):has(.menuAnchor[data-acp-permission-replacement])
+  :global([data-slot='conversation.input.permission'])
+  > * {
+  display: none;
+}
 .choice {
   display: flex;
   flex-direction: column;

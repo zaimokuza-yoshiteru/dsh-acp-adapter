@@ -112,3 +112,68 @@ it('explains that the original Agent must be restored to continue a retired sess
   } as never) as { props: { description: string } }
   expect(modal.props.description).toBe('crossBackendSourceUnavailable')
 })
+
+it('keeps the blank session primary and sends the named handoff only when chosen with a current grant', () => {
+  const beginHandoff = vi.fn()
+  const confirm = vi.fn()
+  let granted = true
+  const modal = CrossBackendModal({
+    coordinator: {
+      getSnapshot: () => ({
+        pending: {
+          reason: 'backend-change',
+          canHandoff: true,
+          confirmable: true,
+          busy: false,
+          failure: null,
+          ticket: {
+            key: 'operation',
+            sourceSessionId: 's',
+            sourceSelection: { provider: 'native', model: 'native-model' },
+            targetSelection: selection,
+          },
+        },
+      }),
+      subscribe: () => () => {},
+      confirm,
+      beginHandoff,
+    },
+    loadModelCatalog: async () => catalog,
+    profileName: () => 'My Agent',
+    t,
+    language: () => 'zh',
+    sessionAccessSource: () => ({ getSnapshot: () => granted, subscribe: () => () => {} }),
+  } as never) as {
+    props: {
+      footer: {
+        props: {
+          children: [
+            unknown,
+            {
+              type: (props: unknown) => {
+                props: { label: string; children: { props: { children: { props: { onClick: () => void } } } } }
+              } | null
+              props: unknown
+            },
+            { props: { variant: string; children: string; onClick: () => void } },
+          ]
+        }
+      }
+    }
+  }
+  const [, handoff, blank] = modal.props.footer.props.children
+  expect(blank.props.variant).toBe('primary')
+  expect(blank.props.children).toBe('handoffBlank')
+  blank.props.onClick()
+  expect(confirm).toHaveBeenCalledExactlyOnceWith('operation', false)
+  expect(beginHandoff).not.toHaveBeenCalled()
+  const tooltip = handoff.type(handoff.props)!
+  expect(tooltip.props.label).toContain('My Agent')
+  const button = tooltip.props.children.props.children
+  button.props.onClick()
+  expect(beginHandoff).toHaveBeenCalledExactlyOnceWith('operation', 'zh')
+  granted = false
+  button.props.onClick()
+  expect(beginHandoff).toHaveBeenCalledTimes(1)
+  expect(handoff.type(handoff.props)).toBeNull()
+})

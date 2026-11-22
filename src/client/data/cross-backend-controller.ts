@@ -1,12 +1,8 @@
 /**
  * Transactional handoff between DSH execution backends.
  *
- * This module deliberately has no DSH settings or UI dependency.  The stock
- * session controller remains the authority for model selection: restoring the
- * source calls `session.selectModel(source)`, and selecting the destination
- * calls the same official operation after the destination exists.  That gives
- * the host its normal "selection becomes default" semantics without a second
- * plugin-owned default store.
+ * The coordinator restores provisional cross-provider picks on the source session.
+ * Confirming a blank destination uses the native picker’s usual default-model behavior.
  */
 
 /** Client-safe model selection shape; intentionally independent of the legacy picker. */

@@ -3,6 +3,21 @@ import { mountNativeEntry } from '../../../../src/client/ui/native-tool-renderer
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { StoredEntry } from '@deepseek-ai/dsh-client-ui-slots'
+import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { ConversationViewsProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotMap {
+    'test.acp.companion': { kind: 'single'; scope: 'session' }
+  }
+}
+
+export interface ComposerProbe {
+  showCompanion(cwd: string, preset: string): Promise<void>
+  closeCompanion(): void
+  shadowPermission(enable: boolean): void
+}
 
 export interface QuestionProbe {
   failNext(): void
@@ -13,11 +28,75 @@ export interface QuestionProbe {
 declare global {
   var __DSH_ACP_RENDER_PROBE__: ((key: string) => void) | undefined
   var __DSH_ACP_QUESTION_PROBE__: QuestionProbe | undefined
+  var __DSH_ACP_COMPOSER_PROBE__: ComposerProbe | undefined
 }
 
 export const inject = ['slots'] as const
 
 export function apply(ctx: Context): void {
+  let closeCompanion: (() => void) | undefined
+  let releasePermission: (() => void) | undefined
+  globalThis.__DSH_ACP_COMPOSER_PROBE__ = {
+    async showCompanion(cwd, preset) {
+      closeCompanion?.()
+      const sessions = ctx.get('sessions') as unknown as ISessions
+      const id = await sessions.create({ cwd, agentPreset: preset })
+      const reference = sessions.retain(id, { source: 'controllerOperation' })
+      await reference.ready
+      const parent = ctx.slots.register(
+        {
+          name: 'shell.overlay',
+          id: 'test-acp-companion',
+          children: { 'test.acp.companion': { kind: 'single', scope: 'session' } },
+        },
+        ({ SessionProvider, renderSlot }) =>
+          h(
+            'aside',
+            {
+              'data-test-companion': preset,
+              style: { position: 'fixed', inset: '0 0 auto auto', width: '30vw' },
+            },
+            h(SessionProvider, { session: reference, children: renderSlot('test.acp.companion', {}) }),
+          ),
+      )
+      const child = ctx.slots.register({ name: 'test.acp.companion' }, ({ renderFactorySlot }) =>
+        renderFactorySlot(
+          'conversation.content',
+          { variant: 'embedded', phase: 'active', hero: false },
+          {
+            slots: {
+              views: (props: ConversationViewsProps) => props.renderSlot('conversation.session', { view: 'chat' }),
+            },
+          },
+        ),
+      )
+      closeCompanion = () => {
+        child()
+        parent()
+        reference.release()
+        closeCompanion = undefined
+      }
+    },
+    closeCompanion() {
+      closeCompanion?.()
+    },
+    shadowPermission(enable) {
+      releasePermission?.()
+      releasePermission = enable
+        ? ctx.slots.register({ name: 'conversation.input.permission', priority: -2, registrant: 'test-acp-peer' }, () =>
+            h('button', null, 'External permission control'),
+          )
+        : undefined
+    },
+  }
+  ctx.effect(
+    () => () => {
+      releasePermission?.()
+      closeCompanion?.()
+      globalThis.__DSH_ACP_COMPOSER_PROBE__ = undefined
+    },
+    'test: companion composer and permission owner',
+  )
   // Exercise a failed UI submission without replacing the Host, gateway,
   // PendingQuestion lifecycle, or production component. Only this test bundle
   // can arm the one-shot rejection; successful retries use the real carrier.

@@ -1,26 +1,53 @@
 import { describe, expect, it } from 'vitest'
-import { snapshotIsAcp } from '../../../src/client/ui/AcpAgentControl.ts'
+import { composerSelection, selectedAgentProvider } from '../../../src/client/ui/composer-provider.ts'
+import { isNativePermissionSeat } from '../../../src/client/ui/AcpAgentControl.ts'
 import { AcpUiFeedback } from '../../../src/client/data/feedback.ts'
 import { AcpOutcomeToast } from '../../../src/client/ui/AcpOutcomeToast.ts'
 import { en, zh } from '../../../src/client/ui/locales.ts'
 
 describe('ACP Agent control route selection', () => {
-  const owns = (provider: string | undefined): boolean => provider === 'acp-devin'
+  it('queries the complete account route, preserving historical choices and withholding conflicting snapshots', () => {
+    const original = { provider: 'acp-opencode', model: 'provider-one/model' }
+    const selected = { provider: 'acp-opencode', model: 'provider-two/model' }
+    const fallback = { provider: 'acp-codex', model: 'cli-default' }
+    expect(composerSelection({ lastUsed: original }, fallback)).toEqual(original)
+    expect(composerSelection({ lastUsed: original, next: null }, fallback)).toBeUndefined()
+    expect(composerSelection({ lastUsed: original, next: selected }, fallback)).toEqual(selected)
+    expect(composerSelection({ lastUsed: null, next: null }, fallback)).toEqual(fallback)
+  })
+  it('leaves an unconfirmed or competing permission owner visible, including an equal-priority entry using the native locale', () => {
+    const stock = {
+      component: function PermissionSelect() {},
+      registrant: 'owner',
+      locale: 'permission.access',
+      options: {},
+    }
+    const peer = { ...stock, component: function AnotherPermissionSelect() {} }
+    expect(isNativePermissionSeat(stock, [stock], 'owner')).toBe(true)
+    expect(isNativePermissionSeat(stock, [stock], undefined)).toBe(false)
+    expect(isNativePermissionSeat(stock, [stock], 'another-owner')).toBe(false)
+    expect(isNativePermissionSeat(peer, [peer], 'owner')).toBe(false)
+    expect(isNativePermissionSeat(stock, [stock, peer], 'owner')).toBe(false)
+  })
 
   it('uses the pending next selection as the current route', () => {
-    expect(snapshotIsAcp({ lastUsed: { provider: 'acp-devin' }, next: { provider: 'native' } }, owns)).toBe(false)
-    expect(snapshotIsAcp({ lastUsed: { provider: 'native' }, next: { provider: 'acp-devin' } }, owns)).toBe(true)
+    expect(selectedAgentProvider({ lastUsed: { provider: 'acp-devin' }, next: { provider: 'native' } })).toBe('native')
+    expect(selectedAgentProvider({ lastUsed: { provider: 'native' }, next: { provider: 'acp-devin' } })).toBe(
+      'acp-devin',
+    )
   })
 
   it('falls back from an empty session projection to the host default route', () => {
-    expect(snapshotIsAcp({ lastUsed: { provider: 'acp-devin' } }, owns)).toBe(true)
-    expect(snapshotIsAcp({ lastUsed: { provider: 'acp-devin' }, next: undefined }, owns)).toBe(true)
-    expect(snapshotIsAcp({ lastUsed: { provider: 'acp-devin' }, next: { provider: undefined } }, owns)).toBe(false)
-    expect(snapshotIsAcp({ lastUsed: null, next: null }, owns, 'acp-devin')).toBe(true)
-    expect(snapshotIsAcp({ lastUsed: { provider: 'acp-devin' }, next: null }, owns, 'native')).toBe(false)
-    expect(snapshotIsAcp({ lastUsed: null, next: null }, owns, 'native')).toBe(false)
-    expect(snapshotIsAcp({ lastUsed: null, next: { provider: 'native' } }, owns, 'acp-devin')).toBe(false)
-    expect(snapshotIsAcp(null, owns, 'acp-devin')).toBe(true)
+    expect(selectedAgentProvider({ lastUsed: { provider: 'acp-devin' } })).toBe('acp-devin')
+    expect(selectedAgentProvider({ lastUsed: { provider: 'acp-devin' }, next: undefined })).toBe('acp-devin')
+    expect(selectedAgentProvider({ lastUsed: { provider: 'acp-devin' }, next: { provider: undefined } })).toBe(
+      undefined,
+    )
+    expect(selectedAgentProvider({ lastUsed: null, next: null }, 'acp-devin')).toBe('acp-devin')
+    expect(selectedAgentProvider({ lastUsed: { provider: 'acp-devin' }, next: null }, 'native')).toBe(undefined)
+    expect(selectedAgentProvider({ lastUsed: null, next: null }, 'native')).toBe('native')
+    expect(selectedAgentProvider({ lastUsed: null, next: { provider: 'native' } }, 'acp-devin')).toBe('native')
+    expect(selectedAgentProvider(null, 'acp-devin')).toBe('acp-devin')
   })
 })
 

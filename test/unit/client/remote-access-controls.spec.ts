@@ -138,6 +138,9 @@ function setup(owner = false, workspace = true) {
     useSession: (select: (value: object) => unknown) => select({ running: false, openState: 'ready' }),
     useProjection: () => ({ lastUsed: { provider: 'acp-codex' }, next: { provider: 'acp-codex' } }),
     t: (key: string) => key,
+    useNativePermissionSeat: () => true,
+    openToolPermissions: vi.fn(async () => true),
+    nativeStopLabel: () => 'Stop',
     useRouteOwnership: (select: (value: AcpOwnedRoutesView) => unknown) =>
       select({ providers: ['acp-codex'], historicalProviders: [] }),
   }

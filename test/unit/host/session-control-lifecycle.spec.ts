@@ -1,3 +1,4 @@
+import { firstTurnIntentKey } from '../../../src/client/ui/agent-session-controls.ts'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -5,8 +6,14 @@ import { describe, expect, it, vi } from 'vitest'
 import { createUserMessage, markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import { ACP_CURRENT_CONFIG_MODEL_ID } from '../../../src/contract/model-selection.ts'
 import { AcpProfileAdapter, type AcpProfileRuntime } from '../../../src/host/composition/profile-adapter.ts'
-import { createAcpSidecar } from '../../../src/persistence/sidecar.ts'
+import { createAcpSidecar, modeIntentBindingKey } from '../../../src/persistence/sidecar.ts'
 import { withSessionFacts } from '../../support/session-facts.ts'
+import {
+  beginFirstTurnIntent,
+  confirmsFirstTurnIntent,
+  finishFirstTurnIntent,
+  readFirstTurnIntent,
+} from '../../../src/client/data/first-turn-intent.ts'
 
 async function fixture(cold = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-control-owner-'))
@@ -119,6 +126,78 @@ async function fixture(cold = false) {
 }
 
 describe('session control owner lifecycle', () => {
+  it('releases a disconnected composer’s first-turn guard from a committed cold binding', async () => {
+    const key = firstTurnIntentKey('controls', 'acp-test')
+    const local = beginFirstTurnIntent(key, 0, { kind: 'mode', id: 'plan' })
+    const f = await fixture(true)
+    try {
+      const snapshot = await f.adapter.agentSessionSnapshot('controls')
+      expect(snapshot).toMatchObject({ freshness: 'stale', editable: false, firstPromptCommitted: true })
+      expect(confirmsFirstTurnIntent(snapshot, local)).toBe(true)
+      finishFirstTurnIntent(key, local)
+      expect(readFirstTurnIntent(key)).toBeNull()
+      expect(f.runtime.setMode).not.toHaveBeenCalled()
+    } finally {
+      finishFirstTurnIntent(key, local)
+      await f.cleanup()
+    }
+  })
+
+  it.each(['unchanged', 'withdrawn'] as const)(
+    'reports an unconfirmed live permission choice and saves the Agent reply (%s)',
+    async (reply) => {
+      const f = await fixture()
+      const option = {
+        type: 'select' as const,
+        id: 'permission_mode',
+        name: 'Permissions',
+        currentValue: 'auto',
+        options: [
+          { value: 'auto', name: 'Auto' },
+          { value: 'ask', name: 'Ask' },
+        ],
+      }
+      let offered = [option]
+      vi.spyOn(f.runtime, 'configOptions', 'get').mockImplementation(() => offered)
+      f.set.mockImplementation(async () => {
+        if (reply === 'withdrawn') offered = []
+      })
+      try {
+        await expect(
+          f.adapter.setAgentSessionOption('controls', { kind: 'config', id: option.id, value: 'ask' }),
+        ).rejects.toMatchObject({ code: 'ACP_CONFIG_SYNC_FAILED' })
+        expect(f.set).toHaveBeenCalledOnce()
+        expect((await f.adapter.agentSessionSnapshot('controls')).configOptions).toEqual(offered)
+        const saved = await f.sidecar.readOptionSnapshot('controls' as never)
+        expect(saved?.options.map(({ id, value }) => [id, value])).toEqual(
+          reply === 'withdrawn' ? [] : [[option.id, 'auto']],
+        )
+      } finally {
+        await f.cleanup()
+      }
+    },
+  )
+
+  it('keeps a pending member mode until the replacement choice is confirmed', async () => {
+    const f = await fixture()
+    const id = 'controls' as never
+    try {
+      const bound = await f.sidecar.readLatestBinding(id)
+      if (bound?.status !== 'ok') throw new Error('Expected a live fixture binding')
+      const pending = { bindingKey: modeIntentBindingKey(bound.binding), modeId: 'plan' }
+      await f.sidecar.writeModeIntent(id, pending)
+      vi.mocked(f.runtime.setMode!).mockResolvedValueOnce(undefined)
+      await expect(f.adapter.setAgentSessionOption(id, { kind: 'mode', id: 'plan' })).rejects.toMatchObject({
+        code: 'ACP_CONFIG_SYNC_FAILED',
+      })
+      expect(await f.sidecar.readModeIntent(id)).toEqual(pending)
+      await f.adapter.setAgentSessionOption(id, { kind: 'mode', id: 'plan' })
+      expect(await f.sidecar.readModeIntent(id)).toBeUndefined()
+    } finally {
+      await f.cleanup()
+    }
+  })
+
   it('allows dormant modes after runtime disposal while keeping its retained Host session read-only during cleanup', async () => {
     const f = await fixture()
     const closeEntered = Promise.withResolvers<void>()

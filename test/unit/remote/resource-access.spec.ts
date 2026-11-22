@@ -39,9 +39,12 @@ afterEach(async () => {
 const actions: readonly RemoteAccessAction[] = [
   'dshAcp/teamMembers',
   'dshAcp/approvalChildren',
+  'dshAcp/createdAgentSessions',
   'dshAcp/teamMemberModels',
   'dshAcp/setTeamMemberModel',
   'dshAcp/health',
+  'dshAcp/accountUsage',
+  'dshAcp/handoff',
   'dshAcp/projectedSubagentIds',
   'dshAcp/backendOf',
   'dshAcp/registerNativeFork',
@@ -61,6 +64,7 @@ const member: AcpTeamMemberView = {
 async function fixture(
   options: {
     ownedSessionReadGate?: AcpRemoteServiceDeps['ownedSessionReadGate']
+    agentSessionControl?: AcpRemoteServiceDeps['agentSessionControl']
     management?: (ctx: Context) => NonNullable<AcpRemoteServiceDeps['teamManagement']>
   } = {},
 ) {
@@ -84,6 +88,10 @@ async function fixture(
   const backend = vi.fn(async () => 'acp-test')
   const nativeFork = vi.fn(async () => {})
   const retryModelSwitchInput = vi.fn<NonNullable<AcpRemoteServiceDeps['retryModelSwitchInput']>>(async () => {})
+  const handoff = vi.fn<NonNullable<AcpRemoteServiceDeps['handoff']>>(async (_id, _command, authorize) => {
+    authorize('destination')
+    return null
+  })
   const nativeForkScope = vi.fn(() => '11111111-1111-4111-8111-111111111111')
   const approvalChildren = vi.fn(async (): Promise<readonly AcpApprovalChildView[]> => [
     {
@@ -105,10 +113,13 @@ async function fixture(
     },
   ])
   new AcpRemoteService(ctx, {
+    createdSessions: () => [{ sessionId: 'member', agent: 'codex', model: 'target' }],
     registry: { agents: () => new Map(), probeCacheFor: () => undefined },
     nativeFork,
     retryModelSwitchInput,
+    handoff,
     nativeForkScope,
+    ...(options.agentSessionControl && { agentSessionControl: options.agentSessionControl }),
     checkExecutable: async () => true,
     queryVersion: async () => null,
     ownedSessionReadGate: options.ownedSessionReadGate ?? (async () => true),
@@ -124,7 +135,7 @@ async function fixture(
   })
   const owner: PeerScope = new Connection.Peer(ctx, { principal: { kind: 'owner' } })
   const restricted: PeerScope = new Connection.Peer(ctx, { principal: { kind: 'acp-resource-test' } })
-  const hold = (sessions: readonly string[], global = false, sessionActions = actions) => {
+  const hold = (sessions: readonly string[], global = false, sessionActions = actions, globalActions = actions) => {
     held = [
       ...sessions.map((id): RemoteAccessBinding => ({
         role: { name: 'acp-test-session', resource: 'session', actions: sessionActions },
@@ -133,7 +144,7 @@ async function fixture(
       ...(global
         ? [
             {
-              role: { name: 'acp-test-global', resource: 'global' as const, actions },
+              role: { name: 'acp-test-global', resource: 'global' as const, actions: globalActions },
               resource: { kind: 'global' as const },
             },
           ]
@@ -155,12 +166,85 @@ async function fixture(
     backend,
     bindings,
     retryModelSwitchInput,
+    handoff,
     nativeFork,
     nativeForkScope,
   }
 }
 
 describe('ACP resources through the published Gateway and Peer', () => {
+  it('keeps local account information behind global Host settings management', async () => {
+    const h = await fixture()
+    const args = { agentId: 'devin' }
+    h.hold(['reader'])
+    await expect(h.call(h.restricted, 'accountUsage', args)).rejects.toMatchObject({ code: 'remote-access/denied' })
+    h.hold([], true)
+    await expect(h.call(h.restricted, 'accountUsage', args)).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
+    await expect(h.call(h.owner, 'accountUsage', args)).resolves.toMatchObject({ status: 'unsupported' })
+  })
+
+  it('clears first-turn settings only with the current grants and live request signal', async () => {
+    const request = new AbortController()
+    let beforeCommit = () => {}
+    const applied: number[] = []
+    const h = await fixture({
+      agentSessionControl: () => ({
+        agentSessionSnapshot: vi.fn(),
+        setAgentSessionOption: vi.fn(),
+        setFirstTurnOption: (_sessionId, choice, authorized, revision) => {
+          expect(choice).toBeNull()
+          expect(authorized()).toBe(true)
+          beforeCommit()
+          if (!authorized()) throw new Error('Authorization expired')
+          applied.push(revision!)
+          return {} as never
+        },
+      }),
+    })
+    const session = { id: SessionId('first') }
+    h.ctx.provide('sessions', { get: () => session, flush: async () => true })
+    const args = { target: { sessionId: 'first', provider: 'acp-test', preselectionRevision: 3 } }
+    const clear = () =>
+      h.ctx.typertGateway.invoke({
+        peer: h.restricted,
+        namespace: 'dshAcp',
+        method: 'clearAgentPreselection',
+        args,
+        signal: request.signal,
+      })
+    const clearOnly = [...actions, 'dshAcp/clearAgentPreselection'] as const
+    const both = [...clearOnly, 'dshAcp/setAgentSessionOption'] as const
+    h.hold(['first'], false, clearOnly)
+    await expect(clear()).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
+    h.hold(['first'], false, both)
+    await clear()
+    beforeCommit = () =>
+      h.hold(
+        ['first'],
+        false,
+        both.filter((action) => action !== 'dshAcp/clearAgentPreselection'),
+      )
+    await expect(clear()).rejects.toThrow()
+    h.hold(['first'], false, both)
+    beforeCommit = () => request.abort()
+    await expect(clear()).rejects.toThrow()
+    expect(applied).toEqual([3])
+  })
+
+  it('requires independent creation authority and permission to use both ends of a handoff', async () => {
+    const h = await fixture()
+    const args = { sessionId: 'original', command: { kind: 'status' } }
+    const grant = [...actions, 'session/prompt', 'session/events', 'session/selectModel'] as const
+    h.hold(['original', 'destination'], false, grant)
+    await expect(h.call(h.restricted, 'handoff', args)).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
+    expect(h.handoff).not.toHaveBeenCalled()
+    h.hold(['original'], true, grant, ['session/create'])
+    await expect(h.call(h.restricted, 'handoff', args)).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
+    h.hold(['original', 'destination'], true, grant, ['session/create'])
+    await expect(h.call(h.restricted, 'handoff', args)).resolves.toBeNull()
+    await expect(h.call(h.owner, 'handoff', args)).resolves.toBeNull()
+  })
+
   it('requires both retry and native prompt grants on the same session and passes the actual caller', async () => {
     const h = await fixture()
     const args = { sessionId: 'original', failureSeq: 17 }
@@ -346,6 +430,19 @@ describe('ACP resources through the published Gateway and Peer', () => {
     h.hold(['source', 'child'])
     await h.call(h.restricted, 'registerNativeFork', { sessionId: 'child', sourceSessionId: 'source', atSeq: 7 })
     expect(h.nativeFork).toHaveBeenCalledExactlyOnceWith('child', 'source', 7)
+  })
+  it('only links independent chats visible to this source session reader', async () => {
+    const h = await fixture()
+    h.hold(['lead'])
+    await expect(h.call(h.restricted, 'createdAgentSessions', { source: 'lead' })).resolves.toEqual([])
+    h.hold(['member'])
+    await expect(h.call(h.restricted, 'createdAgentSessions', { source: 'lead' })).rejects.toMatchObject({
+      code: 'remote-access/denied',
+    })
+    h.hold(['lead', 'member'])
+    await expect(h.call(h.restricted, 'createdAgentSessions', { source: 'lead' })).resolves.toEqual([
+      { sessionId: 'member', agent: 'codex', model: 'target' },
+    ])
   })
   it('filters child approvals by every current path resource and permits native parent discovery', async () => {
     const h = await fixture()

@@ -168,7 +168,7 @@ it('keeps native search and reasoning usable while model changes offer an indepe
     const changeAgent = page.getByRole('dialog', { name: 'Changing Agents requires an independent session' })
     await changeAgent.waitFor()
     searchFixture.offerModelOne = false
-    await changeAgent.getByRole('button', { name: 'Create an independent session', exact: true }).click()
+    await changeAgent.getByRole('button', { name: 'Start a blank session', exact: true }).click()
     const entry = page.locator('[data-acp-created-session]')
     await entry.waitFor()
     expect(await composer.innerText()).toBe(sourceDraft)
