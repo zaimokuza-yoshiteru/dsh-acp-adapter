@@ -145,6 +145,11 @@
 @media (max-width: 480px) {
   .surface {
     align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .summaryText {
+    flex-basis: 12em;
   }
 
   .choice {
