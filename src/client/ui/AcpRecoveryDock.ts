@@ -10,6 +10,7 @@ import { includesRoute, type UseRouteOwnership } from '../data/managed-routes.ts
 import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import css from './AcpRecoveryDock.module.css'
+import modalCss from './CrossBackendModal.module.css'
 import type { SessionAccessSource } from './session-action-access.ts'
 import type {
   independentSessionNavigation,
@@ -348,7 +349,7 @@ export function AcpRecoveryDock({
       ...(css.content === undefined ? {} : { contentClassName: css.content }),
       footer: h(
         'div',
-        { className: css.footer },
+        { className: modalCss.footer },
         h(
           Button,
           {
@@ -417,7 +418,7 @@ export function AcpRecoveryDock({
         ...(css.content === undefined ? {} : { contentClassName: css.content }),
         footer: h(
           'div',
-          { className: css.footer },
+          { className: modalCss.footer },
           h(
             Button,
             {
