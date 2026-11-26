@@ -4,6 +4,18 @@
 
 Find installation commands, release dates, and package checksums on [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases).
 
+## 0.2.2-rc.5.6
+
+### 中文
+
+- 在窄窗口或桌面分栏中，恢复提示会为说明和操作按钮留出空间。重置 Agent 上下文时，确认按钮的文字也能完整显示。感谢 lukstei 提交窄屏恢复提示修复。[#101](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/pull/101)
+- ACP 诊断面板变窄时，筛选、导出和搜索控件会换行，记录详情可使用面板的完整宽度。
+
+### English
+
+- Recovery messages and their actions now wrap in narrow windows and split views. Button labels also fit when you confirm a reset of the Agent context. Thanks to lukstei for the narrow-screen recovery fix. [#101](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/pull/101)
+- When the ACP Diagnostics panel is narrow, filters, export and search controls wrap, and record details can use the full panel width.
+
 ## 0.2.2-rc.5.5
 
 ### 中文

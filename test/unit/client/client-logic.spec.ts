@@ -602,11 +602,12 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
               '$call.CommandElements[2].Extent.Text',
             ].join('\n'),
           ],
-          { env: { ...process.env, DSH_TEST_SIGN_IN: hint }, encoding: 'utf8' },
+          // Cold PowerShell startup can exceed Vitest's default five seconds on Windows CI.
+          { env: { ...process.env, DSH_TEST_SIGN_IN: hint }, encoding: 'utf8', timeout: 20_000 },
         )
       : execFileSync('/bin/sh', ['-c', `set -- ${hint}; printf '%s\\n' "$@"`], { encoding: 'utf8' })
     expect(tokens.trimEnd().split(/\r?\n/u)).toEqual([command, 'acp', '--login'])
-  })
+  }, 30_000)
 
   it.each(['/opt/agy_acp_server.par', 'C:\\Tools\\agy_acp_server.exe', '/opt/refined-agy', '/opt/my-agy'])(
     'keeps saved Antigravity launch and login settings for %s',

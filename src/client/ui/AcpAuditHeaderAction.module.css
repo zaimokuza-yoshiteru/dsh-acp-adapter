@@ -10,6 +10,7 @@
   min-height: 0;
   overflow: hidden;
   box-sizing: border-box;
+  container: acp-audit / inline-size;
   color: var(--dsw-alias-label-primary);
   background: var(--dsw-alias-bg-layer-1);
 }
@@ -397,7 +398,7 @@
   margin: 0;
 }
 
-@media (max-width: 720px) {
+@container acp-audit (max-width: 720px) {
   .toolbar {
     height: auto;
     min-height: 32px;

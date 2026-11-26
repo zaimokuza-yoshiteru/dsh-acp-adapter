@@ -23,7 +23,7 @@ import { launchAdapterWorld, root } from './scaffold.ts'
 import { backToPluginList, openAcpPluginDetail, returnToConversation } from './plugin-panel.helpers.ts'
 import { createAcpSidecar } from '../../src/persistence/sidecar.ts'
 import { nativeParityProfiles } from '../../scripts/e2e-shards.ts'
-import { confirmBlankRecovery } from './recovery-ui.helpers.ts'
+import { confirmBlankRecovery, recoveryButtonRow, resetLabelsFit } from './recovery-ui.helpers.ts'
 
 const profiles = nativeParityProfiles(process.env.DSH_E2E_NATIVE_PARITY_PROFILES)
 
@@ -606,6 +606,30 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
     const chineseWrap = page.getByRole('button', { name: '自动换行', exact: true }).first()
     await expect.poll(() => chineseWrap.getAttribute('aria-pressed')).toBe('true')
     await host.ctx.settings.replace('locale', { preference: 'en' })
+    await page.setViewportSize({ width: 1100, height: 720 })
+    await page.getByRole('button', { name: 'Open right sidebar', exact: true }).click()
+    await expect.poll(async () => required(await audit.boundingBox()).width).toBeLessThan(500)
+    await expect
+      .poll(() =>
+        toolbar.evaluate((element) => {
+          const bounds = element.getBoundingClientRect()
+          return Array.from(element.querySelectorAll('button, input')).every((control) => {
+            const rect = control.getBoundingClientRect()
+            return rect.width > 0 && rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1
+          })
+        }),
+      )
+      .toBe(true)
+    // In a narrow pane the selected record overlays the table, even on a wide desktop.
+    await expect
+      .poll(async () =>
+        Math.abs(required(await details.boundingBox()).width - required(await audit.boundingBox()).width),
+      )
+      .toBeLessThan(2)
+    await page.getByRole('button', { name: 'Collapse right sidebar', exact: true }).click()
+    await expect
+      .poll(async () => required(await details.boundingBox()).width < required(await audit.boundingBox()).width - 2)
+      .toBe(true)
     await close.click()
     await page.setViewportSize({ width: 680, height: 720 })
     await audit.locator('tbody tr').last().click()
@@ -1989,6 +2013,29 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
     await failed.settled
     const trigger = page.getByRole('button', { name: 'Resolve recovery issue', exact: true })
     await trigger.waitFor()
+    await page.setViewportSize({ width: 1100, height: 840 })
+    await expect.poll(() => recoveryButtonRow(trigger)).toBe('beside')
+    await page.getByRole('button', { name: 'Open right sidebar', exact: true }).click()
+    await expect.poll(() => recoveryButtonRow(trigger)).toBe('below')
+    await page.getByRole('button', { name: 'Collapse right sidebar', exact: true }).click()
+    await page.setViewportSize({ width: 390, height: 840 })
+    await expect.poll(() => recoveryButtonRow(trigger)).toBe('below')
+
+    await page.setViewportSize({ width: 320, height: 840 })
+    await host.ctx.settings.replace('locale', { preference: 'zh' })
+    try {
+      const narrowTrigger = page.getByRole('button', { name: '处理恢复问题', exact: true })
+      await expect.poll(() => recoveryButtonRow(narrowTrigger)).toBe('below')
+      await narrowTrigger.click()
+      await page.getByRole('dialog').getByRole('button', { name: '重置当前 Agent 上下文', exact: true }).click()
+      await expect.poll(() => resetLabelsFit(page, '确认重置为空白上下文')).toBe(true)
+    } finally {
+      await host.ctx.settings.replace('locale', { preference: 'en' })
+    }
+    await expect.poll(() => resetLabelsFit(page, 'Confirm resetting to blank context')).toBe(true)
+    await page.getByRole('dialog').getByRole('button', { name: 'Cancel reset', exact: true }).last().click()
+    await page.keyboard.press('Escape')
+    await page.getByRole('dialog').waitFor({ state: 'hidden' })
     await page.setViewportSize({ width: 740, height: 500 })
     const beforeZoom = required(await trigger.boundingBox())
     const zoomEvidenceDirectory =

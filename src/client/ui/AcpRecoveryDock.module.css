@@ -15,6 +15,7 @@
 
 .surface {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   min-width: 0;
@@ -37,7 +38,7 @@
 }
 
 .summaryText {
-  flex: 1;
+  flex: 1 1 12em;
   min-width: 0;
   overflow-wrap: anywhere;
   font-size: 13px;
@@ -108,13 +109,6 @@
   line-height: 18px;
 }
 
-.footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  pointer-events: auto;
-}
-
 .diagnostics {
   margin-top: 12px;
 }
@@ -155,7 +149,6 @@
 
 .historySurface {
   --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
-  flex-wrap: wrap;
 }
 
 .historySurface .summaryText {
