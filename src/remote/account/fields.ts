@@ -40,11 +40,18 @@ export function codexFields(accountResult: unknown, limitsResult: unknown): Acco
   if (account.type !== 'chatgpt') return { plan: null, credits: null, windows: [] }
   const response = record(limitsResult)
   const limits = record(response.rateLimits)
-  const windows = codexWindows(limits)
-  // The app server repeats its backward-compatible snapshot in the metered map,
-  // under "codex" when the source did not specify a limit ID.
-  const seen = new Set([typeof limits.limitId === 'string' ? limits.limitId : 'codex'])
+  // Some app servers report credits on the legacy snapshot and quota windows on its metered entry.
+  const defaultId = typeof limits.limitId === 'string' ? limits.limitId : 'codex'
   const additional = record(response.rateLimitsByLimitId)
+  const metered = record(
+    additional[defaultId] ?? Object.values(additional).find((entry) => record(entry).limitId === defaultId),
+  )
+  const windows = codexWindows({
+    limitName: limits.limitName ?? metered.limitName,
+    primary: limits.primary ?? metered.primary,
+    secondary: limits.secondary ?? metered.secondary,
+  })
+  const seen = new Set([defaultId])
   for (const id of Object.keys(additional).sort()) {
     const snapshot = record(additional[id])
     const meter = typeof snapshot.limitId === 'string' ? snapshot.limitId : id
@@ -54,7 +61,7 @@ export function codexFields(accountResult: unknown, limitsResult: unknown): Acco
   }
   return {
     plan: label(account.planType),
-    credits: codexCredits(limits.credits),
+    credits: codexCredits(limits.credits ?? metered.credits),
     windows,
   }
 }

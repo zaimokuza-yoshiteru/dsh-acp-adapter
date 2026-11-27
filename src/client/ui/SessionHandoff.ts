@@ -22,7 +22,6 @@ import css from './SessionHandoff.module.css'
 type HandoffProps = PropsLocale<'acpActivity'> & {
   client: SessionHandoffClient
   sessionId: string
-  openSession(id: string): void
 }
 
 function useRecord(client: SessionHandoffClient, sessionId: string) {
@@ -44,7 +43,6 @@ function errorKey(error: unknown): AcpLocaleKey {
 
 export function HandoffDock({
   client,
-  openSession,
   sessionId,
   useAccess,
   useSessionRetainInfo,
@@ -65,7 +63,7 @@ export function HandoffDock({
   const [busy, setBusy] = useState(false)
   const [dismissed, setDismissed] = useState<string>()
   const phase = record?.phase
-  const polling = phase === 'summarizing' || phase === 'queued'
+  const polling = phase === 'queued' || (record?.phase === 'summarizing' && !client.followsSummary(record.id))
   useEffect(() => {
     if (!allowed) {
       client.forget(client.get(sessionId))
@@ -102,7 +100,6 @@ export function HandoffDock({
   if (!main || !allowed || !record || phase === 'cancelled' || (phase === 'interrupted' && dismissed === record.id))
     return null
   const source = record.sourceSessionId === sessionId
-  const other = source ? record.destinationSessionId : record.sourceSessionId
   const act = async (action: () => Promise<void> | void) => {
     setBusy(true)
     try {
@@ -115,8 +112,7 @@ export function HandoffDock({
       setBusy(false)
     }
   }
-  // Completed sources keep their ordinary chat. The destination retains a link to its origin.
-  if (source && phase === 'completed') return null
+  if (phase === 'completed') return null
   if (!source && phase === 'draft') return null
   const status =
     phase === 'summarizing'
@@ -146,19 +142,6 @@ export function HandoffDock({
           }),
         )
       : null,
-    other &&
-      h(
-        Button,
-        {
-          variant: source && phase === 'draft' ? 'outline' : 'ghost',
-          size: 'sm',
-          disabled: busy,
-          onClick: () => {
-            void act(() => openSession(other))
-          },
-        },
-        t(source ? 'handoffOpenDraft' : 'handoffOpenSource'),
-      ),
     phase === 'summarizing' || phase === 'interrupted' || (source && phase === 'draft')
       ? h(
           Button,
@@ -210,7 +193,6 @@ export function HandoffComposer(props: EditorProps): ReactNode {
 function Draft({
   client,
   sessionId,
-  openSession,
   record,
   t,
   loadModelCatalog,
@@ -321,30 +303,7 @@ function Draft({
         if (fields.document.trim()) void finish('send')
       },
     },
-    h(
-      'div',
-      { className: css.header },
-      h('strong', null, t('handoffRecipient', { target: targetName })),
-      h(
-        Button,
-        {
-          variant: 'ghost',
-          size: 'sm',
-          disabled: busy,
-          onClick: async () => {
-            setBusy(true)
-            try {
-              if ((await save()) && alive.current) openSession(record.sourceSessionId)
-            } catch {
-              if (alive.current) setError('crossBackendFailureOpen')
-            } finally {
-              if (alive.current) setBusy(false)
-            }
-          },
-        },
-        t('handoffOpenSource'),
-      ),
-    ),
+    h('div', { className: css.header }, h('strong', null, t('handoffRecipient', { target: targetName }))),
     h('textarea', {
       'aria-label': t('handoffDocument'),
       className: css.document,

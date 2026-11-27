@@ -55,7 +55,7 @@ it('keeps plan panels scoped to each composer across edits, Agent switches and h
         provider: 'codex',
         checkedAt: 1,
         plan: id === 'alpha' ? 'Alpha trial' : 'Beta team',
-        credits: null,
+        credits: '24226.0462905000',
         windows: [{ key: 'primary', minutes: 300, remainingPercent: 72, resetsAt: null }],
       }
     })
@@ -80,7 +80,26 @@ it('keeps plan panels scoped to each composer across edits, Agent switches and h
       provider: 'acp-beta',
       model: 'mock-model-a',
     })
-    await mainPanel.getByText('Plan · Beta team').waitFor()
+    await mainPanel.getByText('Beta team', { exact: true }).waitFor()
+    expect(await mainPanel.getByText('24,226.05', { exact: true }).count()).toBe(1)
+    expect(await mainPanel.getByRole('progressbar', { name: '5-hour', exact: true }).getAttribute('value')).toBe('72')
+    expect(await mainPanel.getByRole('button', { name: 'Refresh account information', exact: true }).count()).toBe(0)
+    const assertButtonAnchor = async () => {
+      const button = required(await trigger.boundingBox())
+      const panel = required(await mainPanel.boundingBox())
+      const gap = Math.min(
+        Math.abs(button.y - (panel.y + panel.height)),
+        Math.abs(panel.y - (button.y + button.height)),
+      )
+      expect(gap).toBeLessThanOrEqual(7)
+      const lowerEdge = button.y + button.height
+      const viewport = required(page.viewportSize())
+      if (viewport.height - lowerEdge >= panel.height + 14) expect(panel.y).toBeGreaterThan(lowerEdge)
+      else if (button.y >= panel.height + 14) expect(panel.y + panel.height).toBeLessThan(button.y)
+      expect(panel.x).toBeLessThan(button.x + button.width)
+      expect(panel.x + panel.width).toBeGreaterThan(button.x)
+    }
+    await assertButtonAnchor()
     late.resolve()
     expect(await mainPanel.innerText()).not.toContain('Alpha')
     await writeComposerDraft(page, draft, 'Keep this draft')
@@ -123,6 +142,12 @@ it('keeps plan panels scoped to each composer across edits, Agent switches and h
         return box && box.x >= 0 && box.x + box.width <= 390
       })
       .toBe(true)
+    await assertButtonAnchor()
+    const readsBeforeReopen = read.mock.calls.length
+    await trigger.click()
+    expect(await trigger.getAttribute('aria-expanded')).toBe('false')
+    await trigger.click()
+    await vi.waitFor(() => expect(read.mock.calls.slice(readsBeforeReopen)).toEqual([['beta', true]]))
     await mainPanel.getByRole('button', { name: 'Close plan details' }).click()
     expect(await trigger.getAttribute('aria-expanded')).toBe('false')
     await trigger.press('Space')
@@ -145,7 +170,7 @@ it('keeps plan panels scoped to each composer across edits, Agent switches and h
     await trigger.waitFor()
     expect(await trigger.getAttribute('aria-expanded')).toBe('false')
     await trigger.click()
-    await mainPanel.getByText('Plan · Beta team').waitFor()
+    await mainPanel.getByText('Beta team', { exact: true }).waitFor()
     await host.ctx.sessionController.selectModel({ sessionId: SessionId(id), provider: 'acp-buddy', model: buddyModel })
     await mainPanel.getByRole('link', { name: 'Usage guide (China)', exact: true }).waitFor()
     await mainPanel.getByRole('link', { name: 'Usage guide (International)', exact: true }).waitFor()

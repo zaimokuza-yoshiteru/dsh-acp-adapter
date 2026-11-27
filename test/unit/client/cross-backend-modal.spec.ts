@@ -113,7 +113,7 @@ it('explains that the original Agent must be restored to continue a retired sess
   expect(modal.props.description).toBe('crossBackendSourceUnavailable')
 })
 
-it('keeps the blank session primary and sends the named handoff only when chosen with a current grant', () => {
+it('offers a blank session or an authorized retry after automatic handoff fails', () => {
   const beginHandoff = vi.fn()
   const confirm = vi.fn()
   let granted = true
@@ -123,6 +123,7 @@ it('keeps the blank session primary and sends the named handoff only when chosen
         pending: {
           reason: 'backend-change',
           canHandoff: true,
+          handoffError: 'handoffSourceBusy',
           confirmable: true,
           busy: false,
           failure: null,

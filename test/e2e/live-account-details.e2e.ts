@@ -40,15 +40,8 @@ it.skipIf(process.env.DSH_E2E_LIVE_ACCOUNT_DETAILS !== '1')(
       await connectFreshWorkspace(page, host.workspaceCwd)
       await page.getByRole('button', { name: 'View plan and quota' }).click()
       const panel = page.getByRole('region', { name: 'Plan and quota' })
-      await expect
-        .poll(
-          async () => {
-            const body = await panel.innerText()
-            return body.includes('Plan · ') && body.includes('% remaining')
-          },
-          { timeout: 35_000 },
-        )
-        .toBe(true)
+      await panel.getByText('Plan', { exact: true }).waitFor({ timeout: 35_000 })
+      await panel.getByRole('progressbar').first().waitFor({ timeout: 35_000 })
       await panel.getByRole('button', { name: 'Close plan details' }).click()
       const detail = await openAcpPluginDetail(page)
       const row = (id: string) => detail.locator(`[data-dsh-acp-account="${id}"]`)
@@ -57,31 +50,15 @@ it.skipIf(process.env.DSH_E2E_LIVE_ACCOUNT_DETAILS !== '1')(
         .getByRole('link', { name: /usage guide/i })
         .first()
         .waitFor()
-      expect(await buddy.getByText(/Credits remaining|Plan ·/).count()).toBe(0)
+      expect(await buddy.locator('dt').count()).toBe(0)
       for (const id of ['codex', 'devin']) {
-        await expect
-          .poll(
-            async () => {
-              const content = await row(id)
-                .textContent({ timeout: 1000 })
-                .catch(() => '')
-              return content?.includes('Plan · ') && (id === 'devin' || content.includes('% remaining'))
-            },
-            { timeout: 35_000 },
-          )
-          .toBe(true)
+        await row(id).getByText('Plan', { exact: true }).waitFor({ timeout: 35_000 })
+        if (id === 'codex') await row(id).getByRole('progressbar').first().waitFor({ timeout: 35_000 })
       }
       if (process.platform === 'darwin') {
         await row('antigravity').getByRole('button', { name: 'View plan and quota' }).click()
-        await expect
-          .poll(
-            async () => {
-              const content = await row('antigravity').textContent()
-              return content?.includes('Plan · ') && content.includes('% remaining')
-            },
-            { timeout: 65_000 },
-          )
-          .toBe(true)
+        await row('antigravity').getByText('Plan', { exact: true }).waitFor({ timeout: 65_000 })
+        await row('antigravity').getByRole('progressbar').first().waitFor({ timeout: 65_000 })
       }
     } finally {
       await browser?.close()

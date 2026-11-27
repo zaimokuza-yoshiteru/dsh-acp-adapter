@@ -61,7 +61,7 @@ import { ACP_SUBPROCESS_UNAVAILABLE_MESSAGE } from '../../runtime/process/subpro
 import type { AcpConnectionSpec, AcpProcessExit } from '../../runtime/process/types.ts'
 import { redactSecretText } from '../../contract/redaction.ts'
 import { acpConfigOptionsSnapshot, advertisesIndependentModelControls, isModelConfigOption } from './config-options.ts'
-import { AcpClientError } from './errors.ts'
+import { AcpClientError, AcpDisconnectedError } from './errors.ts'
 import type {
   AcpSessionNotification,
   AcpConnectionOptions,
@@ -516,8 +516,6 @@ function markProbePhase(error: unknown, probePhase: AcpProbePhase): AcpClientErr
   })
 }
 
-const disconnectedMessage = 'The Agent disconnected. Check its connection in ACP settings.'
-
 /**
  * 一条到 ACP agent 子进程的连接：组合 {@link AcpAgentProcess}（进程生命周期）
  * 与 v1 initialize 协商、typed 会话方法及 probe；构造即 spawn（错误经
@@ -648,7 +646,7 @@ export class AcpClientConnection {
     this.connectionFailure = Promise.race([
       this.process.failureArm,
       this.conn.closed.then((): never => {
-        throw new AcpClientError('crash', disconnectedMessage, {
+        throw new AcpDisconnectedError({
           cause: new Error(`ACP agent "${this.command}" connection closed`),
         })
       }),
@@ -1647,17 +1645,19 @@ export class AcpClientConnection {
     }
     if (closed) {
       const stderrTail = this.process.stderrLines().slice(-5)
-      const message =
-        error instanceof acp.MessageTooLargeError
-          ? `The Agent response exceeded the incoming message limit (${String(error.maxMessageBytes)} bytes). The connection closed.`
-          : disconnectedMessage
-      // Host turns and recovery records persist Error.message. Keep subprocess
-      // diagnostics on the original error chain for explicit inspection.
-      return new AcpClientError('crash', message, {
+      // Only a closed transport can resume on a fresh user message. Keep frame limits explicit.
+      const details = {
         exit,
         stderrTail,
         cause: new Error(this.crashMessage(operation, exit, stderrTail), { cause: error }),
-      })
+      }
+      if (error instanceof acp.MessageTooLargeError)
+        return new AcpClientError(
+          'crash',
+          `The Agent response exceeded the incoming message limit (${String(error.maxMessageBytes)} bytes). The connection closed.`,
+          details,
+        )
+      return new AcpDisconnectedError(details)
     }
     const message = error instanceof Error ? error.message : String(error)
     return new AcpClientError('protocol-error', `ACP ${operation} failed: ${message}`, { cause: error })

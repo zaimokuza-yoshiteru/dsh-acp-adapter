@@ -75,6 +75,7 @@ import {
   sessionCompatibilityOptions,
   supportsAgentManagedModels,
 } from '../../agents/compatibility.ts'
+import { isTemporaryDisconnect, originalSessionSetup } from './original-session-setup.ts'
 import { DispatchLedger } from '../../runtime/session/dispatch-ledger.ts'
 import { managedModelResendSource } from './managed-model-resend.ts'
 import {
@@ -110,7 +111,7 @@ import {
   type ExternalDelegationLiveFact,
   type ExternalDelegationObservation,
 } from '../../domain/subagent/external-delegation.ts'
-import { acpCanonicalHash16, modeIntentBindingKey } from '../../persistence/sidecar.ts'
+import { acpCanonicalHash16, hasReconnectableDispatch, modeIntentBindingKey } from '../../persistence/sidecar.ts'
 import { acpOptionsSnapshotOf } from '../../persistence/options-snapshot.ts'
 import type { AcpBindingData, AcpFileSystemAuditData, AcpRecoveryState, AcpSidecar } from '../../persistence/sidecar.ts'
 import type { AcpSessionForkReason, AcpTerminalAuditData } from '../../domain/policy/events.ts'
@@ -150,7 +151,7 @@ import {
 import { acpRouteNames } from '../../contract/model-labels.ts'
 import { redactSecretText } from '../../contract/redaction.ts'
 import { hostLocale } from './host-locale.ts'
-import { AcpClientError } from '../../protocol/v1/errors.ts'
+import { AcpClientError, AcpDisconnectedError } from '../../protocol/v1/errors.ts'
 import { AcpHostContinuity, ensureHostContinuity } from './host-continuity.ts'
 import { AcpHostSettlementError } from '../../runtime/session/mcp-lease.ts'
 import { AcpSteeringRequestError, supportsFork } from '../../protocol/v1/connection.ts'
@@ -300,6 +301,45 @@ function finishReason(stopReason: string, locale?: string): FinishReason {
   if (stopReason === 'cancelled')
     return { kind: 'aborted', failure: { code: 'ACP_ABORTED', message: 'ACP prompt was cancelled' } }
   return { kind: 'stop' }
+}
+
+/** A missing command, workspace or model cannot establish that the Agent lost its session. */
+function classifyRestoreFailure(error: unknown, sessionId: string) {
+  const rpcError = error instanceof AcpClientError && error.cause instanceof RequestError ? error.cause : undefined
+  const message = rpcError?.message ?? (error instanceof Error ? error.message : String(error))
+  const absent = /\bsession(?:[ _-]?id)?(?:\s+['"`]?([^'"`\s]+)['"`]?)?[ _-]+(?:not[ _-]?found|does not exist)\b/i.exec(
+    message,
+  )
+  if (
+    (absent && (absent[1] === undefined || absent[1] === sessionId)) ||
+    /\b(?:unknown[ _-]+session(?:[ _-]?id)?|no session found)\b/i.test(message) ||
+    /会话不存在|(?:未找到|找不到)(?:该|此)?会话(?=$|[。：:，、(（\s])/.test(message) ||
+    (rpcError?.code === -32002 &&
+      typeof rpcError.data === 'object' &&
+      rpcError.data !== null &&
+      'uri' in rpcError.data &&
+      rpcError.data.uri === sessionId)
+  )
+    return { kind: 'session-lost', cause: 'id-not-found', code: 'ACP_SESSION_NOT_FOUND' } as const
+  if (
+    /does not advertise session\/(?:load|resume)|cannot restore the (?:saved|original) (?:Agent )?session/i.test(
+      message,
+    )
+  )
+    return {
+      kind: 'reconciliation-required',
+      cause: 'capability-missing',
+      code: 'ACP_RECONCILIATION_REQUIRED',
+    } as const
+  return { kind: 'reconnect-required', cause: 'load-failed', code: 'ACP_RECONNECT_REQUIRED' } as const
+}
+
+function unsentAfterRestoreFailure(locale: string | undefined, missing: boolean): string {
+  if (locale?.startsWith('zh'))
+    return missing ? '找不到原 Agent 会话，这条消息尚未发送。' : '未能重连原 Agent 会话，这条消息尚未发送。'
+  return missing
+    ? 'The original Agent session could not be found. This message was not sent.'
+    : 'The original Agent session could not be reconnected. This message was not sent.'
 }
 
 class SteeringFailure extends Error {
@@ -2100,12 +2140,51 @@ export class AcpProfileAdapter extends LlmAdapter {
       let retainHealthyRuntimeAfterNotDispatched = false
       let retainCancelledRuntimeForRefreshRetry = false
       let bindingForModeRestore: AcpBindingData | undefined
+      let reconnectLifetime: ReturnType<AcpProfileAdapter['sessionOperationLifetime']> | undefined
       let terminalSettlementLifetime: (() => void) | undefined
       let stopWatchingTerminalOutcomes: (() => void) | undefined
       try {
         let validatedPrompt: Awaited<ReturnType<typeof prepareAcpPrompt>>
         let persistedRecovery: AcpRecoveryState | undefined
         let forceBlank = false
+        // Only a later direct user input may recover a transport disconnect.
+        const interruptedBeforeThisInput = (
+          state: AcpRecoveryState | undefined,
+          binding: AcpBindingData | undefined,
+        ) => {
+          if (
+            hasReconnectableDispatch(state) &&
+            binding &&
+            binding.generation === state.generation &&
+            binding.agentSessionId === state.acpSessionId &&
+            binding.provider === state.provider &&
+            runtime.pendingAgentTurnFailure === undefined &&
+            messages.some((message) => message.source.kind === 'user') &&
+            admissionProof &&
+            !retries.length
+          )
+            return self.ledger.interruptedBefore(
+              sessionKey,
+              state.disconnectedDispatchKey,
+              options.provider,
+              admissionProof,
+            )
+        }
+        const originalDisconnect = async () => {
+          const state = await durableSidecar.readRecoveryState(sessionKey as never)
+          if (!hasReconnectableDispatch(state)) return
+          const saved = await durableSidecar.readLatestBinding(sessionKey as never)
+          if (saved?.status !== 'ok') return
+          const key = await interruptedBeforeThisInput(state, saved.binding)
+          if (key) return { key, binding: saved.binding }
+        }
+        const reconnectSignal = () => {
+          reconnectLifetime ??= self.sessionOperationLifetime(sessionKey, session?.identity ?? session, options.signal)
+          if (self.runtimes.get(runtimeKey) !== runtime)
+            throw new DOMException('ACP session was closed during reconnect', 'AbortError')
+          return reconnectLifetime.signal
+        }
+        const setupOriginal = originalSessionSetup(options.signal, reconnectSignal, () => runtime.close())
         let qwenPromptOptions: AcpPromptOptions = {}
         let qwenContextKey: string | undefined
         let qwenContextWillBeDelivered = true
@@ -2121,8 +2200,35 @@ export class AcpProfileAdapter extends LlmAdapter {
           // A failed automatic turn already belongs to the saved session. Its
           // buffered answer must enter the ordinary dispatch/attempt settlement,
           // never a newly initialized transport or another session/prompt.
-          if (runtime.pendingAgentTurnFailure === undefined && runtime.initialize !== undefined)
-            await runtime.initialize(options.signal)
+          if (runtime.pendingAgentTurnFailure === undefined && runtime.initialize !== undefined) {
+            try {
+              await setupOriginal(
+                (signal) => runtime.initialize!(signal),
+                async () => !!(await originalDisconnect()),
+              )
+            } catch (error) {
+              if (
+                options.signal?.aborted ||
+                reconnectLifetime?.signal.aborted ||
+                self.runtimes.get(runtimeKey) !== runtime
+              )
+                throw error
+              const interrupted = await originalDisconnect()
+              if (!interrupted) throw error
+              await self.blockRecovery(
+                sessionKey,
+                {
+                  kind: 'reconnect-required',
+                  cause: 'load-failed',
+                  detail: redactSecretText(String(error)).slice(0, 1024),
+                  ...(isTemporaryDisconnect(error) && { disconnectedDispatchKey: interrupted.key }),
+                },
+                interrupted.binding,
+                'ACP_RECONNECT_REQUIRED',
+                unsentAfterRestoreFailure(hostLocale(self.hostRoot), false),
+              )
+            }
+          }
           persistedRecovery = await durableSidecar.readRecoveryState(sessionKey as never)
           forceBlank = persistedRecovery?.lastUserAction === 'rebind-blank'
           const modelContextSnapshots = session?.currentModelContextSnapshots?.()
@@ -2243,7 +2349,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         const priorBindingForRebind = forceBlank
           ? await self.sidecar?.readLatestBinding(sessionKey as never)
           : undefined
-        const existingBinding = forceBlank ? undefined : await self.sidecar?.readLatestBinding(sessionKey as never)
+        const existingBinding = forceBlank ? undefined : await durableSidecar.readLatestBinding(sessionKey as never)
         if (existingBinding?.status === 'outdated') {
           await self.blockRecovery(sessionKey, {
             kind: 'reconciliation-required',
@@ -2252,6 +2358,7 @@ export class AcpProfileAdapter extends LlmAdapter {
           })
         }
         let binding: AcpBindingData | undefined = existingBinding?.status === 'ok' ? existingBinding.binding : undefined
+        const interruptedDispatchKey = await interruptedBeforeThisInput(persistedRecovery, binding)
         const deferredDirectoryHandoff =
           persistedRecovery?.kind === 'reconnect-required' &&
           persistedRecovery.cause === 'cwd-handoff-pending' &&
@@ -2261,13 +2368,18 @@ export class AcpProfileAdapter extends LlmAdapter {
           persistedRecovery.generation === binding.generation &&
           persistedRecovery.targetCwd === self.canonicalCwd(session?.workingDirectory)
         if (
+          interruptedDispatchKey === undefined &&
           persistedRecovery !== undefined &&
           persistedRecovery.kind !== 'healthy' &&
           !forceBlank &&
           !deferredDirectoryHandoff
         ) {
           throw LlmError.fromFailure({
-            message: persistedRecovery.detail ?? 'ACP session requires recovery before another prompt',
+            message:
+              persistedRecovery.kind === 'session-lost' ||
+              (persistedRecovery.kind === 'reconnect-required' && persistedRecovery.cause === 'load-failed')
+                ? unsentAfterRestoreFailure(hostLocale(self.hostRoot), persistedRecovery.kind === 'session-lost')
+                : (persistedRecovery.detail ?? 'ACP session requires recovery before another prompt'),
             code: 'ACP_RECOVERY_REQUIRED',
           })
         }
@@ -2378,13 +2490,21 @@ export class AcpProfileAdapter extends LlmAdapter {
           }
           self.runtimeBindings.set(runtime, binding)
           try {
-            await self.restoreBoundSession(
-              sessionKey,
-              runtime,
-              binding,
-              options.signal,
-              managedRoute || verifiedNamed || pendingFirstOptions ? { requireFreshConfig: true } : undefined,
+            const original = binding
+            await setupOriginal(
+              (signal) =>
+                self.restoreBoundSession(
+                  sessionKey,
+                  runtime,
+                  original,
+                  signal,
+                  managedRoute || verifiedNamed || pendingFirstOptions ? { requireFreshConfig: true } : undefined,
+                ),
+              () => interruptedDispatchKey !== undefined,
             )
+            reconnectLifetime?.signal.throwIfAborted()
+            if (interruptedDispatchKey !== undefined && runtime.acpSessionId !== binding.agentSessionId)
+              throw new Error('The Agent did not restore the original session ID')
           } catch (error: unknown) {
             const cancelledRefreshPending = runtime.cancelledSessionRefreshPending === true
             if (
@@ -2402,19 +2522,25 @@ export class AcpProfileAdapter extends LlmAdapter {
               retainCancelledRuntimeForRefreshRetry = true
               throw abortReason(options.signal)
             }
+            if (reconnectLifetime?.signal.aborted || self.runtimes.get(runtimeKey) !== runtime) throw error
             await self.releaseRuntime(runtimeKey, runtime)
             const detail = `ACP session restore failed: ${error instanceof Error ? error.message : String(error)}`
-            const missing = /(?:session[_ -]?)?(?:not[ -]?found|unknown[_ -]?session)|does not exist/i.test(detail)
-            const capability = /does not advertise|cannot restore/i.test(detail)
+            if (interruptedDispatchKey !== undefined && options.signal?.aborted) throw abortReason(options.signal)
+            const recovery = classifyRestoreFailure(error, binding.agentSessionId)
             await self.blockRecovery(
               sessionKey,
               {
-                kind: missing ? 'session-lost' : capability ? 'reconciliation-required' : 'reconnect-required',
-                cause: missing ? 'id-not-found' : capability ? 'capability-missing' : 'load-failed',
+                kind: recovery.kind,
+                cause: recovery.cause,
                 detail,
+                ...(isTemporaryDisconnect(error) &&
+                  interruptedDispatchKey && { disconnectedDispatchKey: interruptedDispatchKey }),
               },
               binding,
-              missing ? 'ACP_SESSION_NOT_FOUND' : capability ? 'ACP_RECONCILIATION_REQUIRED' : 'ACP_RECONNECT_REQUIRED',
+              recovery.code,
+              interruptedDispatchKey === undefined
+                ? undefined
+                : unsentAfterRestoreFailure(hostLocale(self.hostRoot), recovery.kind === 'session-lost'),
             )
           }
         } else {
@@ -2819,23 +2945,41 @@ export class AcpProfileAdapter extends LlmAdapter {
         }
         const bindingSettlementTarget = await self.readBindingSettlementTarget(sessionKey)
         verifyTransferLocation()
+        if (reconnectLifetime) {
+          reconnectSignal().throwIfAborted()
+          reconnectLifetime.dispose()
+          reconnectLifetime = undefined
+        }
         try {
-          await self.ledger.begin({
-            key: dispatchKey,
-            dshSessionId: sessionKey,
-            provider: options.provider,
-            model: options.model,
-            createdAt: Date.now(),
-            ...(admissionProof === undefined
-              ? {}
-              : {
-                  provenance: {
-                    ...admissionProof,
-                    ...(managedDispatch ? { confirmedAgentModel: managedDispatch.target } : {}),
-                  },
-                }),
-          })
+          await self.ledger.begin(
+            {
+              key: dispatchKey,
+              dshSessionId: sessionKey,
+              provider: options.provider,
+              model: options.model,
+              createdAt: Date.now(),
+              ...(admissionProof === undefined
+                ? {}
+                : {
+                    provenance: {
+                      ...admissionProof,
+                      ...(managedDispatch ? { confirmedAgentModel: managedDispatch.target } : {}),
+                    },
+                  }),
+            },
+            interruptedDispatchKey,
+          )
         } catch (error: unknown) {
+          if (interruptedDispatchKey !== undefined) {
+            // A competing recovery action may already own the new state.
+            throw LlmError.fromFailure(
+              {
+                message: 'The ACP recovery state changed before the new message was sent.',
+                code: 'ACP_RECOVERY_REQUIRED',
+              },
+              { cause: error },
+            )
+          }
           // A duplicate/uncertain durable dispatch is a host recovery fact, not
           // a generic provider exception. Persist a stable gate before exposing
           // the error; most importantly, do not cross into ACP prompt.
@@ -3509,6 +3653,13 @@ export class AcpProfileAdapter extends LlmAdapter {
           if (admissionProof?.anchorMessageId === currentAnchor)
             deliveredHostConclusionByAnchor.set(currentAnchor, ++responseObservationSeq)
         }
+        // Some CLIs clear their connection state as soon as the process exits.
+        const originalBinding = self.runtimeBindings.get(runtime)
+        const canRestoreOriginal =
+          originalBinding !== undefined &&
+          originalBinding.agentSessionId === runtime.acpSessionId &&
+          (runtime.agentCapabilities?.loadSession === true ||
+            runtime.agentCapabilities?.sessionCapabilities?.resume != null)
         const promptResult = runtime.prompt(
           prompt,
           onUpdate,
@@ -4223,6 +4374,15 @@ export class AcpProfileAdapter extends LlmAdapter {
           const reconciliationRequired =
             settlementFailure?.code === 'ACP_HOST_TOOL_RECONCILIATION_REQUIRED' ||
             settlementFailure?.code === 'ACP_HOST_FEEDBACK_COMMIT_FAILED'
+          const disconnectedBinding =
+            error instanceof AcpDisconnectedError &&
+            settlementFailure === undefined &&
+            !options.signal?.aborted &&
+            !qwenPromptOptions.adoptAgentTurn &&
+            admissionProof !== undefined &&
+            canRestoreOriginal
+              ? originalBinding
+              : undefined
           const recoveryState: AcpRecoveryState = {
             dshSessionId: sessionKey,
             kind: authenticationRequired
@@ -4230,7 +4390,20 @@ export class AcpProfileAdapter extends LlmAdapter {
               : reconciliationRequired
                 ? 'reconciliation-required'
                 : 'outcome-unknown',
-            cause: authenticationRequired ? 'auth-required' : 'load-failed',
+            cause: authenticationRequired
+              ? 'auth-required'
+              : disconnectedBinding
+                ? 'transport-disconnected'
+                : 'load-failed',
+            ...(disconnectedBinding
+              ? {
+                  disconnectedDispatchKey: dispatchKey,
+                  generation: disconnectedBinding.generation,
+                  acpSessionId: disconnectedBinding.agentSessionId,
+                }
+              : runtime.acpSessionId === undefined
+                ? {}
+                : { acpSessionId: runtime.acpSessionId }),
             detail: authenticationRequired
               ? 'The ACP Agent rejected the prompt because authentication is required. Sign in to the Agent, then reconnect this session.'
               : settlementFailure?.code === 'ACP_HOST_FEEDBACK_COMMIT_FAILED'
@@ -4239,14 +4412,15 @@ export class AcpProfileAdapter extends LlmAdapter {
                   ? 'A DSH Host tool failed inside the Host before its result was recorded, or was still executing when the ACP Agent ended its response; inspect both sides before continuing.'
                   : 'ACP prompt ended before its remote outcome was confirmed',
             provider: options.provider,
-            ...(runtime.acpSessionId === undefined ? {} : { acpSessionId: runtime.acpSessionId }),
             updatedAt: Date.now(),
           }
           try {
             if (self.sidecar === undefined) throw new Error('ACP sidecar unavailable')
             await self.sidecar?.writeRecoveryState(recoveryState)
           } catch {
-            self.rememberRecoveryFallback(recoveryState)
+            self.rememberRecoveryFallback(
+              disconnectedBinding ? { ...recoveryState, cause: 'load-failed' } : recoveryState,
+            )
           }
           await self.releaseRuntime(runtimeKey, runtime)
           failure =
@@ -4279,7 +4453,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             // Agent-loop only persists structured provider codes from LlmError.
             // Preserve the ACP taxonomy at that host boundary instead of letting
             // a classified AcpClientError degrade to UNKNOWN in the turn UI.
-            if (failure instanceof AcpClientError) {
+            if (failure instanceof AcpClientError && failure.kind !== 'crash') {
               throw LlmError.fromFailure({ message: failure.message, code: failure.code }, { cause: failure })
             }
             throw failure
@@ -4306,9 +4480,19 @@ export class AcpProfileAdapter extends LlmAdapter {
         // Setup may fail before the prompt's structured-error boundary. The
         // native UNKNOWN fallback flattens the entire diagnostic cause chain.
         if (error instanceof AcpClientError && error.kind === 'crash')
-          throw LlmError.fromFailure({ message: error.message, code: error.code }, { cause: error })
+          throw LlmError.fromFailure(
+            {
+              message:
+                error instanceof AcpDisconnectedError && hostLocale(self.hostRoot)?.startsWith('zh')
+                  ? 'Agent 连接已中断。'
+                  : error.message,
+              code: error.code,
+            },
+            { cause: error },
+          )
         throw error
       } finally {
+        reconnectLifetime?.dispose()
         stopWatchingTerminalOutcomes?.()
       }
     })()
@@ -4336,6 +4520,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     state: Omit<AcpRecoveryState, 'dshSessionId' | 'updatedAt'>,
     binding?: { readonly provider?: string; readonly agentSessionId?: string; readonly generation?: number },
     errorCode = 'ACP_RECONCILIATION_REQUIRED',
+    userMessage = state.detail ?? 'ACP session requires recovery before another prompt',
   ): Promise<never> {
     const recovery: AcpRecoveryState = {
       dshSessionId: sessionId,
@@ -4356,7 +4541,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       })
     }
     throw LlmError.fromFailure({
-      message: state.detail ?? 'ACP session requires recovery before another prompt',
+      message: userMessage,
       code: errorCode,
     })
   }
@@ -4652,6 +4837,8 @@ export class AcpProfileAdapter extends LlmAdapter {
       await runtime.restore(binding)
       assertCurrent()
       if (this.runtimes.get(runtimeKey) !== runtime) throw new Error('ACP session was disposed during recovery')
+      if (runtime.acpSessionId !== binding.agentSessionId)
+        throw new Error('The Agent did not restore the original session ID')
       await this.persistRuntimeSnapshot(sessionId, runtime)
       assertCurrent()
       // The user explicitly reviewed the uncertain outcome. Remove only the
@@ -4677,16 +4864,25 @@ export class AcpProfileAdapter extends LlmAdapter {
       // durable state, even when the old restore finishes with an error.
       assertCurrent()
       const detail = `ACP retry failed: ${error instanceof Error ? error.message : String(error)}`
-      const missing = /(?:session[_ -]?)?(?:not[ -]?found|unknown[_ -]?session)|does not exist/i.test(detail)
-      const capability = /cannot restore|does not advertise/i.test(detail)
+      const recovery = classifyRestoreFailure(error, binding.agentSessionId)
+      const previous = isTemporaryDisconnect(error)
+        ? await this.sidecar.readRecoveryState(sessionId as never)
+        : undefined
+      assertCurrent()
       const recoveryFailure: AcpRecoveryState = {
         dshSessionId: sessionId as never,
-        kind: missing ? 'session-lost' : capability ? 'reconciliation-required' : 'reconnect-required',
-        cause: missing ? 'id-not-found' : capability ? 'capability-missing' : 'load-failed',
+        kind: recovery.kind,
+        cause: recovery.cause,
         detail,
         provider: binding.provider,
         acpSessionId: binding.agentSessionId,
         generation: binding.generation,
+        ...(hasReconnectableDispatch(previous) &&
+          previous.provider === binding.provider &&
+          previous.generation === binding.generation &&
+          previous.acpSessionId === binding.agentSessionId && {
+            disconnectedDispatchKey: previous.disconnectedDispatchKey,
+          }),
         updatedAt: Date.now(),
       }
       try {
@@ -4696,7 +4892,10 @@ export class AcpProfileAdapter extends LlmAdapter {
         assertCurrent()
         this.rememberRecoveryFallback(recoveryFailure)
       }
-      throw LlmError.fromFailure({ message: detail, code: missing ? 'ACP_SESSION_NOT_FOUND' : 'ACP_RETRY_FAILED' })
+      throw LlmError.fromFailure({
+        message: detail,
+        code: recovery.kind === 'session-lost' ? recovery.code : 'ACP_RETRY_FAILED',
+      })
     }
   }
 

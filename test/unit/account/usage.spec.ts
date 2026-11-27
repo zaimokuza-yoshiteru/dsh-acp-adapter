@@ -166,6 +166,21 @@ describe('Agent account reads', () => {
     expect(codexFields({ account: { type: 'chatgpt' } }, { rateLimits: { credits } }).credits).toEqual(expected)
   })
 
+  it('includes default metered windows when the legacy snapshot supplies only a fixed balance', () => {
+    const response = codexFields(
+      { account: { type: 'chatgpt', planType: 'pro' } },
+      {
+        rateLimits: { credits: { hasCredits: true, balance: '24226.0462905000' }, primary: null },
+        rateLimitsByLimitId: { codex: { primary: { usedPercent: 9, windowDurationMins: 10080 } } },
+      },
+    )
+    expect(response).toMatchObject({
+      plan: 'pro',
+      credits: '24226.0462905000',
+      windows: [{ key: 'primary', remainingPercent: 91, minutes: 10080 }],
+    })
+  })
+
   it.each([null, 'alternate-default'])('shows every metered window once, default first (limit ID %s)', (limitId) => {
     const account = { account: { type: 'chatgpt', planType: 'pro', email: 'private@example.test' } }
     const base = { limitId, primary: { usedPercent: 2, windowDurationMins: 300 } }

@@ -6,6 +6,8 @@ import type { IWorkspaces } from '@deepseek-ai/dsh-api-workspace-controller/clie
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { TypertClientRemote } from '@deepseek-ai/dsh-typert-protocol'
 import type { AcpOwnedRoutesView } from '../../contract/remote.ts'
+import type { ModelDirectoryState } from '@deepseek-ai/dsh-client-ui-model-selection/client'
+import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionHandoffClient } from './session-handoff.ts'
 import type { AcpLocaleKey } from '../ui/locales.ts'
 import { includesRoute } from '../data/managed-routes.ts'
@@ -112,6 +114,7 @@ export class CrossBackendCoordinator {
   private readonly unsubscribers: Array<() => void> = []
   private readonly observed = new Map<SessionId, ObservedSession>()
   private readonly queued: CrossBackendPending[] = []
+  private readonly pickerChoices = new Map<string, CrossBackendModelSelection>()
   private pending: CrossBackendPending | null = null
   private created: readonly CreatedSession[] = []
   private readonly offered = new WeakSet<CrossBackendTicket>()
@@ -185,6 +188,25 @@ export class CrossBackendCoordinator {
     )
     syncBindings()
     return () => this.dispose()
+  }
+
+  /** Only this window's stock picker publishes a pending choice. A restored
+   * projection or another principal selecting a model must not initiate inference. */
+  readonly watchPicker = (sessionId: string, directory: HostObservable<ModelDirectoryState>): (() => void) => {
+    let previous = directory.getSnapshot().pending
+    const watch = directory.subscribe(() => {
+      const state = directory.getSnapshot()
+      // ModelDirectory republishes the pending selection on catalog and projection updates.
+      // Only the start of a selection represents another local picker action.
+      if (state.pending && !sameSelection(previous, state.pending)) this.pickerChoices.set(sessionId, state.pending)
+      else if (!state.pending && (state.status === 'error' || state.status === 'idle'))
+        this.pickerChoices.delete(sessionId)
+      previous = state.pending
+    })
+    return () => {
+      watch()
+      this.pickerChoices.delete(sessionId)
+    }
   }
 
   subscribe(listener: () => void): () => void {
@@ -295,6 +317,7 @@ export class CrossBackendCoordinator {
       if (this.disposed || this.pending?.ticket.key !== key) return
       await this.handoffs.begin(pending.ticket.sourceSessionId, {
         kind: 'begin',
+        automatic: true,
         id: key,
         locale,
         target: pending.ticket.targetSelection,
@@ -384,7 +407,10 @@ export class CrossBackendCoordinator {
     const session = sessions.binding(sessionId)
     const value = session?.session.projections.faceOf('modelSelection').getSnapshot()
     const projection = value as ModelProjection | undefined
-    if (projection === undefined || sameSelection(observed.lastProjection?.next, projection.next)) return
+    if (projection === undefined) return
+    const picked = this.pickerChoices.get(sessionId)
+    if (picked && sameSelection(picked, projection.next)) this.pickerChoices.delete(sessionId)
+    if (sameSelection(observed.lastProjection?.next, projection.next)) return
     const row = sessions.list.getSnapshot().byId[sessionId]
     const sessionPreset = observed.binding.session.projections.faceOf('agentPreset').getSnapshot()
     const preset = typeof sessionPreset === 'string' ? sessionPreset : row?.projectionValues?.agentPreset
@@ -439,6 +465,18 @@ export class CrossBackendCoordinator {
     // A retired model cannot be written back. Its pending choice can survive
     // cancel, navigation or reload; only a new choice opens this dialog.
     if (firstObservation && source === 'historical') return
+
+    if (
+      this.handoffs &&
+      source !== 'historical' &&
+      row?.blank === false &&
+      row.origin !== 'subagent' &&
+      next.provider !== sourceSelection?.provider
+    ) {
+      // A destination receiving its first handoff can already be nonblank before
+      // lastUsed hydrates. Only a local choice may open the unrouted-history fallback.
+      if (!sameSelection(picked, next)) return
+    }
 
     const workspaces = (this.ctx.get('workspaces') as IWorkspaces).list.getSnapshot()
     const location = resolveCrossBackendLocation(sessionId, workspaces.items, row?.cwd, preset)
@@ -717,6 +755,11 @@ export class CrossBackendCoordinator {
   }
 
   private emit(): void {
+    if (this.handoffs && this.pending?.canHandoff && !this.pending.busy && !this.pending.handoffError) {
+      const locale = this.ctx.locale.resolveText({ en: 'en', zh: 'zh' }) === 'zh' ? 'zh' : 'en'
+      void this.beginHandoff(this.pending.ticket.key, locale)
+      return
+    }
     this.snapshot = { pending: this.pending, created: this.created }
     for (const listener of [...this.listeners]) listener()
   }

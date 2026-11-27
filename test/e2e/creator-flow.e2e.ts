@@ -12,6 +12,7 @@ import {
   type CreatorRecord,
 } from '../mock-agent/creator-turn.ts'
 import { launchBrowser, newEnglishPage, type TestBrowser } from './browser.ts'
+import { failAutomaticRecovery, loadFailureMarker } from './recovery-ui.helpers.ts'
 import { launchAdapterWorld, root } from './scaffold.ts'
 
 /** A dependency-free disposable bundle uses the same public Host registration as an authored plugin. */
@@ -86,6 +87,7 @@ async function verifyCreator(route: 'other-agent' | 'opencode') {
             MOCK_CREATOR_RESULTS: results,
             MOCK_UNIQUE_SESSION_IDS: '1',
             MOCK_LOG: agentLog,
+            MOCK_LOAD_FAILURE_FILE: loadFailureMarker(host.workspaceCwd),
           },
         },
       },
@@ -263,18 +265,23 @@ async function verifyCreator(route: 'other-agent' | 'opencode') {
 
     await writeComposerDraft(page, blank.locator('[data-composer-input]'), 'E2E_CRASH')
     await blank.getByRole('button', { name: 'Send message', exact: true }).click()
-    await blank.getByRole('button', { name: 'Resolve recovery issue', exact: true }).click()
-    const [recovery] = await Promise.all([
-      page.waitForResponse('**/api/session/create'),
-      page.getByRole('dialog').getByRole('button', { name: 'Create an independent session', exact: true }).click(),
-    ])
-    const fresh = (await recovery.json()).result.value as { sessionId: string; agentPreset: string }
-    expect(fresh.agentPreset).toBe('cordis')
-    expect([owner, child.sessionId]).not.toContain(fresh.sessionId)
-    const recovered = page.locator(`[data-conversation-session="${fresh.sessionId}"]`)
-    await recovered.locator('[data-composer-input]').waitFor()
-    expect(await recovered.getAttribute('data-content-phase')).toBe('hero')
-    expect((await recovered.locator('[data-composer-input]').innerText()).trim()).toBe('')
+    await failAutomaticRecovery(page, host.workspaceCwd)
+    await blank.getByRole('button', { name: 'Recovery options', exact: true }).click()
+    const recovery = page.getByRole('dialog')
+    expect(await recovery.getByRole('button', { name: 'Create an independent session', exact: true }).count()).toBe(0)
+    await recovery.getByRole('button', { name: 'Reconnect original session', exact: true }).click()
+    await recovery.waitFor({ state: 'hidden' })
+    await blank.getByRole('button', { name: /^Select model, current Mock Model B/ }).waitFor()
+    const reconnected = await run(
+      { label: 'reconnected-creator', fixtureAvailable: true, calls: [{ name: CREATOR_TOOL }] },
+      child.sessionId,
+    )
+    expect(reconnected[0]).toMatchObject({
+      kind: 'directory',
+      sessionId: switched[0]!.sessionId,
+      model: 'mock-model-b',
+    })
+    expect(reconnected.find((row) => row.name === CREATOR_TOOL)?.text).toContain('E2E_CREATOR_CAPABILITY_OK')
     await page.locator(`[data-row-key="session:${owner}"]`).click()
     await conversation.getByRole('button', { name: /^Select model, current Mock Model A/ }).waitFor()
     await conversation.getByText('E2E_CREATOR_DONE restored-call', { exact: true }).waitFor()

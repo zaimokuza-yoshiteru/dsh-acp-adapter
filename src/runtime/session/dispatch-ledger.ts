@@ -31,7 +31,7 @@ export interface DispatchRecord {
 }
 
 export interface DispatchLedgerStore {
-  begin(record: DispatchRecord): Promise<void>
+  begin(record: DispatchRecord, interruptedDispatchKey?: string): Promise<void>
   settle(dshSessionId: string, key: string): Promise<void>
   read(dshSessionId: string, key: string): Promise<DispatchRecord | undefined>
 }
@@ -40,8 +40,34 @@ export interface DispatchLedgerStore {
 export class DispatchLedger {
   constructor(private readonly store: DispatchLedgerStore) {}
 
-  begin(record: Omit<DispatchRecord, 'state'>): Promise<void> {
-    return this.store.begin({ ...record, state: 'dispatch-uncertain' })
+  begin(record: Omit<DispatchRecord, 'state'>, interruptedDispatchKey?: string): Promise<void> {
+    return this.store.begin({ ...record, state: 'dispatch-uncertain' }, interruptedDispatchKey)
+  }
+
+  /** A new user turn can supersede a lost connection's guard, never its original input. */
+  async interruptedBefore(
+    sessionId: string,
+    key: string,
+    provider: string,
+    next: DispatchProvenance,
+  ): Promise<string | undefined> {
+    const previous = await this.store.read(sessionId, key)
+    const proof = previous?.provenance
+    if (
+      previous?.state !== 'dispatch-uncertain' ||
+      previous.provider !== provider ||
+      !proof ||
+      !Number.isSafeInteger(proof.turn) ||
+      !Number.isSafeInteger(proof.startSeq) ||
+      next.turn <= proof.turn ||
+      next.startSeq <= proof.startSeq ||
+      !Array.isArray(proof.acceptedMessageIds) ||
+      !proof.acceptedMessageIds.length ||
+      !proof.acceptedMessageIds.every((id) => typeof id === 'string' && id.length > 0) ||
+      next.acceptedMessageIds.some((id) => proof.acceptedMessageIds.includes(id))
+    )
+      return undefined
+    return previous.key
   }
 
   settle(dshSessionId: string, key: string): Promise<void> {

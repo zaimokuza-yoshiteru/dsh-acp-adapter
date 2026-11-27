@@ -24,7 +24,7 @@ describe('client contribution', () => {
   })
 
   it('mounts the generated Remote before registering one keyed renderer', async () => {
-    const definitions: unknown[] = []
+    const definitions: Array<{ kind: string }> = []
     const injections: unknown[] = []
     // Model a live slot that another plugin already owns. The public slot
     // contract is additive: registering our entry must not replace or clear
@@ -67,7 +67,7 @@ describe('client contribution', () => {
       uiSession: { sessionStatus: { getSnapshot: () => new Map(), subscribe: () => () => {} } },
       uiConversation: {
         events: {
-          register: (definition: unknown) => {
+          register: (definition: { kind: string }) => {
             definitions.push(definition)
           },
         },
@@ -131,7 +131,13 @@ describe('client contribution', () => {
       ]),
     )
     expect(uiInjects).toHaveLength(4)
-    expect(definitions).toHaveLength(4)
+    expect(definitions.map((definition) => definition.kind).sort()).toEqual([
+      'acp-activity',
+      'acp-activity-live',
+      'acp-automatic-handoff-input',
+      'acp-effective-route',
+      'acp-prompt-anchor',
+    ])
     expect(injections).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: 'plugins.bundle.config', key: '@zaimokuza/dsh-acp-adapter' }),

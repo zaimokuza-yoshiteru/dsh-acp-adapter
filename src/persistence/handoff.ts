@@ -6,6 +6,7 @@ export const handoffRecordSchema = z.object({
   destinationSessionId: z.string().nullable(),
   destinationUnavailable: z.literal(true).optional(),
   requestedDestinationId: z.string().min(1),
+  automatic: z.literal(true).optional(),
   creationAttempted: z.literal(true).optional(),
   target: z.object({ provider: z.string().min(1), model: z.string().min(1), reasoningEffort: z.string().optional() }),
   sourceProvider: z.string(),

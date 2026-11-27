@@ -164,31 +164,18 @@ it('keeps native search and reasoning usable while model changes offer an indepe
     await selected.click()
     await page.getByRole('menuitem', { name: /^Model/ }).click()
     await page.getByRole('searchbox', { name: 'Search models…' }).fill('Model One')
+    await page.route('**/api/dshAcp/handoff', async (route) => {
+      if (route.request().postDataJSON()?.payload?.args?.command?.kind !== 'begin') return route.continue()
+      const response = await route.fetch()
+      expect((await response.json()).result.value.phase).toBe('summarizing')
+      searchFixture.offerModelOne = false
+      return route.fulfill({ response })
+    })
     await page.getByRole('menuitemradio', { name: 'Model One', exact: true }).click()
-    const changeAgent = page.getByRole('dialog', { name: 'Changing Agents requires an independent session' })
-    await changeAgent.waitFor()
-    searchFixture.offerModelOne = false
-    await changeAgent.getByRole('button', { name: 'Start a blank session', exact: true }).click()
-    const entry = page.locator('[data-acp-created-session]')
-    await entry.waitFor()
+    await page.locator('[data-acp-handoff="interrupted"]').waitFor()
     expect(await composer.innerText()).toBe(sourceDraft)
-    await page.setViewportSize({ width: 390, height: 844 })
-    for (const lang of ['zh', 'en'] as const) {
-      await host.ctx.settings.replace('locale', { preference: lang })
-      const link = entry.getByRole('button', {
-        name: lang === 'en' ? 'Open the created session' : '打开已创建的会话',
-        exact: true,
-      })
-      await link.waitFor()
-      await link.click({ trial: true })
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
-      await capture(page, `withdrawn-model-${lang}-390.png`)
-    }
-    await entry.getByRole('button', { name: 'Open the created session', exact: true }).click()
-    await entry.waitFor({ state: 'hidden' })
-    await expect.poll(() => composer.innerText()).not.toContain(sourceDraft)
-    await expect.poll(() => page.locator(`[data-conversation-session="${independent}"]`).count()).toBe(0)
-    expect(await page.getByText('E2E_DONE mock-model-b', { exact: true }).count()).toBe(0)
+    expect(await page.locator('[data-conversation-session="' + independent + '"]').count()).toBe(1)
+    expect(await page.getByText('NATIVE_SEARCH_DONE', { exact: true }).count()).toBe(0)
     expect(errors).toEqual([])
   } finally {
     await browser?.close()

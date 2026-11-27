@@ -1,21 +1,22 @@
-import { createElement as h, useEffect, useRef, useState } from 'react'
-import { nextIndependentAction } from '../coordinator/native-session-navigation.ts'
+import { createElement as h, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
-import { Button, DisclosureRow, IconWarningTriangleOutlineRegular, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
+import {
+  Button,
+  DisclosureRow,
+  focusWithoutRing,
+  IconWarningTriangleOutlineRegular,
+  Modal,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AcpRecoveryView, AcpRemoteLike } from '../data/acp-remote.ts'
 import { recoveringRecoveryStream } from '../data/recovery-stream.ts'
 import { includesRoute, type UseRouteOwnership } from '../data/managed-routes.ts'
 import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import css from './AcpRecoveryDock.module.css'
-import modalCss from './CrossBackendModal.module.css'
 import type { SessionAccessSource } from './session-action-access.ts'
-import type {
-  independentSessionNavigation,
-  IndependentSessionOutcome,
-} from '../coordinator/native-session-navigation.ts'
+import type { independentSessionNavigation } from '../coordinator/native-session-navigation.ts'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { resolveCrossBackendLocation } from '../data/cross-backend-controller.ts'
 import { acpModelSelection, isAcpAgentManagedModel } from '../../contract/model-selection.ts'
@@ -32,13 +33,12 @@ type RecoveryDockProps = PropsRuntime<'conversation.input.dock'> &
 
 type Translate = (key: AcpLocaleKey, params?: Record<string, unknown>) => string
 type Selection = { readonly provider?: unknown } | null | undefined
-type RecoveryAction = 'reconnect' | 'rebind' | 'new-session'
+type RecoveryAction = 'reconnect' | 'rebind'
 type RecoveryOperation = {
   readonly sessionId: string
   readonly action: RecoveryAction
   readonly token: symbol
 }
-type ButtonVariant = 'outline' | 'primary'
 
 function providerOf(selection: Selection): string | undefined {
   return typeof selection?.provider === 'string' ? selection.provider : undefined
@@ -51,7 +51,14 @@ export function projectionIsAcp(value: unknown, ownsRoute: OwnsAcpRoute): boolea
   return ownsRoute(providerOf(record.lastUsed)) || ownsRoute(providerOf(record.next))
 }
 
+function reconnectsOnNextMessage(recovery: AcpRecoveryView): boolean {
+  return recovery.kind === 'outcome-unknown' && recovery.cause === 'transport-disconnected'
+}
+
 export function recoveryText(t: Translate, recovery: AcpRecoveryView): string {
+  if (reconnectsOnNextMessage(recovery)) return t('recoveryContinueOnSend')
+  if (recovery.kind === 'reconciliation-required' && recovery.cause === 'capability-missing')
+    return t('recoveryUnsupported')
   const key: Record<AcpRecoveryView['kind'], AcpLocaleKey> = {
     healthy: 'recoveryGeneric',
     'reconnect-required': 'recoveryReconnectRequired',
@@ -79,15 +86,6 @@ function visibleRecovery(view: AcpRecoveryView): AcpRecoveryView | null {
   return view.kind === 'healthy' && view.localStatus === undefined ? null : view
 }
 
-/** Prefer preserving the original context only where reconnect is a meaningful recovery. */
-export function recoveryPrefersReconnect(recovery: AcpRecoveryView): boolean {
-  return (
-    recovery.kind === 'reconnect-required' ||
-    recovery.kind === 'resumed-unverified' ||
-    recovery.kind === 'outcome-unknown'
-  )
-}
-
 /** Publish the recovery view returned by the completed action without a second snapshot read. */
 export function publishRecoveryActionResult(
   result: AcpRecoveryView | void,
@@ -97,24 +95,6 @@ export function publishRecoveryActionResult(
   if (result === undefined || !isCurrent()) return false
   publish(result)
   return true
-}
-
-function recoveryChoice(
-  action: RecoveryAction,
-  variant: ButtonVariant,
-  label: string,
-  explanation: string,
-  busyLabel: string,
-  busy: boolean,
-  busyAction: RecoveryAction | null,
-  run: () => void,
-): ReactNode {
-  return h(
-    'div',
-    { className: css.choice },
-    h('p', { className: css.choiceExplanation }, explanation),
-    h(Button, { variant, disabled: busy, onClick: run }, busyAction === action ? busyLabel : label),
-  )
 }
 
 export function AcpRecoveryDock({
@@ -145,8 +125,6 @@ export function AcpRecoveryDock({
   const workspaceCreateAllowed = useWorkspaceAccess((destination?.workspaceId ?? '') as WorkspaceId, 'session/create')
   const createAllowed =
     destination !== undefined && (destination.workspaceId === undefined ? globalCreateAllowed : workspaceCreateAllowed)
-  const creationAccess = useRef(createAllowed)
-  creationAccess.current = createAllowed
   const lifecycleKey = useSession((snapshot) =>
     [snapshot.openState, snapshot.running, snapshot.promptAttempted, snapshot.lastAgentError ?? ''].join('|'),
   )
@@ -165,25 +143,35 @@ export function AcpRecoveryDock({
   const [recovery, setRecovery] = useState<AcpRecoveryView | null>(null)
   const [open, setOpen] = useState(false)
   const [busyAction, setBusyAction] = useState<RecoveryAction | null>(null)
-  const [actionError, setActionError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<{ action: RecoveryAction; detail: string } | null>(null)
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
   const [unavailable, setUnavailable] = useState(false)
   const [reconnecting, setReconnecting] = useState(false)
   const [recoveryRefreshReady, setRecoveryRefreshReady] = useState(false)
   const [retry, setRetry] = useState(0)
   const [confirmRebind, setConfirmRebind] = useState(false)
-  const [navigation, setNavigation] = useState<IndependentSessionOutcome>('idle')
   const epoch = useRef(0)
   const inFlight = useRef<RecoveryOperation | null>(null)
   const activeSession = useRef(sessionId)
   activeSession.current = sessionId
+
+  const previousStep = useRef({ sessionId, confirmRebind })
+  const cancelResetButton = useRef<HTMLButtonElement>(null)
+  const resetButton = useRef<HTMLButtonElement>(null)
+  // Keep one native modal layer for both steps, and move focus to the safe control in the new step.
+  useLayoutEffect(() => {
+    const previous = previousStep.current
+    previousStep.current = { sessionId, confirmRebind }
+    if (!open || previous.sessionId !== sessionId || previous.confirmRebind === confirmRebind) return
+    const target = confirmRebind ? cancelResetButton.current : resetButton.current
+    if (target?.isConnected && !target.disabled) focusWithoutRing(target, { preventScroll: true })
+  }, [sessionId, open, confirmRebind])
 
   useEffect(() => {
     const currentEpoch = ++epoch.current
     let cancelled = false
     setOpen(false)
     setConfirmRebind(false)
-    setNavigation('idle')
     if (inFlight.current?.sessionId === sessionId) setBusyAction(inFlight.current.action)
     else setBusyAction(null)
     setActionError(null)
@@ -204,6 +192,10 @@ export function AcpRecoveryDock({
       (snapshot) => {
         if (!isCurrent()) return
         setRecovery(visibleRecovery(snapshot))
+        if (snapshot.kind === 'healthy') {
+          setOpen(false)
+          setConfirmRebind(false)
+        }
       },
       (state, _error, refreshReady) => {
         if (!isCurrent()) return
@@ -223,7 +215,12 @@ export function AcpRecoveryDock({
 
   // A retired name can belong to another plugin now. Only the session's
   // own recovery record warrants a surface there; a carrier error is no proof.
-  if (ownership === null || (ownership === 'historical' && (unavailable || reconnecting))) return null
+  if (
+    ownership === null ||
+    (recovery !== null && recovery.dshSessionId !== sessionId) ||
+    (ownership === 'historical' && (unavailable || reconnecting))
+  )
+    return null
   if (unavailable)
     return h(
       'div',
@@ -280,29 +277,20 @@ export function AcpRecoveryDock({
       : null
   }
 
-  const localStatus = localSettlementText(t, recovery)
-  if (localStatus !== null) {
+  const notice = reconnectsOnNextMessage(recovery) ? t('recoveryContinueOnSend') : localSettlementText(t, recovery)
+  if (notice !== null) {
     return h(
       'div',
       { className: css.dock, role: 'status' },
-      h('div', { className: `${css.surface} ${css.localStatus}` }, localStatus),
+      h('div', { className: `${css.surface} ${css.localStatus}` }, notice),
     )
   }
 
   const busy = busyAction !== null
-  const run = async (
-    actionName: RecoveryAction,
-    action: (isCurrent: () => boolean) => Promise<AcpRecoveryView | void>,
-  ): Promise<void> => {
+  const run = async (actionName: RecoveryAction): Promise<void> => {
     if (inFlight.current?.sessionId === sessionId || activeSession.current !== sessionId) return
-    if (actionName === 'new-session' && !creationAccess.current) return
-    const endpoint =
-      actionName === 'reconnect'
-        ? 'dshAcp/retryOriginal'
-        : actionName === 'rebind'
-          ? 'dshAcp/rebindRecoveryBlank'
-          : null
-    if (endpoint !== null && sessionAccessSource(sessionId, endpoint)?.getSnapshot() !== true) return
+    const endpoint = actionName === 'reconnect' ? 'dshAcp/retryOriginal' : 'dshAcp/rebindRecoveryBlank'
+    if (sessionAccessSource(sessionId, endpoint)?.getSnapshot() !== true) return
     const operation: RecoveryOperation = { sessionId, action: actionName, token: Symbol(actionName) }
     const actionEpoch = epoch.current
     inFlight.current = operation
@@ -313,14 +301,18 @@ export function AcpRecoveryDock({
       activeSession.current === sessionId &&
       actionEpoch === epoch.current
     try {
-      const result = await action(isCurrent)
-      publishRecoveryActionResult(result, isCurrent, (snapshot) => {
+      const result = await (actionName === 'reconnect'
+        ? remote.retryOriginal(sessionId)
+        : remote.rebindRecoveryBlank(sessionId))
+      if (!result.ok) throw new Error(result.error.message)
+      publishRecoveryActionResult(result.value, isCurrent, (snapshot) => {
         setUnavailable(false)
         setRecovery(visibleRecovery(snapshot))
+        if (snapshot.kind === 'healthy') setOpen(false)
       })
     } catch (error) {
-      if (inFlight.current?.token === operation.token && activeSession.current === sessionId)
-        setActionError(error instanceof Error ? error.message : String(error))
+      if (isCurrent())
+        setActionError({ action: actionName, detail: error instanceof Error ? error.message : String(error) })
     } finally {
       if (inFlight.current?.token === operation.token) {
         inFlight.current = null
@@ -329,205 +321,146 @@ export function AcpRecoveryDock({
     }
   }
 
-  const ungrouped = navigation === 'ungrouped' || navigation === 'ungrouped-open-failed'
-  const nextAction = nextIndependentAction(navigation)
-  const reopen = nextAction === 'open-existing'
-  const detail = [recovery.kind, recovery.cause, recovery.detail, actionError]
+  const detail = [recovery.kind, recovery.cause, recovery.detail, actionError?.detail]
     .filter((part): part is string => typeof part === 'string' && part.length > 0)
     .join('\n\n')
-  if (confirmRebind)
-    return h(Modal, {
-      open: true,
-      title: t('recoveryRebindConfirmTitle'),
-      description: t('recoveryRebindConfirmDescription'),
-      closeLabel: t('recoveryRebindCancel'),
-      onClose: () => {
-        if (!busy && inFlight.current?.sessionId !== sessionId) setConfirmRebind(false)
-      },
-      backdropBlur: false,
-      ...(css.dialog === undefined ? {} : { className: css.dialog }),
-      ...(css.content === undefined ? {} : { contentClassName: css.content }),
-      footer: h(
-        'div',
-        { className: modalCss.footer },
-        h(
-          Button,
-          {
-            variant: 'outline',
-            disabled: busy,
-            onClick: () => {
-              if (inFlight.current?.sessionId !== sessionId) setConfirmRebind(false)
-            },
-          },
-          t('recoveryRebindCancel'),
-        ),
-        h(
-          Button,
-          {
-            variant: 'primary',
-            disabled: busy || !rebindAllowed,
-            onClick: () => {
-              void run('rebind', async () => {
-                const result = await remote.rebindRecoveryBlank(sessionId)
-                if (!result.ok) throw new Error(result.error.message)
-                return result.value
-              }).finally(() => {
-                if (activeSession.current === sessionId) setConfirmRebind(false)
-              })
-            },
-          },
-          busy ? t('recoveryBusy') : t('recoveryRebindConfirm'),
-        ),
-      ),
-    })
+  const suggestReconnect =
+    recovery.kind === 'reconnect-required' ||
+    recovery.kind === 'resumed-unverified' ||
+    (recovery.kind === 'session-lost' && recovery.cause === 'id-not-found')
+  const reconnectButton = h(
+    Button,
+    {
+      variant: suggestReconnect ? 'primary' : 'outline',
+      disabled: busy || !reconnectAllowed,
+      ...(suggestReconnect && reconnectAllowed && !busy ? { 'data-modal-autofocus': '' } : {}),
+      onClick: () => run('reconnect'),
+    },
+    t(busyAction === 'reconnect' ? 'recoveryBusy' : 'recoveryReconnect'),
+  )
+  const reason = recoveryText(t, recovery)
+  const actionFailure =
+    actionError === null
+      ? null
+      : t(actionError.action === 'reconnect' ? 'recoveryReconnectFailed' : 'recoveryActionFailed')
   return h(
     'div',
-    { className: css.dock, role: 'status' },
+    { key: sessionId, className: css.dock, role: 'status' },
     h(
       'div',
       { className: css.surface },
       h('span', { className: css.summaryIcon, 'aria-hidden': true }, h(IconWarningTriangleOutlineRegular)),
-      h('span', { className: css.summaryText }, recoveryText(t, recovery)),
-      h(
-        Button,
-        {
-          variant: 'outline',
-          disabled: busy,
-          onClick: () => {
-            setDiagnosticsOpen(false)
-            setOpen(true)
-          },
-        },
-        t('recoveryDetails'),
-      ),
-    ),
-    h(
-      Modal,
-      {
-        open,
-        onClose: () => {
-          if (!busy && inFlight.current?.sessionId !== sessionId) {
-            setOpen(false)
-            setDiagnosticsOpen(false)
-          }
-        },
-        title: t('recoveryTitle'),
-        closeLabel: t('recoveryClose'),
-        backdropBlur: false,
-        ...(css.dialog === undefined ? {} : { className: css.dialog }),
-        ...(css.content === undefined ? {} : { contentClassName: css.content }),
-        footer: h(
-          'div',
-          { className: modalCss.footer },
-          h(
-            Button,
-            {
-              variant: 'outline',
-              disabled: busy,
-              onClick: () => {
-                if (inFlight.current?.sessionId === sessionId) return
-                setOpen(false)
-                setDiagnosticsOpen(false)
-              },
-            },
-            t('recoveryClose'),
-          ),
-        ),
-      },
-      h('p', { className: css.reason }, recoveryText(t, recovery)),
-      h('p', { className: css.preserved }, t('recoveryHistoryPreserved')),
+      actionFailure !== null && !open
+        ? h('span', { className: `${css.summaryText} ${css.error}`, role: 'alert' }, actionFailure)
+        : h('span', { className: css.summaryText }, reason),
       h(
         'div',
-        { className: css.choices },
-        recoveryChoice(
-          'reconnect',
-          recoveryPrefersReconnect(recovery) ? 'primary' : 'outline',
-          t('recoveryReconnect'),
-          t('recoveryReconnectExplanation'),
-          t('recoveryBusy'),
-          busy || !reconnectAllowed,
-          busyAction,
-          () => {
-            void run('reconnect', async () => {
-              const result = await remote.retryOriginal(sessionId)
-              if (!result.ok) throw new Error(result.error.message)
-              return result.value
-            })
-          },
-        ),
-        recoveryChoice(
-          'rebind',
-          'outline',
-          t('recoveryRebind'),
-          t('recoveryRebindExplanation'),
-          t('recoveryBusy'),
-          busy || !rebindAllowed,
-          busyAction,
-          () => {
-            if (!busy && sessionAccessSource(sessionId, 'dshAcp/rebindRecoveryBlank')?.getSnapshot() === true)
-              setConfirmRebind(true)
-          },
-        ),
-        recoveryChoice(
-          'new-session',
-          'outline',
-          t(
-            navigation === 'create-unknown'
-              ? 'independentCheckCreated'
-              : navigation === 'preset-unavailable'
-                ? 'independentUseDefault'
-                : reopen
-                  ? 'unroutedHistoryOpen'
-                  : 'recoveryNew',
-          ),
-          t(
-            navigation === 'preset-unavailable'
-              ? 'independentPresetUnavailable'
-              : navigation === 'create-unknown'
-                ? 'independentCreationUnknown'
-                : ungrouped
-                  ? 'unroutedHistoryUngrouped'
-                  : 'recoveryNewExplanation',
-          ),
-          t('recoveryBusy'),
-          busy || !createAllowed,
-          busyAction,
-          () => {
-            void run('new-session', async (isCurrent) => {
-              const outcome = await createNewSession(sessionId, () => isCurrent() && creationAccess.current, nextAction)
-              if (isCurrent()) setNavigation(outcome)
-            })
-          },
-        ),
-      ),
-      h(
-        'div',
-        { className: css.diagnostics },
+        { className: css.dockActions },
+        suggestReconnect ? reconnectButton : null,
         h(
-          DisclosureRow,
+          Button,
           {
-            icon: h(IconWarningTriangleOutlineRegular),
-            title: t('recoveryDiagnostics'),
-            open: diagnosticsOpen,
-            expandable: detail !== '',
-            onToggle: () => setDiagnosticsOpen((value) => !value),
+            variant: suggestReconnect ? 'ghost' : 'outline',
+            onClick: () => {
+              setDiagnosticsOpen(false)
+              setOpen(true)
+            },
           },
-          detail === '' ? null : h('pre', { className: css.raw }, detail),
+          t('recoveryDetails'),
         ),
       ),
-      actionError !== null || navigation.endsWith('-failed')
-        ? h(
-            'p',
-            { className: css.error, role: 'alert' },
-            t(
-              actionError !== null
-                ? 'recoveryActionFailed'
-                : navigation === 'create-failed'
-                  ? 'crossBackendFailureCreate'
-                  : 'crossBackendFailureOpen',
-            ),
-          )
-        : null,
     ),
+    confirmRebind
+      ? h(Modal, {
+          open,
+          title: t('recoveryRebindConfirmTitle'),
+          description: t('recoveryRebindConfirmDescription'),
+          closeLabel: t('recoveryRebindCancel'),
+          onClose: () => {
+            if (!busy && inFlight.current?.sessionId !== sessionId) setConfirmRebind(false)
+          },
+          backdropBlur: false,
+          ...(css.dialog === undefined ? {} : { className: css.dialog }),
+          ...(css.content === undefined ? {} : { contentClassName: css.content }),
+          footer: h(
+            'div',
+            { className: css.confirmActions },
+            h(
+              Button,
+              {
+                variant: 'outline',
+                disabled: busy,
+                ref: cancelResetButton,
+                onClick: () => {
+                  if (inFlight.current?.sessionId !== sessionId) setConfirmRebind(false)
+                },
+              },
+              t('recoveryRebindCancel'),
+            ),
+            h(
+              Button,
+              {
+                variant: 'primary',
+                disabled: busy || !rebindAllowed,
+                onClick: () => {
+                  void run('rebind').finally(() => {
+                    if (activeSession.current === sessionId) setConfirmRebind(false)
+                  })
+                },
+              },
+              busy ? t('recoveryBusy') : t('recoveryRebindConfirm'),
+            ),
+          ),
+        })
+      : h(
+          Modal,
+          {
+            open,
+            onClose: () => {
+              setOpen(false)
+              setDiagnosticsOpen(false)
+            },
+            title: t('recoveryTitle'),
+            ...(actionFailure === null ? { description: reason } : {}),
+            closeLabel: t('recoveryClose'),
+            backdropBlur: false,
+            ...(css.dialog === undefined ? {} : { className: css.dialog }),
+            ...(css.content === undefined ? {} : { contentClassName: css.content }),
+          },
+          actionFailure === null ? null : h('p', { className: css.error, role: 'alert' }, actionFailure),
+          h(
+            'div',
+            { className: css.choices },
+            reconnectButton,
+            h(
+              Button,
+              {
+                variant: 'outline',
+                disabled: busy || !rebindAllowed,
+                ref: resetButton,
+                onClick: () => {
+                  if (!busy && sessionAccessSource(sessionId, 'dshAcp/rebindRecoveryBlank')?.getSnapshot() === true)
+                    setConfirmRebind(true)
+                },
+              },
+              t('recoveryRebind'),
+            ),
+          ),
+          h(
+            'div',
+            { className: css.diagnostics },
+            h(
+              DisclosureRow,
+              {
+                icon: h(IconWarningTriangleOutlineRegular),
+                title: t('recoveryDiagnostics'),
+                open: diagnosticsOpen,
+                expandable: detail !== '',
+                onToggle: () => setDiagnosticsOpen((value) => !value),
+              },
+              detail === '' ? null : h('pre', { className: css.raw }, detail),
+            ),
+          ),
+        ),
   )
 }

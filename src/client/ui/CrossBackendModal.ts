@@ -95,7 +95,7 @@ export function CrossBackendModal({
     setDiagnosticsOpen(false)
   }, [pending?.ticket.key])
   useEffect(() => {
-    if (pending === null) return
+    if (pending === null || (pending.canHandoff && !pending.handoffError)) return
     let active = true
     void loadModelCatalog()
       .then((value) => {
@@ -107,8 +107,8 @@ export function CrossBackendModal({
     return () => {
       active = false
     }
-  }, [loadModelCatalog, pending?.ticket.key])
-  if (pending === null) return null
+  }, [loadModelCatalog, pending?.ticket.key, pending?.handoffError])
+  if (pending === null || (pending.canHandoff && !pending.handoffError)) return null
   const source = pending.ticket.sourceSelection
   const target = pending.ticket.targetSelection
   const modelSwitch = pending.reason === 'model-switch'

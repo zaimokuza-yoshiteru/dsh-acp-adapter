@@ -1,3 +1,19 @@
+import type { Principal } from '@deepseek-ai/dsh-typert-protocol'
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'acp-handoff': {
+      kind: 'acp-handoff'
+      operationId: string
+      part: 'summary' | 'delivery'
+      automatic?: true
+      launchIdentity: string | null
+      launchScope?: AcpTransferLocation
+      principal?: Principal
+    }
+  }
+}
+
 /** User-owned, recoverable transfer between independent conversations. */
 export interface AcpHandoffTarget {
   readonly provider: string
@@ -15,7 +31,13 @@ export function sameTransferLocation(actual: AcpTransferLocation | undefined, ex
 }
 
 export type AcpHandoffCommand =
-  | { readonly kind: 'begin'; readonly id: string; readonly target: AcpHandoffTarget; readonly locale: 'zh' | 'en' }
+  | {
+      readonly kind: 'begin'
+      readonly automatic?: true
+      readonly id: string
+      readonly target: AcpHandoffTarget
+      readonly locale: 'zh' | 'en'
+    }
   | { readonly kind: 'status'; readonly id?: string }
   | { readonly kind: 'cancel'; readonly id: string; readonly revision?: number }
   | {

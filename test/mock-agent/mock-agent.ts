@@ -481,6 +481,18 @@ function handleSessionLoad(msg: MockRequest) {
   if (typeof sessionId !== 'string' || !sessionId) {
     return respondError(msg.id, -32602, 'Invalid params: sessionId required')
   }
+  const failureMarker = process.env.MOCK_LOAD_FAILURE_FILE
+  if (failureMarker && fs.existsSync(failureMarker)) {
+    // Each line controls one real load, including loads in replacement processes.
+    const [reason, ...remaining] = fs.readFileSync(failureMarker, 'utf8').trim().split('\n')
+    if (remaining.length === 0) fs.unlinkSync(failureMarker)
+    else fs.writeFileSync(failureMarker, remaining.join('\n'))
+    log(`session/load ${sessionId}: ${reason}`)
+    if (reason === 'disconnect') process.exit(49)
+    return reason === 'missing'
+      ? respondError(msg.id, -32602, 'Session not found')
+      : respondError(msg.id, -32603, 'Temporary storage failure')
+  }
   if (state.scenario === 'load-fail') {
     log(`session/load ${sessionId} fails by scenario (load-fail)`)
     return respondError(msg.id, -32603, 'mock: session/load failed (load-fail scenario)')

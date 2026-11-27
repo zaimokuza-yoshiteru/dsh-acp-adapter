@@ -192,12 +192,12 @@ async function runSettlementCase(mode: 'natural' | 'stop', storageFollowup?: 'co
     expect(toolInvocations).toBe(1)
     expect(toolReturned).toBe(false)
     expect(turnSettled).toBe(false)
-    expect(await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).count()).toBe(0)
+    expect(await page.getByRole('button', { name: 'Recovery options', exact: true }).count()).toBe(0)
     expect(await page.getByRole('heading', { name: 'ACP session recovery required', exact: true }).count()).toBe(0)
     await captureEvidence(evidenceStage(`${mode}-finishing-before-5s`), {
       localStatusVisible: await finishing.isVisible(),
       turnSettled,
-      recoveryButtonCount: await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).count(),
+      recoveryButtonCount: await page.getByRole('button', { name: 'Recovery options', exact: true }).count(),
       toolInvocations,
       toolReturned,
       modelStreams,
@@ -223,7 +223,7 @@ async function runSettlementCase(mode: 'natural' | 'stop', storageFollowup?: 'co
       expect(toolReturned).toBe(false)
       expect(turnSettled).toBe(false)
       expect(await finishing.isVisible()).toBe(true)
-      expect(await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).count()).toBe(0)
+      expect(await page.getByRole('button', { name: 'Recovery options', exact: true }).count()).toBe(0)
     }
 
     // The five-second threshold is the regression boundary; the held Host
@@ -233,12 +233,12 @@ async function runSettlementCase(mode: 'natural' | 'stop', storageFollowup?: 'co
     expect(await finishing.isVisible()).toBe(true)
     expect(toolReturned).toBe(false)
     expect(turnSettled).toBe(false)
-    expect(await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).count()).toBe(0)
+    expect(await page.getByRole('button', { name: 'Recovery options', exact: true }).count()).toBe(0)
     await captureEvidence(evidenceStage(`${mode}-finishing-after-5s`), {
       elapsedMs: Date.now() - visibleAt,
       localStatusVisible: await finishing.isVisible(),
       turnSettled,
-      recoveryButtonCount: await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).count(),
+      recoveryButtonCount: await page.getByRole('button', { name: 'Recovery options', exact: true }).count(),
       toolInvocations,
       toolReturned,
       modelStreams,
@@ -261,7 +261,7 @@ async function runSettlementCase(mode: 'natural' | 'stop', storageFollowup?: 'co
       const faultedTurnText = await page.locator('body').innerText()
       expect(faultedTurnText).not.toContain('ACP_LOCAL_SETTLEMENT_FAILED')
       expect(await page.getByText('Failed', { exact: true }).count()).toBe(0)
-      expect(await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).count()).toBe(0)
+      expect(await page.getByRole('button', { name: 'Recovery options', exact: true }).count()).toBe(0)
       expect(await page.getByRole('heading', { name: 'ACP session recovery required', exact: true }).count()).toBe(0)
       await captureEvidence(evidenceStage('storage-error'), {
         protocolPromptCount: protocolPromptCount(),
@@ -273,7 +273,7 @@ async function runSettlementCase(mode: 'natural' | 'stop', storageFollowup?: 'co
         stopEnabled: await activeStop.isEnabled(),
         storageErrorVisible: await page.getByText(storageErrorStatus, { exact: true }).isVisible(),
         localSavingVisible: await page.getByText(savingResultsStatus, { exact: true }).count(),
-        recoveryButtonCount: await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).count(),
+        recoveryButtonCount: await page.getByRole('button', { name: 'Recovery options', exact: true }).count(),
       })
 
       if (storageFollowup === 'continue') {
@@ -319,7 +319,7 @@ async function runSettlementCase(mode: 'natural' | 'stop', storageFollowup?: 'co
           .toBe(0)
         expect(protocolPromptCount()).toBe(1)
         expect(toolInvocations).toBe(1)
-        expect(await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).count()).toBe(0)
+        expect(await page.getByRole('button', { name: 'Recovery options', exact: true }).count()).toBe(0)
         await captureEvidence(evidenceStage('storage-settled-after-stop'), {
           protocolPromptCount: protocolPromptCount(),
           toolInvocations,
@@ -340,7 +340,7 @@ async function runSettlementCase(mode: 'natural' | 'stop', storageFollowup?: 'co
         expect(protocolPromptCount()).toBe(2)
         expect(toolInvocations).toBe(1)
         expect(toolCancelled).toBe(false)
-        expect(await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).count()).toBe(0)
+        expect(await page.getByRole('button', { name: 'Recovery options', exact: true }).count()).toBe(0)
       }
     } else {
       releaseTool()
@@ -378,7 +378,7 @@ async function runSettlementCase(mode: 'natural' | 'stop', storageFollowup?: 'co
     expect(errors).toEqual([])
     await captureEvidence(evidenceStage(`${mode}-finished`), {
       localStatusVisible: await finishing.isVisible(),
-      recoveryButtonCount: await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).count(),
+      recoveryButtonCount: await page.getByRole('button', { name: 'Recovery options', exact: true }).count(),
       toolInvocations,
       toolReturned,
       modelStreams,

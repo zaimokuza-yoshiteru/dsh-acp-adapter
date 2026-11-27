@@ -111,7 +111,7 @@ it.each(['end_turn', 'cancelled'] as const)(
         throw error
       }
       await nextSettled
-      expect(await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).count()).toBe(0)
+      expect(await page.getByRole('button', { name: 'Recovery options', exact: true }).count()).toBe(0)
       const nextProcess = page.locator('[data-turn-process="2"][data-turn-process-tool-calls]')
       await nextProcess.waitFor({ state: 'visible', timeout: 15_000 })
       await expect.poll(() => nextProcess.isEnabled(), { timeout: 15_000 }).toBe(true)

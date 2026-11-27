@@ -32,24 +32,29 @@ function quotaLabel(window: UsageWindow, t: AcpTranslate): string {
   return t('accountBucketWindow', { bucket, duration })
 }
 
-/** The CLI owns these buckets and units. An absent window or credit balance stays absent. */
-export function accountUsageLines(view: AcpAccountUsageView, t: AcpTranslate, locale: string): string[] {
-  const lines: string[] = []
-  if (view.plan) lines.push(t('accountPlan', { plan: view.plan }))
-  if (typeof view.credits === 'string') lines.push(t('accountCredits', { credits: view.credits }))
-  else if (view.credits)
-    lines.push(t(view.credits.kind === 'unlimited' ? 'accountCreditsUnlimited' : 'accountCreditsAvailable'))
-  for (const window of view.windows) {
-    let line = t('accountRemaining', {
-      window: quotaLabel(window, t),
-      percent: Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(window.remainingPercent),
-    })
-    if (window.resetsAt !== null) {
-      line += t('accountResets', { time: localTime(window.resetsAt, locale) })
-    }
-    lines.push(line)
+/** The Host returns decimal strings so a large fixed balance retains its precision. */
+function creditBalance(credits: AcpAccountUsageView['credits'], t: AcpTranslate, locale: string): string | null {
+  if (credits === null) return null
+  if (typeof credits !== 'string')
+    return t(credits.kind === 'unlimited' ? 'accountCreditsUnlimited' : 'accountCreditsAvailable')
+  const format = new Intl.NumberFormat(locale, { maximumFractionDigits: 2 })
+  if (Number(credits) > 0 && Number(credits) < 0.01) return `<${format.format(0.01)}`
+  return format.format(credits as Intl.StringNumericLiteral)
+}
+
+export function accountUsageSummary(view: AcpAccountUsageView, t: AcpTranslate, locale: string) {
+  const percent = new Intl.NumberFormat(locale, { style: 'percent', maximumFractionDigits: 1 })
+  return {
+    plan: view.plan,
+    credits: creditBalance(view.credits, t, locale),
+    windows: view.windows.map((window) => ({
+      key: window.key,
+      label: quotaLabel(window, t),
+      value: window.remainingPercent,
+      remaining: t('accountRemaining', { percent: percent.format(window.remainingPercent / 100) }),
+      reset: window.resetsAt === null ? null : t('accountResets', { time: localTime(window.resetsAt, locale) }),
+    })),
   }
-  return lines
 }
 
 export function AccountUsageRow({
@@ -123,55 +128,59 @@ export function AccountUsageRow({
     )
   }
   const locale = typeof document === 'undefined' ? 'en' : document.documentElement.lang || navigator.language
-  const lines = view ? accountUsageLines(view, t, locale) : []
-  const summary = lines.slice(0, 2).join(' · ')
+  const usage = view ? accountUsageSummary(view, t, locale) : null
   const unavailable = failed || view?.status === 'unavailable'
   return h(
     'div',
     { className: css.accountRow, 'data-dsh-acp-account': id },
-    expanded && lines.length
+    usage && (usage.plan || usage.credits)
+      ? h(
+          'dl',
+          { className: css.accountFacts },
+          usage.plan ? h('div', null, h('dt', null, t('accountPlan')), h('dd', null, usage.plan)) : null,
+          usage.credits ? h('div', null, h('dt', null, t('accountCredits')), h('dd', null, usage.credits)) : null,
+        )
+      : null,
+    usage?.windows.length
       ? h(
           'ul',
-          { className: css.accountLines },
-          lines.map((line, index) => h('li', { key: index }, line)),
-        )
-      : lines.length > 2
-        ? h(
-            'details',
-            { className: css.accountDetails },
-            h('summary', null, summary, ' · ', t('accountDetails')),
+          { className: css.quotaWindows },
+          usage.windows.map(({ key, label, value, remaining, reset }) =>
             h(
-              'ul',
-              null,
-              lines.slice(2).map((line, i) => h('li', { key: i }, line)),
+              'li',
+              { key },
+              h('div', { className: css.quotaHeading }, h('span', null, label), h('span', null, remaining)),
+              h('progress', { max: 100, value, 'aria-label': label, 'aria-valuetext': remaining }),
+              reset ? h('span', { className: css.hint }, reset) : null,
             ),
-          )
-        : summary
-          ? h('span', null, summary)
-          : null,
+          ),
+        )
+      : null,
     view?.status === 'signin-required'
       ? h('span', { role: 'status' }, t('accountSignIn'))
       : unavailable
         ? h('span', { role: 'status' }, t('accountUnavailable'))
         : null,
-    view?.provider === 'antigravity' && view.checkedAt !== null && lines.length > 0
+    view?.provider === 'antigravity' && view.status === 'ready' && view.checkedAt !== null
       ? h(
           'time',
           { dateTime: new Date(view.checkedAt).toISOString(), className: css.hint },
           t('accountAsOf', { time: localTime(view.checkedAt, locale) }),
         )
       : null,
-    h(
-      Button,
-      {
-        variant: 'ghost',
-        size: 'sm',
-        disabled: busy,
-        onClick: () => setRequest((previous) => previous + 1),
-        'aria-label': t(view?.status === 'available' ? 'accountCheck' : 'accountRefresh'),
-      },
-      t(busy ? 'accountReading' : view?.status === 'available' ? 'accountCheck' : 'accountRefresh'),
-    ),
+    !expanded
+      ? h(
+          Button,
+          {
+            variant: 'ghost',
+            size: 'sm',
+            disabled: busy,
+            onClick: () => setRequest((previous) => previous + 1),
+            'aria-label': t(view?.status === 'available' ? 'accountCheck' : 'accountRefresh'),
+          },
+          t(busy ? 'accountReading' : view?.status === 'available' ? 'accountCheck' : 'accountRefresh'),
+        )
+      : null,
     websites,
   )
 }

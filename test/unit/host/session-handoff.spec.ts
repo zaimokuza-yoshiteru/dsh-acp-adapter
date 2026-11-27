@@ -145,6 +145,34 @@ function fixture() {
   }
 }
 
+it('automatically delivers only the generated summary once under the originating principal and retains scoped history', async () => {
+  const f = fixture()
+  const owner = { kind: 'owner' } as const
+  const begin = { kind: 'begin', automatic: true, id: f.id, target: f.target, locale: 'en' } as const
+  await f.service.action('original', begin, f.allow, owner)
+  expect(f.source.agent.followup.mock.calls[0]![0].source).toMatchObject({ part: 'summary', automatic: true })
+  f.source.finish('Generated brief')
+  const reconnected = f.mount()
+  const status = { kind: 'status', id: f.id } as const
+  expect(await reconnected.action('original', status, f.allow)).toMatchObject({ phase: 'summarizing' })
+  expect(f.create).not.toHaveBeenCalled()
+  const [ready] = await Promise.all([1, 2].map(() => reconnected.action('original', status, f.allow, owner)))
+  expect(ready).toMatchObject({ phase: 'queued', allowHistory: true })
+  const destination = f.sessions.get(ready!.destinationSessionId!)!
+  expect(f.create).toHaveBeenCalledTimes(1)
+  expect(destination.agent.followup).toHaveBeenCalledTimes(1)
+  const message = destination.agent.followup.mock.calls[0]![0]
+  expect(message.source).toMatchObject({ part: 'delivery', automatic: true, principal: owner })
+  expect(JSON.stringify(message.content)).toContain('Generated brief')
+  expect(await reconnected.historyFor(destination.agent.id)).toMatchObject({
+    sourceSessionId: 'original',
+    throughSeq: 1,
+  })
+  destination.finish('continued')
+  expect(await reconnected.action('original', status, f.allow, owner)).toMatchObject({ phase: 'completed' })
+  expect(destination.agent.followup).toHaveBeenCalledTimes(1)
+})
+
 it('recovers one editable draft and delivers only its edited text to the selected destination once', async () => {
   const f = fixture()
   await Promise.all([f.begin(), f.begin()])
@@ -167,6 +195,7 @@ it('recovers one editable draft and delivers only its edited text to the selecte
   )
   const delivered = destination.agent.followup.mock.calls[0]![0]
   expect(delivered.source.kind).toBe('acp-handoff')
+  expect(delivered.source).not.toHaveProperty('automatic')
   expect(delivered.content[0]).toMatchObject({ text: expect.stringContaining('reviewed text') })
   expect(JSON.stringify(delivered)).not.toContain('private detail')
   expect(await recovered.historyFor(id)).toEqual({ sourceSessionId: 'original', sourceCwd: '/project', throughSeq: 1 })

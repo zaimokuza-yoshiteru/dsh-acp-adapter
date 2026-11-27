@@ -430,6 +430,45 @@ describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
     await expect(store.readDispatch(SessionId('sess-dispatch'), 'step-1')).resolves.toMatchObject({ state: 'settled' })
   })
 
+  it('atomically replaces only the matching disconnect guard and binding generation', async () => {
+    const id = SessionId('next-user-input')
+    await store.append(id, { kind: 'binding', data: BINDING_A })
+    const previous = {
+      key: 'previous',
+      dshSessionId: id,
+      model: 'model-a',
+      provider: BINDING_A.provider,
+      state: 'dispatch-uncertain' as const,
+      createdAt: TIME_BASE,
+    }
+    const recovery = {
+      dshSessionId: id,
+      kind: 'outcome-unknown' as const,
+      cause: 'transport-disconnected',
+      provider: previous.provider,
+      acpSessionId: BINDING_A.agentSessionId,
+      generation: BINDING_A.generation,
+      disconnectedDispatchKey: previous.key,
+      updatedAt: TIME_BASE,
+    }
+    await store.beginDispatch(previous)
+    await store.writeRecoveryState(recovery)
+    const next = { ...previous, key: 'next' }
+    await expect(store.beginDispatch(next, 'outdated')).rejects.toThrow('ACP_RECOVERY_REQUIRED')
+    await expect(store.beginDispatch(previous, previous.key)).rejects.toThrow('ACP_RECOVERY_REQUIRED')
+    expect(await store.readRecoveryState(id)).toEqual(recovery)
+    await store.writeRecoveryState({ ...recovery, generation: BINDING_A.generation + 1 })
+    await expect(store.beginDispatch(next, previous.key)).rejects.toThrow('ACP_RECOVERY_REQUIRED')
+    expect(await store.readDispatch(id, previous.key)).toMatchObject({ state: 'dispatch-uncertain' })
+    await store.writeRecoveryState({ ...recovery, kind: 'reconnect-required', cause: 'auth-required' })
+    await expect(store.beginDispatch(next, previous.key)).rejects.toThrow('ACP_RECOVERY_REQUIRED')
+    await store.writeRecoveryState({ ...recovery, kind: 'reconnect-required', cause: 'load-failed' })
+    await store.beginDispatch(next, previous.key)
+    expect(await store.readRecoveryState(id)).toMatchObject({ kind: 'healthy', generation: BINDING_A.generation })
+    expect(await store.readDispatch(id, previous.key)).toBeUndefined()
+    expect(await store.readDispatch(id, next.key)).toMatchObject({ state: 'dispatch-uncertain' })
+  })
+
   it('atomically writes explicit healthy recovery with dispatch clearing and rolls both back on delete failure', async () => {
     const recovering = SessionId('atomic-recovery')
     const other = SessionId('atomic-other')

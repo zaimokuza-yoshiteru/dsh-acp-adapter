@@ -40,6 +40,32 @@ it('opens only a user-started draft once; restoring a draft after reload never s
   expect(open).toHaveBeenCalledTimes(1)
 })
 
+it.each([true, false])(
+  'finishes an automatic switch through reconnect when the user stays in the source: %s',
+  async (stays) => {
+    vi.useFakeTimers()
+    const open = vi.fn()
+    const navigation = new AbortController()
+    const request = vi
+      .fn<HandoffRequest>()
+      .mockResolvedValueOnce(success(starting))
+      .mockResolvedValue(success({ ...draft, phase: 'queued' }))
+    const client = new SessionHandoffClient(request, open, () => navigation.signal)
+    try {
+      await client.begin('source', { ...begin, automatic: true })
+      if (!stays) navigation.abort()
+      client.reconnect()
+      await vi.advanceTimersByTimeAsync(1200)
+      expect(client.get('target')?.phase).toBe('queued')
+      expect(request).toHaveBeenCalledTimes(2)
+      expect(open).toHaveBeenCalledTimes(stays ? 1 : 0)
+    } finally {
+      client.dispose()
+      vi.useRealTimers()
+    }
+  },
+)
+
 it('a late source poll cannot restore the editor after a cancellation in the target', async () => {
   const late = Promise.withResolvers<Awaited<ReturnType<HandoffRequest>>>()
   const request = vi

@@ -18,18 +18,36 @@
   font-weight: 500;
   cursor: pointer;
 }
+.trigger {
+  anchor-name: var(--acp-plan-anchor);
+}
+.trigger[aria-expanded='true'],
+.trigger:active {
+  background: var(--dsw-alias-interactive-bg-active);
+  color: var(--dsw-alias-label-primary);
+}
 .trigger:focus-visible,
 .close:focus-visible {
   outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
 }
 @media (hover: hover) {
-  .trigger:hover,
+  .trigger:hover:not([aria-expanded='true']),
   .close:hover {
     background: var(--dsw-alias-interactive-bg-hover);
   }
 }
 .panel {
+  --plan-width: min(302px, calc(100vw - 16px));
   position: fixed;
+  position-anchor: var(--acp-plan-anchor);
+  top: calc(anchor(bottom) + 6px);
+  bottom: 8px;
+  left: clamp(8px, calc(anchor(right) - var(--plan-width)), calc(100vw - var(--plan-width) - 8px));
+  align-self: start;
+  width: var(--plan-width);
+  height: fit-content;
+  max-height: min(360px, calc(100dvh - 16px));
+  position-try-fallbacks: --acp-plan-above, --acp-plan-short-below, --acp-plan-short-above;
   z-index: 20;
   box-sizing: border-box;
   padding: 10px 14px 12px;
@@ -40,6 +58,22 @@
   font-size: 13px;
   line-height: 20px;
   overflow-wrap: anywhere;
+}
+@position-try --acp-plan-above {
+  top: max(8px, var(--dsh-frame-overlay-top, 8px));
+  bottom: calc(anchor(top) + 6px);
+  align-self: end;
+}
+/* Keep the header and close button reachable when neither side fits the whole list. */
+@position-try --acp-plan-short-below {
+  min-height: 110px;
+  max-height: stretch;
+}
+@position-try --acp-plan-short-above {
+  top: max(8px, var(--dsh-frame-overlay-top, 8px));
+  bottom: calc(anchor(top) + 6px);
+  align-self: end;
+  max-height: stretch;
 }
 .header {
   display: flex;

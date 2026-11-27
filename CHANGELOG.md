@@ -4,6 +4,20 @@
 
 Find installation commands, release dates, and package checksums on [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases).
 
+## 0.2.2-rc.5.7
+
+### 中文
+
+- 在已有对话中切换 Agent，或在 ACP 与 DSH 原生模型之间切换时，新模型会自动收到摘要，并可按需查阅切换前已完成轮次的对话。未发送的草稿留在原会话。
+- Agent 断线后可以直接发下一条消息。插件先重连原会话，遇到暂时性断线或超时会自动重试。恢复成功后只发送这条新消息一次。如果仍未连上，可以在输入框上方再次重连。「恢复选项」里可以查看诊断或重置上下文。
+- 点击模型旁的「套餐」会刷新账户信息。套餐、剩余点数和周期额度分开展示，进度条显示各周期的剩余比例。AI 审批设置中的审查模型菜单与选择框对齐。
+
+### English
+
+- When you switch Agents or move between ACP and a native DSH model in an existing chat, the new model automatically receives a summary and can look up earlier completed turns. Unsent drafts stay in the original chat.
+- After an Agent disconnects, send your next message as usual. The adapter reconnects to the original session and retries temporary disconnects and timeouts. Once connected, it sends the new message once. If reconnecting fails, you can try again above the composer. Open **Recovery options** to view diagnostics or reset the Agent context.
+- Open **Usage** beside the model picker to refresh account information. The panel lists the plan and remaining credits separately and shows the remaining quota for each period as a progress bar. The review model menu in AI approval settings now aligns with its selector.
+
 ## 0.2.2-rc.5.6
 
 ### 中文

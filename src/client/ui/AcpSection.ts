@@ -468,6 +468,8 @@ function ReviewModelField({
       portal: true,
       dense: true,
       autoFocus: true,
+      minWidthFromAnchor: true,
+      listClassName: css.reviewModelMenu,
       selectedId: model,
       items: models.map(({ id, name }) => ({ id, label: name })),
       onClose: () => setOpen(false),

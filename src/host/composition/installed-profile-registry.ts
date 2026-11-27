@@ -85,7 +85,10 @@ export function recoveryViewWithLocalStatus(
     return {
       dshSessionId: visibleState.dshSessionId,
       kind: visibleState.kind,
-      cause: visibleState.cause ?? null,
+      cause:
+        visibleState.cause === 'transport-disconnected' && !visibleState.disconnectedDispatchKey
+          ? null
+          : (visibleState.cause ?? null),
       detail: visibleState.detail ?? null,
       provider: visibleState.provider ?? null,
       acpSessionId: visibleState.acpSessionId ?? null,
@@ -451,7 +454,7 @@ export async function installInstalledProfileRegistry(
           read: async () => undefined,
         }
       : {
-          begin: (record) => sidecar.beginDispatch(record),
+          begin: (record, previous) => sidecar.beginDispatch(record, previous),
           settle: (sessionId, key) =>
             sidecar.settleDispatch(sessionId as Parameters<AcpSidecar['settleDispatch']>[0], key),
           read: async (sessionId, key) =>
