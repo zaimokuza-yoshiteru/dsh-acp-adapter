@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import { Service, type Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -191,7 +192,7 @@ export class AcpHandoffs extends Service {
           }
           return command.kind === 'save' ? this.store.writeHandoff(edited) : this.send(edited, allowed, principal)
         }
-        return this.refresh(current, allowed)
+        return this.refresh(current, allowed, principal)
       })
     this.requests.set(key, operation)
     try {
@@ -215,7 +216,7 @@ export class AcpHandoffs extends Service {
     let previous = this.store.readHandoff(sessionId)
     if (previous?.sourceSessionId === sessionId && previous.phase === 'draft') {
       if (previous.destinationSessionId) authorize(previous.destinationSessionId)
-      previous = await this.refresh(previous, authorize)
+      previous = await this.refresh(previous, authorize, principal)
     }
     if (previous?.sourceSessionId === sessionId && ['summarizing', 'draft'].includes(previous.phase))
       throw changedSession()
@@ -264,6 +265,7 @@ export class AcpHandoffs extends Service {
         phase: 'summarizing',
         document: '',
         instruction: '',
+        ...(command.automatic && { automatic: true as const }),
         locale: command.locale,
         allowHistory: true,
         revision: 0,
@@ -274,6 +276,7 @@ export class AcpHandoffs extends Service {
             kind: 'acp-handoff',
             part: 'summary',
             operationId: record.id,
+            ...(record.automatic && { automatic: true as const }),
             launchIdentity: record.sourceIdentity,
             launchScope,
             ...(principal && { principal }),
@@ -286,7 +289,7 @@ export class AcpHandoffs extends Service {
     })
   }
 
-  private async refresh(record: HandoffRecord, authorize: (id: string) => void) {
+  private async refresh(record: HandoffRecord, authorize: (id: string) => void, principal?: Principal) {
     if (record.destinationSessionId && (record.phase === 'draft' || record.phase === 'queued')) {
       if (await this.destinationGone(record.destinationSessionId)) {
         authorize(record.sourceSessionId)
@@ -325,6 +328,19 @@ export class AcpHandoffs extends Service {
       authorize(record.sourceSessionId)
       return this.store.writeHandoff({ ...record, phase: 'interrupted', document: receipt.text })
     }
+    // Source and destination prompts must run as the same caller. Other authorized
+    // windows may inspect the transfer, but polling must never lend it another identity.
+    if (record.automatic) {
+      const summary = observed.events.find(
+        (event) => event.type === 'user/message' && ownsHandoffMessage(event.data, record.id, 'summary'),
+      )
+      if (
+        summary?.type !== 'user/message' ||
+        summary.data.source.kind !== 'acp-handoff' ||
+        !isDeepStrictEqual(principal, summary.data.source.principal)
+      )
+        return record
+    }
     let destination: string
     try {
       destination = await createHandoffDestination(
@@ -348,12 +364,23 @@ export class AcpHandoffs extends Service {
       return this.store.writeHandoff({ ...record, phase: 'interrupted', document: receipt.text })
     }
     authorize(destination)
-    return this.store.writeHandoff({
-      ...record,
-      destinationSessionId: destination,
-      phase: this.sameProfiles(record) ? 'draft' : 'interrupted',
-      document: receipt.text,
-    })
+    const ready = { ...record, destinationSessionId: destination, document: receipt.text }
+    if (!this.sameProfiles(ready)) return this.store.writeHandoff({ ...ready, phase: 'interrupted' })
+    if (!ready.automatic) return this.store.writeHandoff({ ...ready, phase: 'draft' })
+    try {
+      return await this.send(ready, authorize, principal)
+    } catch (error) {
+      // A lost flush acknowledgement may already have committed 'queued'.
+      // Reconcile that receipt before ever considering another dispatch.
+      const latest = this.store.readHandoff(record.sourceSessionId, record.id)
+      if (latest?.phase === 'queued') return latest
+      if (
+        !(error instanceof RemoteError) ||
+        (error.code !== 'session/model-unavailable' && error.code !== 'session/agent-busy')
+      )
+        throw error
+      return this.store.writeHandoff({ ...ready, phase: 'interrupted' })
+    }
   }
 
   private async destinationGone(id: string) {
@@ -441,6 +468,7 @@ export class AcpHandoffs extends Service {
             kind: 'acp-handoff',
             part: 'delivery',
             operationId: record.id,
+            ...(record.automatic && { automatic: true as const }),
             launchIdentity: record.targetIdentity,
             launchScope,
             ...(principal && { principal }),

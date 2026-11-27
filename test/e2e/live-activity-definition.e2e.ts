@@ -2,8 +2,9 @@ import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionEventLikeEntry } from '@deepseek-ai/dsh-api-session-controller/client'
-import type { SessionEvent } from '@deepseek-ai/dsh-session/types'
+import { SessionSeq, type SessionEvent } from '@deepseek-ai/dsh-session/types'
 import type {
   ConversationMatch,
   ConversationLocation,
@@ -20,6 +21,7 @@ import type {
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { AcpActivityNodeData } from '../../src/client/ui/activity-definitions.ts'
 import { ManagedAcpRouteCatalog } from '../../src/client/data/managed-routes.ts'
+import { automaticHandoffInputDefinition } from '../../src/client/ui/handoff-input-definition.ts'
 import type { AcpOwnedRoutesView } from '../../src/contract/remote.ts'
 import {
   acpPromptAnchorDefinition,
@@ -183,6 +185,46 @@ function isActivityMarker(node: ConversationViewNode): node is ActivityMarker {
 function liveNodes(harness: ReturnType<typeof makeAssembler>): ActivityMarker[] {
   return harness.snapshot().nodes.filter(isActivityMarker)
 }
+
+it('registers the automatic handoff with RC.5 Chat while preserving ordinary and legacy inputs on history replay', async () => {
+  const { messageDefinition } = (await import(
+    pathToFileURL(resolve(upstreamConversationPath, '../../../../ui-chat/src/client/conversation-nodes/message.ts'))
+      .href
+  )) as { messageDefinition: ConversationNodeDefinition }
+  const ctx = new Context()
+  try {
+    const registry = new ConversationEventRegistry(ctx)
+    registry.register(messageDefinition)
+    registry.register(automaticHandoffInputDefinition)
+    expect([...registry.forEvent('assistant/message')].map((route) => route.definition.kind)).not.toContain(
+      automaticHandoffInputDefinition.kind,
+    )
+    const harness = assemblerFor(registry)
+    const handoff = { kind: 'acp-handoff', operationId: 'test-handoff', launchIdentity: null } as const
+    const sources: UserMessage['source'][] = [
+      { ...handoff, part: 'summary', automatic: true },
+      { ...handoff, part: 'delivery', automatic: true },
+      { ...handoff, part: 'delivery' },
+      { kind: 'user' },
+    ]
+    harness.replaceWindow(
+      sources.map((source, index) => ({
+        type: 'event',
+        event: {
+          type: 'user/message',
+          seq: SessionSeq(index + 1),
+          time: index + 1,
+          surfaceOp: 'append',
+          data: createUserMessage({ source, content: [{ type: 'text', text: 'continue' }] }),
+        },
+      })),
+      false,
+    )
+    expect(harness.snapshot().nodes.map((node) => node.kind)).toEqual(['context', 'user'])
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
 
 function nodeFor(harness: ReturnType<typeof makeAssembler>, messageId: string): ActivityMarker {
   const node = liveNodes(harness).find((candidate) => candidate.data.promptAnchorMessageId === messageId)

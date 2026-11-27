@@ -432,8 +432,7 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
       .getByLabel('Fixture codex · ACP', { exact: true })
       .getByRole('menuitemradio', { name: 'Mock Model B', exact: true })
       .click()
-    await dialog.getByRole('button', { name: 'Start a blank session', exact: true }).click()
-    await send('E2E_MESSAGE')
+    // The model choice alone transfers the team's lead to an independent chat.
     diagnostics.stage('cross-agent-new-session-done')
     await page.getByText('E2E_DONE mock-model-b', { exact: true }).waitFor()
     const destinationId = required(

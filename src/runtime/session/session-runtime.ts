@@ -421,7 +421,7 @@ interface RuntimeStartup {
   cleanup: Promise<void> | undefined
 }
 
-function waitForRefreshRetry(signal: AbortSignal | undefined, delayMs: number): Promise<void> {
+export function waitForReconnect(signal: AbortSignal | undefined, delayMs: number): Promise<void> {
   if (signal?.aborted === true) return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
   return new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -847,7 +847,7 @@ export class AcpSessionRuntime {
             throw error
           }
           try {
-            await waitForRefreshRetry(refreshSignal, retryDelaysMs[attempt]!)
+            await waitForReconnect(refreshSignal, retryDelaysMs[attempt]!)
           } catch (waitError) {
             if (refreshSignal.aborted) throw new AcpSessionRefreshAbortedError(refreshSignal.reason ?? waitError)
             throw waitError

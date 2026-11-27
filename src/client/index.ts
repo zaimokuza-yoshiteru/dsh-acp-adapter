@@ -39,6 +39,7 @@ import { UnroutedHistoryDock } from './ui/UnroutedHistoryDock.ts'
 import { UnsentModelSwitchInput } from './ui/UnsentModelSwitchInput.ts'
 import { SessionHandoffClient } from './coordinator/session-handoff.ts'
 import { HandoffComposer, HandoffDock } from './ui/SessionHandoff.ts'
+import { automaticHandoffInputDefinition } from './ui/handoff-input-definition.ts'
 import { CrossBackendCoordinator } from './coordinator/cross-backend-coordinator.ts'
 import { AcpNativeForkCoordinator, type NativeForkFailure } from './coordinator/native-fork.ts'
 import { createNativeForkJournal } from './coordinator/native-fork-journal.ts'
@@ -238,6 +239,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
   const settingsT = ctx.locale.bind('settings.acp') as AcpTranslate
   ctx.uiConversation.events.register(createAcpEffectiveRouteDefinition())
   ctx.uiConversation.events.register(acpPromptAnchorDefinition)
+  ctx.uiConversation.events.register(automaticHandoffInputDefinition)
   ctx.effect(
     () => followAcpActivityDefinitions(managedRoutes, (definition) => ctx.uiConversation.events.register(definition)),
     'dsh-acp: route-owned activity history',
@@ -399,7 +401,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
         id: 'dsh-acp-session-handoff',
         order: 88,
         locale: 'acpActivity',
-        inject: () => ({ client: handoffs, openSession: openHandoffSession, access: sessionAccessSource }),
+        inject: () => ({ client: handoffs, access: sessionAccessSource }),
       },
       HandoffDock,
     ),
@@ -429,7 +431,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
                   locale: 'acpActivity',
                   select: (owner: ComposerChainProps) =>
                     owner.sessionId === id && !owner.pendingInteraction ? true : null,
-                  inject: () => ({ client: handoffs, openSession: openHandoffSession, ...transitionModelLabels }),
+                  inject: () => ({ client: handoffs, ...transitionModelLabels }),
                 },
                 HandoffComposer,
               ),
@@ -575,6 +577,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
           locale: 'acpActivity',
           inject: (sessionId) => ({
             directory: scope.modelDirectories.directoryFor(sessionId).store,
+            watchPicker: coordinator.watchPicker,
             hooks: { routeOwnership: managedRoutes.store },
             openIndependent: (current: () => boolean, action: IndependentSessionAction) =>
               openIndependentSession(sessionId, () => current() && isMainSession(sessions, sessionId), action),

@@ -1,4 +1,9 @@
-import { confirmBlankRecovery } from './recovery-ui.helpers.ts'
+import {
+  confirmBlankRecovery,
+  expectAutomaticRecovery,
+  failAutomaticRecovery,
+  loadFailureMarker,
+} from './recovery-ui.helpers.ts'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -68,13 +73,13 @@ it('keeps native queued input operable across ACP crash recovery and closes pend
     return item
   }
   const recoverByRebind = async () => {
-    await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).waitFor()
-    await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).click()
+    await page.getByRole('button', { name: 'Recovery options', exact: true }).click()
     const dialog = page.getByRole('dialog')
     await dialog.waitFor({ state: 'visible' })
+    expect(await dialog.getByRole('button', { name: 'Reconnect original session', exact: true }).isEnabled()).toBe(true)
     await confirmBlankRecovery(page)
     await dialog.waitFor({ state: 'hidden' })
-    await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).waitFor({ state: 'hidden' })
+    await page.getByRole('button', { name: 'Recovery options', exact: true }).waitFor({ state: 'hidden' })
   }
 
   host.ctx.on('session/event', (session, event) => events.push({ sessionId: session.id, ...event }))
@@ -91,6 +96,7 @@ it('keeps native queued input operable across ACP crash recovery and closes pend
             MOCK_PROFILE: 'devin',
             MOCK_RECOVERY_GATE_DIR: gateDirectory,
             MOCK_LOG: agentLog,
+            MOCK_LOAD_FAILURE_FILE: loadFailureMarker(host.workspaceCwd),
           },
         },
       },
@@ -113,7 +119,7 @@ it('keeps native queued input operable across ACP crash recovery and closes pend
     release('release-queue-crash')
     const sessionId = await firstSettled
     await waitForEndCount(sessionId, 1)
-    await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).waitFor()
+    await expectAutomaticRecovery(page)
     await capture('queue-recovery')
     await expect.poll(() => queued.count()).toBe(1)
     await expect
@@ -140,10 +146,10 @@ it('keeps native queued input operable across ACP crash recovery and closes pend
     expect(firstEndFacts[0]?.data).toMatchObject({
       reason: {
         kind: 'error',
-        error: { code: 'ACP_CRASH', message: 'The Agent disconnected. Check its connection in ACP settings.' },
+        error: { code: 'ACP_CRASH', message: 'The Agent disconnected.' },
       },
     })
-    await page.getByText('The Agent disconnected. Check its connection in ACP settings.', { exact: true }).waitFor()
+    await page.getByText('The Agent disconnected.', { exact: true }).waitFor()
 
     const remote = host.ctx.get('dshAcp') as AcpRemoteService
     const recoveryFollow = remote.recoveryFollow.bind(remote)
@@ -154,22 +160,31 @@ it('keeps native queued input operable across ACP crash recovery and closes pend
       yield* recoveryFollow(id, signal)
     })
     await page.reload()
-    await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).waitFor()
+    await expectAutomaticRecovery(page)
     expect(recoveryFollowReads).toBeGreaterThanOrEqual(2)
     await page.getByRole('listitem').filter({ hasText: 'E2E_RECOVERY_QUEUED_INPUT' }).waitFor({ state: 'visible' })
     expect(promptCount()).toBe(1)
-    await recoverByRebind()
-    const queuedAfterRebind = page.getByRole('listitem').filter({ hasText: 'E2E_RECOVERY_QUEUED_INPUT' })
-    await queuedAfterRebind.waitFor({ state: 'visible' })
-    await capture('queue-after-rebind')
-    await queuedAfterRebind.getByRole('button', { name: 'Remove queued message', exact: true }).click()
-    await queuedAfterRebind.waitFor({ state: 'detached' })
+    const interruptedQueue = page.getByRole('listitem').filter({ hasText: 'E2E_RECOVERY_QUEUED_INPUT' })
+    await interruptedQueue.waitFor({ state: 'visible' })
+    await capture('queue-before-new-message')
+    await interruptedQueue.getByRole('button', { name: 'Remove queued message', exact: true }).click()
+    await interruptedQueue.waitFor({ state: 'detached' })
     expect(promptCount()).toBe(1)
     const afterQueueRecovery = send('E2E_RECOVERY_FOLLOWUP')
     await afterQueueRecovery
     await page.getByText('E2E_RECOVERY_FOLLOWUP_DONE', { exact: true }).waitFor()
+    await page
+      .getByRole('status')
+      .filter({ hasText: 'Sending a new message will try to reconnect' })
+      .waitFor({ state: 'hidden' })
     expect(promptCount()).toBe(2)
-    expect(readFileSync(agentLog, 'utf8')).not.toContain('E2E_RECOVERY_QUEUED_INPUT')
+    const followupLog = readFileSync(agentLog, 'utf8')
+    const promptSessionIds = [...followupLog.matchAll(/regression prompt=.* session=(\S+)$/gm)].map((match) => match[1])
+    expect(promptSessionIds).toHaveLength(2)
+    expect(promptSessionIds[1]).toBe(promptSessionIds[0])
+    expect(followupLog).toContain(`session/load ${promptSessionIds[0]}:`)
+    expect(followupLog).not.toContain('E2E_RECOVERY_QUEUED_INPUT')
+    await capture('queue-after-automatic-reconnect')
     expect(
       events.filter(
         (event) =>
@@ -194,7 +209,7 @@ it('keeps native queued input operable across ACP crash recovery and closes pend
     release('release-permission-crash')
     await permissionStarted
     await waitForEndCount(sessionId, 3)
-    await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).waitFor()
+    await expectAutomaticRecovery(page)
     await approval.waitFor({ state: 'hidden' })
     await capture('permission-recovery')
     await expect.poll(() => queuedPermission.count()).toBe(1)
@@ -208,13 +223,13 @@ it('keeps native queued input operable across ACP crash recovery and closes pend
     expect(finalEnds).toHaveLength(3)
     expect(finalEnds[2]?.data).toMatchObject({ reason: { kind: 'error', error: { code: 'ACP_CRASH' } } })
 
+    await queuedPermission.getByRole('button', { name: 'Remove queued message', exact: true }).click()
+    await queuedPermission.waitFor({ state: 'detached' })
+    await failAutomaticRecovery(page, host.workspaceCwd)
+    expect(readFileSync(agentLog, 'utf8')).toContain(`session/load ${promptSessionIds[0]}: missing`)
+    expect(promptCount()).toBe(3)
+    await capture('original-session-unavailable')
     await recoverByRebind()
-    const queuedPermissionAfterRebind = page
-      .getByRole('listitem')
-      .filter({ hasText: 'E2E_RECOVERY_PERMISSION_QUEUED_INPUT' })
-    await queuedPermissionAfterRebind.waitFor({ state: 'visible' })
-    await queuedPermissionAfterRebind.getByRole('button', { name: 'Remove queued message', exact: true }).click()
-    await queuedPermissionAfterRebind.waitFor({ state: 'detached' })
     await expect.poll(() => approval.count()).toBe(0)
     expect(existsSync(join(host.workspaceCwd, 'workspace', 'recovery-approval-marker.txt'))).toBe(false)
     expect(promptCount()).toBe(3)

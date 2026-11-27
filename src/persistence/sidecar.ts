@@ -314,6 +314,7 @@ export interface AcpRecoveryState {
   readonly provider?: string
   readonly acpSessionId?: string
   readonly generation?: number
+  readonly disconnectedDispatchKey?: string
   readonly interruptedTurnId?: string
   /** Known, settled cwd handoff deferred by User Stop; never an uncertain fork. */
   readonly targetCwd?: string
@@ -322,6 +323,16 @@ export interface AcpRecoveryState {
   /** Explicit user action, when the recovery surface records one. */
   readonly lastUserAction?: string
   readonly updatedAt: number
+}
+
+export function hasReconnectableDispatch(
+  state: AcpRecoveryState | undefined,
+): state is AcpRecoveryState & { readonly disconnectedDispatchKey: string } {
+  return Boolean(
+    state?.disconnectedDispatchKey &&
+    ((state.kind === 'outcome-unknown' && state.cause === 'transport-disconnected') ||
+      (state.kind === 'reconnect-required' && state.cause === 'load-failed')),
+  )
 }
 
 /**
@@ -516,7 +527,7 @@ export interface AcpSidecar {
     model?: { readonly id: string; readonly value: string },
   ): Promise<void>
   /** Persist the dispatch uncertainty before crossing the ACP process boundary. */
-  beginDispatch(record: AcpDispatchRecord): Promise<void>
+  beginDispatch(record: AcpDispatchRecord, interruptedDispatchKey?: string): Promise<void>
   /** Mark a previously durable dispatch complete; idempotent for settled rows. */
   settleDispatch(sessionId: SessionId, key: string, settledAt?: number): Promise<void>
   /** Read a dispatch ledger row after restart. */
@@ -683,7 +694,15 @@ function toRecoveryState(raw: unknown): AcpRecoveryState | undefined {
   ]
   if (typeof raw.kind !== 'string' || !kinds.includes(raw.kind)) return undefined
   if (typeof raw.updatedAt !== 'number' || !Number.isFinite(raw.updatedAt)) return undefined
-  for (const key of ['cause', 'detail', 'provider', 'acpSessionId', 'interruptedTurnId', 'targetCwd'] as const) {
+  for (const key of [
+    'cause',
+    'detail',
+    'provider',
+    'acpSessionId',
+    'interruptedTurnId',
+    'disconnectedDispatchKey',
+    'targetCwd',
+  ] as const) {
     if (key in raw && raw[key] !== undefined && typeof raw[key] !== 'string') return undefined
   }
   if (
@@ -1820,7 +1839,7 @@ class SidecarStore implements AcpSidecar {
     })
   }
 
-  async beginDispatch(record: AcpDispatchRecord): Promise<void> {
+  async beginDispatch(record: AcpDispatchRecord, interruptedDispatchKey?: string): Promise<void> {
     assertSafeSessionId(record.dshSessionId)
     if (record.state !== 'dispatch-uncertain')
       throw new TypeError('dsh-acp dispatch begin must use state dispatch-uncertain')
@@ -1843,10 +1862,39 @@ class SidecarStore implements AcpSidecar {
       const existing = db
         .prepare('SELECT dispatch_key, state FROM dispatch_ledger WHERE dsh_session_id = ?')
         .all(record.dshSessionId) as Array<{ dispatch_key?: unknown; state?: unknown }>
+      if (interruptedDispatchKey !== undefined) {
+        const row = this.stmtGetRecoveryState?.get(record.dshSessionId) as { payload: string } | undefined
+        const recovery = row && toRecoveryState(JSON.parse(row.payload))
+        const bound = this.stmtGetBinding?.get(record.dshSessionId) as BindingRow | undefined
+        const binding = bound && this.parseBindingRow(bound)
+        if (
+          !hasReconnectableDispatch(recovery) ||
+          recovery.disconnectedDispatchKey !== interruptedDispatchKey ||
+          recovery.provider !== record.provider ||
+          !binding ||
+          binding.provider !== record.provider ||
+          binding.agentSessionId !== recovery.acpSessionId ||
+          binding.generation !== recovery.generation ||
+          existing.length !== 1 ||
+          existing[0]?.dispatch_key !== interruptedDispatchKey ||
+          existing[0]?.state !== 'dispatch-uncertain'
+        )
+          throw new Error('ACP_RECOVERY_REQUIRED: the interrupted dispatch changed before continuation')
+        // Restore did not establish the previous turn's outcome. Only replace its
+        // send guard when the new, separately admitted prompt receives its own guard.
+        this.upsertRecoveryState({
+          dshSessionId: record.dshSessionId,
+          kind: 'healthy',
+          provider: record.provider,
+          acpSessionId: binding.agentSessionId,
+          generation: binding.generation,
+          updatedAt: record.createdAt,
+        })
+      }
       for (const row of existing) {
         if (row.dispatch_key === record.key)
           throw new Error(`ACP_RECOVERY_REQUIRED: dispatch ${record.key} already exists`)
-        if (row.state === 'dispatch-uncertain')
+        if (row.state === 'dispatch-uncertain' && row.dispatch_key !== interruptedDispatchKey)
           throw new Error(`ACP_RECOVERY_REQUIRED: dispatch ${String(row.dispatch_key)} is dispatch-uncertain`)
       }
       db.prepare('DELETE FROM dispatch_ledger WHERE dsh_session_id = ?').run(record.dshSessionId)

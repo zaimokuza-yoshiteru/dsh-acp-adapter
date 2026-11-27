@@ -141,6 +141,10 @@ it.skipIf(process.env.DSH_E2E_LIVE_OPENCODE_REVIEW_SETTINGS !== '1')(
       await english.model.click()
       const menu = page.getByRole('menu')
       await menu.getByRole('menuitem', { name: choice.name, exact: true }).waitFor()
+      const sectionWidth = required(await english.region.boundingBox()).width
+      const triggerWidth = required(await english.model.boundingBox()).width
+      expect(Math.abs(triggerWidth - sectionWidth)).toBeLessThanOrEqual(1)
+      expect(Math.abs(required(await menu.boundingBox()).width - triggerWidth)).toBeLessThanOrEqual(1)
       await page.screenshot({ path: join(output, 'en-models-1280.png'), animations: 'disabled' })
       await menu.getByRole('menuitem', { name: choice.name, exact: true }).click()
       await expect.poll(() => english.model.innerText()).toContain(choice.name)
@@ -171,6 +175,7 @@ it.skipIf(process.env.DSH_E2E_LIVE_OPENCODE_REVIEW_SETTINGS !== '1')(
       await chinese.model.click()
       await menu.getByRole('menuitem', { name: zh.reviewSessionModel, exact: true }).waitFor()
       const bounds = required(await menu.boundingBox())
+      expect(Math.abs(bounds.width - required(await chinese.model.boundingBox()).width)).toBeLessThanOrEqual(1)
       expect(bounds.x).toBeGreaterThanOrEqual(0)
       expect(bounds.x + bounds.width).toBeLessThanOrEqual(391)
       await menu.getByRole('menuitem', { name: zh.reviewSessionModel, exact: true }).click()

@@ -21,7 +21,8 @@ export class SessionHandoffClient {
   private readonly reads = new Map<string, Promise<void>>()
   private readonly writes = new Map<string, Promise<void>>()
   private readonly revisions = new Map<string, number>()
-  private readonly openOnDraft = new Map<string, AbortSignal>()
+  private readonly openOnDestination = new Map<string, { signal: AbortSignal; automatic: boolean }>()
+  private readonly automaticTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private connection = 0
   private stopped = false
 
@@ -52,11 +53,14 @@ export class SessionHandoffClient {
   }
 
   async begin(source: string, command: Extract<AcpHandoffCommand, { kind: 'begin' }>): Promise<void> {
-    this.openOnDraft.set(command.id, this.beginNavigation())
+    this.openOnDestination.set(command.id, { signal: this.beginNavigation(), automatic: command.automatic === true })
     try {
       await this.change(source, command)
     } catch (error) {
-      this.openOnDraft.delete(command.id)
+      // begin may have committed before its acknowledgement was lost.
+      await this.refresh(source).catch(() => {})
+      if (this.get(source)?.id === command.id) return
+      this.openOnDestination.delete(command.id)
       throw error
     }
   }
@@ -129,6 +133,29 @@ export class SessionHandoffClient {
     return promise
   }
 
+  /** Continue a local model selection even if its source composer is unmounted.
+   * The captured navigation signal independently governs whether focus follows. */
+  followsSummary(id: string): boolean {
+    return this.openOnDestination.get(id)?.automatic === true
+  }
+
+  private followSummary(view: AcpHandoffView): void {
+    if (this.stopped || !this.followsSummary(view.id) || this.automaticTimers.has(view.id)) return
+    const timer = setTimeout(async () => {
+      try {
+        if (!this.followsSummary(view.id) || this.get(view.sourceSessionId)?.id !== view.id) return
+        await this.refresh(view.sourceSessionId)
+      } catch {
+        // A later status read reconciles lost acknowledgements without resubmitting.
+      } finally {
+        this.automaticTimers.delete(view.id)
+        const latest = this.get(view.sourceSessionId)
+        if (latest?.id === view.id && latest.phase === 'summarizing') this.followSummary(latest)
+      }
+    }, 1200)
+    this.automaticTimers.set(view.id, timer)
+  }
+
   private install(addressed: string, view: AcpHandoffView): void {
     if (this.stopped) return
     const previous = this.get(addressed)
@@ -146,13 +173,17 @@ export class SessionHandoffClient {
       // Looking up an earlier destination cannot replace a newer operation on its source.
       if (addressed === endpoint || existing === undefined || existing.id === view.id) this.views.set(endpoint, view)
     }
+    if (view.phase === 'summarizing') this.followSummary(view)
     for (const listener of this.listeners) listener()
-    if (view.phase === 'draft' && view.destinationSessionId !== null) {
-      const navigation = this.openOnDraft.get(view.id)
-      this.openOnDraft.delete(view.id)
-      if (navigation && !navigation.aborted) this.openFromSource(view.sourceSessionId, view.destinationSessionId)
+    if (
+      (view.phase === 'draft' || view.phase === 'queued' || view.phase === 'completed') &&
+      view.destinationSessionId !== null
+    ) {
+      const navigation = this.openOnDestination.get(view.id)
+      this.openOnDestination.delete(view.id)
+      if (navigation && !navigation.signal.aborted) this.openFromSource(view.sourceSessionId, view.destinationSessionId)
     }
-    if (view.phase === 'cancelled' || view.phase === 'interrupted') this.openOnDraft.delete(view.id)
+    if (view.phase === 'cancelled' || view.phase === 'interrupted') this.openOnDestination.delete(view.id)
   }
 
   forget(record: AcpHandoffView | undefined): void {
@@ -160,21 +191,23 @@ export class SessionHandoffClient {
     for (const id of [record.sourceSessionId, record.destinationSessionId]) {
       if (id && this.get(id)?.id === record.id) this.views.delete(id)
     }
-    this.openOnDraft.delete(record.id)
+    this.openOnDestination.delete(record.id)
     for (const listener of this.listeners) listener()
   }
 
   reconnect(): void {
     this.connection++
     this.reads.clear()
-    this.openOnDraft.clear()
+    for (const [id, navigation] of this.openOnDestination) if (!navigation.automatic) this.openOnDestination.delete(id)
     for (const listener of this.listeners) listener()
   }
 
   dispose(): void {
     this.stopped = true
+    for (const timer of this.automaticTimers.values()) clearTimeout(timer)
+    this.automaticTimers.clear()
     this.listeners.clear()
     this.views.clear()
-    this.openOnDraft.clear()
+    this.openOnDestination.clear()
   }
 }

@@ -141,7 +141,7 @@
   justify-content: space-between;
   gap: 12px;
   box-sizing: border-box;
-  width: min(100%, 360px);
+  width: 100%;
   min-height: 40px;
   padding: 8px 12px;
   border: 0.5px solid var(--dsw-alias-border-l2);
@@ -166,6 +166,9 @@
 .approvalButton:disabled {
   opacity: 0.5;
   cursor: default;
+}
+.reviewModelMenu[data-match-anchor-width] {
+  max-width: min(anchor-size(width), calc(100vw - 24px));
 }
 .chevron {
   display: inline-flex;
@@ -202,6 +205,7 @@
   gap: 10px;
 }
 .accountRow {
+  max-width: 38rem;
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -212,12 +216,57 @@
   line-height: 20px;
   overflow-wrap: anywhere;
 }
-.accountDetails summary {
-  cursor: pointer;
+.accountFacts,
+.quotaWindows {
+  box-sizing: border-box;
+  flex: 1 0 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
 }
-.accountDetails ul {
-  margin: 4px 0 0;
-  padding-inline-start: 20px;
+.accountFacts > div,
+.quotaHeading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.accountFacts dd,
+.quotaHeading span:last-child {
+  margin: 0;
+  color: var(--dsw-alias-label-primary);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+.quotaWindows {
+  display: grid;
+  gap: 8px 16px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+  list-style: none;
+}
+.accountFacts + .quotaWindows {
+  margin-top: 6px;
+}
+.quotaWindows progress {
+  display: block;
+  appearance: none;
+  width: 100%;
+  height: 5px;
+  margin: 4px 0 2px;
+  border: 0;
+  border-radius: var(--dsw-radius-sm);
+  overflow: hidden;
+  background: var(--dsw-alias-interactive-bg-active);
+  color: var(--dsw-alias-state-business-primary);
+}
+.quotaWindows progress::-webkit-progress-bar {
+  background: var(--dsw-alias-interactive-bg-active);
+}
+.quotaWindows progress::-webkit-progress-value {
+  background: currentColor;
+}
+.quotaWindows progress::-moz-progress-bar {
+  background: currentColor;
 }
 .rowIdentity {
   display: inline-flex;
@@ -386,10 +435,4 @@
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-state-error-primary);
-}
-.accountLines {
-  flex-basis: 100%;
-  list-style: none;
-  margin: 0;
-  padding: 0;
 }

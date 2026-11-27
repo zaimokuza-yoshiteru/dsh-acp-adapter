@@ -30,9 +30,8 @@ import { UnsentModelSwitchInput } from '../../../src/client/ui/UnsentModelSwitch
 import { AcpAgentControl } from '../../../src/client/ui/AcpAgentControl.ts'
 import { AcpRecoveryDock } from '../../../src/client/ui/AcpRecoveryDock.ts'
 import { ManagedModelRecovery } from '../../../src/client/ui/ManagedModelRecovery.ts'
-import type { IndependentSessionOutcome } from '../../../src/client/coordinator/native-session-navigation.ts'
 import { TeamMemberModelControl } from '../../../src/client/ui/TeamMemberModelControl.ts'
-import type { AcpAgentSessionSnapshotView } from '../../../src/contract/remote.ts'
+import type { AcpAgentSessionSnapshotView, AcpRecoveryView } from '../../../src/contract/remote.ts'
 
 // Exercise selection handlers with the same grant updates used by a mounted DSH client.
 const require = createRequire(import.meta.url)
@@ -76,7 +75,7 @@ const snapshot: AcpAgentSessionSnapshotView = {
   contextUsage: null,
   note: null,
 }
-function setup(owner = false, workspace = true) {
+function setup(owner = false) {
   const state = new ClientAccessState(
     owner ? { type: 'baseline', owner: true } : { type: 'baseline', owner: false, grants: [] },
   )
@@ -133,7 +132,7 @@ function setup(owner = false, workspace = true) {
     useRemoteAccess: (action: string) => state.global(action).getSnapshot(),
     useWorkspaceAccess: (id: string, action: string) => state.resource('workspace', id, action).getSnapshot(),
     useWorkspaces: (select: (value: object) => unknown) =>
-      select({ items: workspace ? [{ workspaceId: 'workspace', sessionIds: ['lead'] }] : [] }),
+      select({ items: [{ workspaceId: 'workspace', sessionIds: ['lead'] }] }),
     useSessions: (select: (value: object) => unknown) => select({ byId: { lead: { cwd: '/fixture' } } }),
     useSession: (select: (value: object) => unknown) => select({ running: false, openState: 'ready' }),
     useProjection: () => ({ lastUsed: { provider: 'acp-codex' }, next: { provider: 'acp-codex' } }),
@@ -190,19 +189,23 @@ function setup(owner = false, workspace = true) {
       onMenuOpen: () => {},
     } as never)
   }
-  const recovery = (confirmRebind = false, navigation: IndependentSessionOutcome = 'idle') => {
+  const recovery = (
+    confirmRebind = false,
+    kind: AcpRecoveryView['kind'] = 'outcome-unknown',
+    cause: string | null = null,
+    { open = true, failedRetry = false } = {},
+  ) => {
     seed([
-      { dshSessionId: 'lead', kind: 'outcome-unknown', cause: null, detail: null },
-      true,
+      { dshSessionId: 'lead', kind, cause, detail: null },
+      open,
       null,
-      null,
+      failedRetry ? { action: 'reconnect', detail: 'Session lookup failed' } : null,
       false,
       false,
       false,
       false,
       0,
       confirmRebind,
-      navigation,
     ])
     return AcpRecoveryDock({ ...common, createNewSession } as never)
   }
@@ -414,45 +417,64 @@ it('disables ACP recovery writes for a reader and rechecks a previously opened r
   await Promise.resolve()
 })
 
-it('uses the destination workspace or global create grant instead of the source session grant', () => {
-  for (const workspace of [false, true]) {
-    const h = setup(false, workspace)
-    grants(h.state, 'lead', ['session/create'])
-    const denied = recoveryButton(h.recovery(), 'recoveryNew')
-    expect(denied.props.disabled).toBe(true)
-    ;(denied.props.onClick as () => void)()
-    expect(h.createNewSession).not.toHaveBeenCalled()
-    h.state.update({
-      type: 'upsert',
-      grant: {
-        resource: workspace ? { kind: 'workspace', id: 'workspace' as never } : { kind: 'global' },
-        actions: ['session/create'],
-      },
-    })
-    const allowed = recoveryButton(h.recovery(), 'recoveryNew')
-    expect(allowed.props.disabled).toBe(false)
-    ;(allowed.props.onClick as () => void)()
-    expect(h.createNewSession).toHaveBeenCalledExactlyOnceWith('lead', expect.any(Function), 'create')
-  }
+it.each([
+  ['session-lost', 'id-not-found'],
+  ['reconnect-required', 'load-failed'],
+] as const)('keeps original-session retries available after %s', async (kind, cause) => {
+  const h = setup(true)
+  const view = h.recovery(false, kind, cause)
+  const [banner, dialog] = (view as Tree).props.children as Tree[]
+  const direct = recoveryButton(banner, 'recoveryReconnect')
+  expect(direct.props).toMatchObject({ variant: 'primary', disabled: false })
+  const actions = nodes(dialog).filter(({ props }) => typeof props.onClick === 'function')
+  expect(actions.map(({ props }) => props.children)).toEqual([['recoveryReconnect'], ['recoveryRebind']])
+  const reconnect = actions[0]!
+  expect(reconnect.props).toMatchObject({ variant: 'primary', disabled: false })
+  h.remote.retryOriginal.mockRejectedValueOnce(new Error('Agent unavailable'))
+  const directRetry = direct.props.onClick as () => Promise<void>
+  const dialogRetry = reconnect.props.onClick as () => Promise<void>
+  await Promise.all([directRetry(), dialogRetry()])
+  expect(h.remote.retryOriginal).toHaveBeenCalledExactlyOnceWith('lead')
+  await directRetry()
+  await dialogRetry()
+  expect(h.remote.retryOriginal.mock.calls).toEqual([['lead'], ['lead'], ['lead']])
+  expect(h.remote.rebindRecoveryBlank).not.toHaveBeenCalled()
+  expect(h.createNewSession).not.toHaveBeenCalled()
 })
 
-it('offers opening the existing ungrouped session after a recovery attachment failure', () => {
+it.each([
+  ['reconciliation-required', 'capability-missing'],
+  ['local-history-damaged', null],
+] as const)('offers recovery options without recommending a retry for %s', (kind, cause) => {
   const h = setup(true)
-  const view = h.recovery(false, 'ungrouped')
-  const labels = nodes(view).flatMap((node) => node.props.children ?? [])
-  expect(labels).toContain('unroutedHistoryUngrouped')
-  expect(labels).not.toContain('recoveryNew')
-  ;(recoveryButton(view, 'unroutedHistoryOpen').props.onClick as () => void)()
-  expect(h.createNewSession).toHaveBeenCalledExactlyOnceWith('lead', expect.any(Function), 'open-existing')
+  const [banner, dialog] = (h.recovery(false, kind, cause) as Tree).props.children as Tree[]
+  expect(recoveryButton(banner, 'recoveryReconnect')).toBeUndefined()
+  expect(recoveryButton(banner, 'recoveryDetails')).toBeDefined()
+  const explicitRetry = recoveryButton(dialog, 'recoveryReconnect')
+  expect(explicitRetry.props.variant).toBe('outline')
+  expect(explicitRetry.props).not.toHaveProperty('data-modal-autofocus')
+  expect(recoveryButton(dialog, 'recoveryRebind').props).not.toHaveProperty('data-modal-autofocus')
 })
 
-it('offers the default mode as an explicit alternate recovery action when the original mode is unavailable', () => {
+it.each([false, true])(
+  'replaces the default explanation with one alert after a failed retry (dialog open: %s)',
+  (open) => {
+    const h = setup(true)
+    const view = h.recovery(false, 'session-lost', 'id-not-found', { open, failedRetry: true }) as Tree
+    const [banner, dialog] = view.props.children as [Tree, Tree]
+    const surface = open ? dialog : banner
+    const alerts = nodes(surface).filter(({ props }) => props.role === 'alert')
+    expect(alerts.map(({ props }) => props.children)).toEqual([['recoveryReconnectFailed']])
+    expect(surface.props.description).toBeUndefined()
+    expect(nodes(surface).flatMap(({ props }) => props.children ?? [])).not.toContain('recoverySessionLost')
+  },
+)
+
+it('offers no recovery decisions for an interrupted turn before its automatic reconnect', () => {
   const h = setup(true)
-  const view = h.recovery(false, 'preset-unavailable')
-  const button = recoveryButton(view, 'independentUseDefault')
-  expect(nodes(view).flatMap((node) => node.props.children ?? [])).toContain('independentPresetUnavailable')
-  ;(button.props.onClick as () => void)()
-  expect(h.createNewSession).toHaveBeenCalledExactlyOnceWith('lead', expect.any(Function), 'use-default')
+  const view = h.recovery(false, 'outcome-unknown', 'transport-disconnected')
+  expect(nodes(view).flatMap(({ props }) => props.children ?? [])).toContain('recoveryContinueOnSend')
+  expect(nodes(view).some(({ props }) => typeof props.onClick === 'function')).toBe(false)
 })
 
 it('offers only available model and creation actions in an imported history', () => {

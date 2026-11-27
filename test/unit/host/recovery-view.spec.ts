@@ -11,6 +11,19 @@ describe('ACP recovery view settlement context', () => {
     expect(recoveryViewWithLocalStatus('session-1', undefined, undefined)).toBeUndefined()
   })
 
+  it('only announces reconnection on send when the interrupted dispatch is recorded', () => {
+    const state: AcpRecoveryState = {
+      dshSessionId: 'session-1',
+      kind: 'outcome-unknown',
+      cause: 'transport-disconnected',
+      updatedAt: 10,
+    }
+    expect(recoveryViewWithLocalStatus('session-1', state, undefined)?.cause).toBeNull()
+    expect(
+      recoveryViewWithLocalStatus('session-1', { ...state, disconnectedDispatchKey: 'step-1' }, undefined)?.cause,
+    ).toBe('transport-disconnected')
+  })
+
   it('keeps a real unknown outcome ahead of temporary settlement status', () => {
     const state: AcpRecoveryState = {
       dshSessionId: 'session-1',

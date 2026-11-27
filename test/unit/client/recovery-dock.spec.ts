@@ -3,16 +3,18 @@ import {
   localSettlementText,
   projectionIsAcp,
   publishRecoveryActionResult,
-  recoveryPrefersReconnect,
+  recoveryText,
 } from '../../../src/client/ui/AcpRecoveryDock.ts'
 import type { AcpRecoveryView } from '../../../src/contract/remote.ts'
 
 describe('ACP recovery dock projection gate', () => {
-  it('prefers reconnect only while original context can still be recovered, never reset or new-session', () => {
-    for (const kind of ['reconnect-required', 'resumed-unverified', 'outcome-unknown'] as const)
-      expect(recoveryPrefersReconnect({ kind } as AcpRecoveryView)).toBe(true)
-    for (const kind of ['session-lost', 'local-history-damaged', 'reconciliation-required'] as const)
-      expect(recoveryPrefersReconnect({ kind } as AcpRecoveryView)).toBe(false)
+  it.each([
+    ['session-lost', 'id-not-found', 'recoverySessionLost'],
+    ['reconnect-required', 'load-failed', 'recoveryReconnectRequired'],
+    ['reconciliation-required', 'capability-missing', 'recoveryUnsupported'],
+    ['reconciliation-required', 'history-mismatch', 'recoveryHistoryMismatch'],
+  ] as const)('explains %s/%s using its own recovery reason', (kind, cause, key) => {
+    expect(recoveryText((value) => value, { kind, cause } as AcpRecoveryView)).toBe(key)
   })
   it('only reads recovery state for an ACP selection', () => {
     const owns = (provider: string | undefined): boolean => provider === 'acp-generic' || provider === 'acp-codex'

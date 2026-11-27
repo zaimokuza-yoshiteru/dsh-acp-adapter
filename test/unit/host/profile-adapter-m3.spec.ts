@@ -14,7 +14,7 @@ import type { AcpSidecar } from '../../../src/persistence/sidecar.ts'
 import type { DispatchLedgerStore, DispatchRecord } from '../../../src/runtime/session/dispatch-ledger.ts'
 import { profileLaunchIdentityHash, acpLaunchFingerprint } from '../../../src/domain/session/launch-fingerprint.ts'
 import { acpCanonicalHash16 } from '../../../src/persistence/sidecar.ts'
-import { AcpClientError } from '../../../src/protocol/v1/errors.ts'
+import { AcpClientError, AcpDisconnectedError } from '../../../src/protocol/v1/errors.ts'
 import { AcpHostContinuity } from '../../../src/host/composition/host-continuity.ts'
 
 const profile = (): AcpAgentConfig => ({ name: 'Test', command: 'agent', args: ['acp'], env: {} })
@@ -83,7 +83,7 @@ function sidecarAt(): { sidecar: AcpSidecar; root: string } {
 
 function ledgerFor(sidecar: AcpSidecar): DispatchLedgerStore {
   return {
-    begin: (record) => sidecar.beginDispatch(record as never),
+    begin: (record, interrupted) => sidecar.beginDispatch(record as never, interrupted),
     settle: (sessionId, key) => sidecar.settleDispatch(sessionId as never, key),
     read: (sessionId, key) => sidecar.readDispatch(sessionId as never, key),
   }
@@ -858,6 +858,287 @@ describe('M3a binding-first ACP provider', () => {
       fs.rmSync(root, { recursive: true, force: true })
     }
   })
+
+  it.each([
+    'resumed',
+    'missing',
+    'different-id',
+    'unsupported',
+    'resource-missing',
+    'authentication-required',
+    'handshake-failed',
+    'cancelled',
+  ] as const)('continues only a fresh input after a disconnect with %s original session', async (result) => {
+    const { sidecar, root } = sidecarAt()
+    const first = user('perform this once')
+    const next = user('check the result')
+    let events = session(first).events
+    const records = { starts: 0, prompts: 0, restores: 0 }
+    const live = withSessionFacts({
+      header: { cwd: os.tmpdir() },
+      inheritedEventCount: 0,
+      snapshotEvents: () => [...events],
+    })
+    const inputs: unknown[] = []
+    const restoredIds: string[] = []
+    const originalId = 's'
+    const controller = new AbortController()
+    let runtimeId = originalId
+    let originalAvailable = result !== 'missing'
+    const adapter = new AcpProfileAdapter(
+      'test',
+      profile,
+      seam(),
+      () => live,
+      ledgerFor(sidecar),
+      undefined,
+      () => ({
+        ...runtimeFactory(records)(undefined),
+        agentCapabilities: result === 'unsupported' ? {} : { loadSession: true },
+        get acpSessionId() {
+          return runtimeId
+        },
+        initialize: async () => {
+          if (result === 'handshake-failed' && events.length > 2) throw new Error('Agent executable not found')
+        },
+        restore: async (binding) => {
+          restoredIds.push(binding.agentSessionId)
+          if (result === 'cancelled') {
+            controller.abort(new Error('User cancelled reconnect'))
+            throw controller.signal.reason
+          }
+          if (!originalAvailable) throw new Error('Session "s" not found')
+          if (result === 'authentication-required') throw new AcpClientError('auth_required', 'Sign in to the Agent')
+          if (result === 'resource-missing') throw new Error('Working directory does not exist')
+          if (result === 'different-id') runtimeId = 'another-session'
+          return 'resumed'
+        },
+        prompt: async (content) => {
+          inputs.push(content)
+          if (inputs.length === 1) throw new AcpDisconnectedError({})
+          return { stopReason: 'end_turn' } as never
+        },
+      }),
+      sidecar,
+    )
+    const id = 'continue-disconnected' as never
+    try {
+      await expect(drain(adapter.stream(request(id, first)))).rejects.toMatchObject({ code: 'ACP_CRASH' })
+      const interrupted = await sidecar.readRecoveryState(id)
+      expect(interrupted).toMatchObject({
+        kind: 'outcome-unknown',
+        cause: result === 'unsupported' ? 'load-failed' : 'transport-disconnected',
+        acpSessionId: runtimeId,
+      })
+      const key = acpCanonicalHash16({
+        provider: 'acp-test',
+        model: 'model-a',
+        generation: profileLaunchIdentityHash('test', profile()),
+        acceptedMessageIds: [String(first.id)],
+      })
+      expect(interrupted?.disconnectedDispatchKey).toBe(result === 'unsupported' ? undefined : key)
+      await expect(drain(adapter.stream(request(id, first)))).rejects.toMatchObject({ code: 'ACP_RECOVERY_REQUIRED' })
+      expect(await sidecar.readDispatch(id, key)).toMatchObject({ state: 'dispatch-uncertain' })
+      expect(inputs).toHaveLength(1)
+      expect(restoredIds).toEqual([])
+      events = [
+        ...events,
+        { type: 'step/start', seq: 3, data: { turn: 2, step: 0 } },
+        { type: 'user/message', seq: 4, data: next },
+      ]
+      const sending = drain(
+        adapter.stream({ ...request(id, next), messages: [first, next], signal: controller.signal }),
+      )
+      if (result === 'resumed') {
+        await sending
+        expect(inputs).toHaveLength(2)
+        expect(inputs[0]).toContainEqual({ type: 'text', text: 'perform this once' })
+        expect(inputs[1]).toContainEqual({ type: 'text', text: 'check the result' })
+        expect(inputs[1]).not.toContainEqual({ type: 'text', text: 'perform this once' })
+        expect(await sidecar.readRecoveryState(id)).toMatchObject({ kind: 'healthy' })
+        expect(await sidecar.readDispatch(id, key)).toBeUndefined()
+      } else if (result === 'cancelled') {
+        await expect(sending).rejects.toThrow('User cancelled reconnect')
+        expect(await sidecar.readRecoveryState(id)).toEqual(interrupted)
+        expect(await sidecar.readDispatch(id, key)).toMatchObject({ state: 'dispatch-uncertain' })
+        expect(inputs).toHaveLength(1)
+      } else {
+        await expect(sending).rejects.toMatchObject({
+          code:
+            result === 'missing'
+              ? 'ACP_SESSION_NOT_FOUND'
+              : result === 'unsupported'
+                ? 'ACP_RECOVERY_REQUIRED'
+                : 'ACP_RECONNECT_REQUIRED',
+        })
+        if (result !== 'unsupported') {
+          const state = await sidecar.readRecoveryState(id)
+          expect(state).toMatchObject({
+            kind: result === 'missing' ? 'session-lost' : 'reconnect-required',
+            cause: result === 'missing' ? 'id-not-found' : 'load-failed',
+            acpSessionId: originalId,
+          })
+          await expect(sending).rejects.toHaveProperty('message', expect.stringContaining('This message was not sent.'))
+          if (result === 'different-id') {
+            await expect(adapter.retryOriginal(id)).rejects.toMatchObject({ code: 'ACP_RETRY_FAILED' })
+            expect(await sidecar.readRecoveryState(id)).toMatchObject({
+              kind: 'reconnect-required',
+              acpSessionId: originalId,
+            })
+          }
+        }
+        expect(inputs).toHaveLength(1)
+        expect(await sidecar.readDispatch(id, key)).toMatchObject({ state: 'dispatch-uncertain' })
+      }
+      expect(restoredIds).toEqual(
+        result === 'unsupported' || result === 'handshake-failed'
+          ? []
+          : result === 'different-id'
+            ? [originalId, originalId]
+            : [originalId],
+      )
+      if (result === 'missing') {
+        await expect(adapter.retryOriginal(id)).rejects.toMatchObject({ code: 'ACP_SESSION_NOT_FOUND' })
+        expect(await sidecar.readRecoveryState(id)).toMatchObject({ kind: 'session-lost', cause: 'id-not-found' })
+        originalAvailable = true
+        await adapter.retryOriginal(id)
+        expect(restoredIds).toEqual([originalId, originalId, originalId])
+        expect(inputs).toHaveLength(1)
+        expect(await sidecar.readRecoveryState(id)).toMatchObject({ kind: 'healthy', acpSessionId: originalId })
+      }
+      expect(records.starts).toBe(1)
+    } finally {
+      await adapter.close()
+      await sidecar.dispose()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it.each(['recovers', 'exhausts', 'stopped', 'disposed'] as const)(
+    'retries handshake and load under one cancellable budget when the original connection %s',
+    async (outcome) => {
+      const { sidecar, root } = sidecarAt()
+      const first = user('perform this once')
+      const next = user('check the result')
+      const later = user('continue after reconnect')
+      const id = 'temporary-disconnect' as never
+      let events = session(first).events
+      const live = withSessionFacts({ id, header: { cwd: os.tmpdir() }, snapshotEvents: () => [...events] })
+      const records = { starts: 0, prompts: 0, restores: 0 }
+      const inputs: unknown[] = []
+      const loads: string[] = []
+      const offline = Promise.withResolvers<void>()
+      let failHandshake = true
+      let failLoads = true
+      const controller = new AbortController()
+      const adapter = new AcpProfileAdapter(
+        'test',
+        profile,
+        seam(),
+        () => live,
+        ledgerFor(sidecar),
+        undefined,
+        () => ({
+          ...runtimeFactory(records)(undefined),
+          initialize: async () => {
+            if (inputs.length && failHandshake) {
+              failHandshake = false
+              offline.resolve()
+              throw new AcpDisconnectedError({})
+            }
+          },
+          restore: async (binding) => {
+            loads.push(binding.agentSessionId)
+            if (failLoads) {
+              if (outcome === 'recovers') failLoads = false
+              throw new AcpClientError('timeout', 'Original session load timed out')
+            }
+            return 'loaded'
+          },
+          prompt: async (content) => {
+            inputs.push(content)
+            if (inputs.length === 1) throw new AcpDisconnectedError({})
+            return { stopReason: 'end_turn' } as never
+          },
+        }),
+        sidecar,
+      )
+      try {
+        await expect(drain(adapter.stream(request(id, first)))).rejects.toMatchObject({ code: 'ACP_CRASH' })
+        const interrupted = await sidecar.readRecoveryState(id)
+        expect(interrupted?.disconnectedDispatchKey).toBeTruthy()
+        events = [
+          ...events,
+          { type: 'step/start', seq: 3, data: { turn: 2, step: 0 } },
+          { type: 'user/message', seq: 4, data: next },
+        ]
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+        const attempt = drain(
+          adapter.stream({ ...request(id, next), messages: [first, next], signal: controller.signal }),
+        ).catch((error: unknown) => error)
+        await offline.promise
+        await vi.advanceTimersByTimeAsync(0)
+        if (outcome === 'stopped' || outcome === 'disposed') {
+          if (outcome === 'stopped') controller.abort(new Error('User stopped reconnect'))
+          else await adapter.disposeSession(live)
+          await expect(attempt).resolves.toBeInstanceOf(Error)
+          await vi.advanceTimersByTimeAsync(20_000)
+          expect(loads).toEqual([])
+          expect(inputs).toHaveLength(1)
+          expect(await sidecar.readRecoveryState(id)).toEqual(interrupted)
+        } else {
+          // The first 500 ms retries the handshake, leaving four retries for load.
+          await vi.advanceTimersByTimeAsync(499)
+          expect(loads).toEqual([])
+          await vi.advanceTimersByTimeAsync(1)
+          expect(loads).toHaveLength(1)
+          await vi.advanceTimersByTimeAsync(999)
+          expect(loads).toHaveLength(1)
+          await vi.advanceTimersByTimeAsync(1)
+          if (outcome === 'recovers') {
+            await expect(attempt).resolves.toBeUndefined()
+            expect(loads).toHaveLength(2)
+            expect(inputs).toHaveLength(2)
+            expect(inputs[1]).toContainEqual({ type: 'text', text: 'check the result' })
+            expect(inputs[1]).not.toContainEqual({ type: 'text', text: 'perform this once' })
+          } else {
+            await vi.advanceTimersByTimeAsync(14_000)
+            await expect(attempt).resolves.toMatchObject({ code: 'ACP_RECONNECT_REQUIRED' })
+            const gate = {
+              kind: 'reconnect-required',
+              cause: 'load-failed',
+              disconnectedDispatchKey: interrupted!.disconnectedDispatchKey,
+              acpSessionId: 'agent-session-1',
+            }
+            expect(await sidecar.readRecoveryState(id)).toMatchObject(gate)
+            expect(loads).toHaveLength(5)
+            expect(inputs).toHaveLength(1)
+            await expect(adapter.retryOriginal(id)).rejects.toMatchObject({ code: 'ACP_RETRY_FAILED' })
+            expect(loads).toHaveLength(6)
+            expect(await sidecar.readRecoveryState(id)).toMatchObject(gate)
+            failLoads = false
+            events = [
+              ...events,
+              { type: 'step/start', seq: 5, data: { turn: 3, step: 0 } },
+              { type: 'user/message', seq: 6, data: later },
+            ]
+            await drain(adapter.stream({ ...request(id, later), messages: [first, next, later] }))
+            expect(inputs).toHaveLength(2)
+            expect(inputs[1]).toContainEqual({ type: 'text', text: 'continue after reconnect' })
+            expect(inputs[1]).not.toContainEqual({ type: 'text', text: 'check the result' })
+          }
+          expect(new Set(loads)).toEqual(new Set(['agent-session-1']))
+          expect(await sidecar.readRecoveryState(id)).toMatchObject({ kind: 'healthy' })
+        }
+        expect(records.starts).toBe(1)
+      } finally {
+        vi.useRealTimers()
+        await adapter.close()
+        await sidecar.dispose()
+        fs.rmSync(root, { recursive: true, force: true })
+      }
+    },
+  )
 
   it('retryOriginal restores the same ACP session and clears only the reviewed dispatch guard', async () => {
     const { sidecar, root } = sidecarAt()

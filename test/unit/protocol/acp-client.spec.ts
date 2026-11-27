@@ -748,7 +748,7 @@ describe('错误分类', () => {
     expect(acpErr.exit?.code).toBe(1)
     expect(acpErr.cause).toBeInstanceOf(Error)
     expect((acpErr.cause as Error).message).toContain('session/prompt')
-    expect(acpErr.message).toBe('The Agent disconnected. Check its connection in ACP settings.')
+    expect(acpErr.message).toBe('The Agent disconnected.')
     expect(chunks).toEqual(['Partial', ' output'])
     // 已死进程的 close 立即返回
     await conn.close()
@@ -1323,7 +1323,7 @@ describe('stderr 环形缓冲与脱敏', () => {
     expect(err).toBeInstanceOf(AcpClientError)
     const acpErr = err as AcpClientError
     expect(acpErr.kind).toBe('crash')
-    expect(acpErr.message).toBe('The Agent disconnected. Check its connection in ACP settings.')
+    expect(acpErr.message).toBe('The Agent disconnected.')
     const diagnostic = (acpErr.cause as Error).message
     expect(diagnostic).toContain(process.execPath)
     expect(diagnostic).toContain('agent stderr')

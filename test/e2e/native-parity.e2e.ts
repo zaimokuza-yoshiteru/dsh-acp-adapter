@@ -23,7 +23,14 @@ import { launchAdapterWorld, root } from './scaffold.ts'
 import { backToPluginList, openAcpPluginDetail, returnToConversation } from './plugin-panel.helpers.ts'
 import { createAcpSidecar } from '../../src/persistence/sidecar.ts'
 import { nativeParityProfiles } from '../../scripts/e2e-shards.ts'
-import { confirmBlankRecovery, recoveryButtonRow, resetLabelsFit } from './recovery-ui.helpers.ts'
+import {
+  confirmBlankRecovery,
+  expectAutomaticRecovery,
+  failAutomaticRecovery,
+  loadFailureMarker,
+  recoveryButtonRow,
+  resetLabelsFit,
+} from './recovery-ui.helpers.ts'
 
 const profiles = nativeParityProfiles(process.env.DSH_E2E_NATIVE_PARITY_PROFILES)
 
@@ -121,7 +128,9 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
             HOME: host.workspaceCwd,
             MOCK_SCENARIO: 'regression',
             MOCK_PROFILE: profile,
+            MOCK_UNIQUE_SESSION_IDS: '1',
             MOCK_LOG: agentLog,
+            MOCK_LOAD_FAILURE_FILE: loadFailureMarker(host.workspaceCwd),
             MOCK_RICH_MIXED_GATE_DIR: host.workspaceCwd,
           },
         },
@@ -1621,15 +1630,120 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
     }
   })
 
-  it('preserves visible history after a crash and requires explicit recovery before continuing', async () => {
+  it.skipIf(profile !== 'devin')(
+    'automatically reconnects after a crash and two transport failures before sending the new input once',
+    async () => {
+      const offset = existsSync(agentLog) ? readFileSync(agentLog, 'utf8').length : 0
+      const failed = await send('E2E_CRASH', { expectError: true })
+      const owner = await failed.settled
+      await expectAutomaticRecovery(page)
+      const marker = loadFailureMarker(host.workspaceCwd)
+      writeFileSync(marker, 'disconnect\ndisconnect')
+      try {
+        const next = await send('E2E_RECOVERED')
+        expect(await next.settled).toBe(owner)
+      } finally {
+        rmSync(marker, { force: true })
+      }
+      await page.getByText('E2E_RECOVERED_DONE', { exact: true }).waitFor()
+      expect(await page.getByRole('button', { name: 'Recovery options', exact: true }).count()).toBe(0)
+      const log = readFileSync(agentLog, 'utf8').slice(offset)
+      const originalId = required(/regression prompt=.*E2E_CRASH.* session=(\S+)$/m.exec(log)?.[1])
+      const loads = [...log.matchAll(/session\/load (\S+): (.+)$/gm)]
+      expect(loads.map((match) => match[1])).toEqual([originalId, originalId, originalId])
+      expect(loads.map((match) => match[2])).toEqual(['disconnect', 'disconnect', expect.stringContaining('replaying')])
+      const prompts = [...log.matchAll(/regression prompt=(.+) session=(\S+)$/gm)]
+      expect(prompts.map((match) => match[1])).toEqual([
+        expect.stringContaining('E2E_CRASH'),
+        expect.stringContaining('E2E_RECOVERED'),
+      ])
+      expect(prompts.map((match) => match[2])).toEqual([originalId, originalId])
+    },
+  )
+
+  it.skipIf(profile !== 'devin')(
+    'accepts a new input after a crash exhausts the automatic reconnect budget',
+    async () => {
+      const offset = existsSync(agentLog) ? readFileSync(agentLog, 'utf8').length : 0
+      const failed = await send('E2E_CRASH', { expectError: true })
+      const owner = await failed.settled
+      await failAutomaticRecovery(page, host.workspaceCwd, 'disconnect')
+      const trigger = page.getByRole('button', { name: 'Recovery options', exact: true })
+      const status = page.getByRole('status').filter({ has: trigger })
+      const retry = status.getByRole('button', { name: 'Reconnect original session', exact: true })
+      const marker = loadFailureMarker(host.workspaceCwd)
+      writeFileSync(marker, 'disconnect')
+      try {
+        await retry.click()
+        await status.getByText('This attempt failed. You can try reconnecting again.', { exact: true }).waitFor()
+        expect(await page.getByRole('dialog').count()).toBe(0)
+        expect(await retry.isEnabled()).toBe(true)
+      } finally {
+        rmSync(marker, { force: true })
+      }
+      const next = await send('E2E_RECOVERED')
+      expect(await next.settled).toBe(owner)
+      await page.getByText('E2E_RECOVERED_DONE', { exact: true }).waitFor()
+      await trigger.waitFor({ state: 'hidden' })
+      const log = readFileSync(agentLog, 'utf8').slice(offset)
+      const originalId = required(/regression prompt=.*E2E_CRASH.* session=(\S+)$/m.exec(log)?.[1])
+      expect(log.split(`session/load ${originalId}: disconnect`).length - 1).toBe(7)
+      expect(log).toContain(`session/load ${originalId}: replaying`)
+      expect(log).not.toContain('E2E_CONTINUE_UNAVAILABLE_SESSION')
+      expect([...log.matchAll(/regression prompt=.* session=(\S+)$/gm)].map((match) => match[1])).toEqual([
+        originalId,
+        originalId,
+      ])
+    },
+  )
+
+  it.skipIf(profile !== 'devin')(
+    'lets the user reconnect the same missing session again after a crash without replacing its context',
+    async () => {
+      const offset = existsSync(agentLog) ? readFileSync(agentLog, 'utf8').length : 0
+      const failed = await send('E2E_CRASH', { expectError: true })
+      const owner = await failed.settled
+      await failAutomaticRecovery(page, host.workspaceCwd)
+      const trigger = page.getByRole('button', { name: 'Recovery options', exact: true })
+      const dialog = page.getByRole('dialog')
+      const status = page.getByRole('status').filter({ has: trigger })
+      const retry = status.getByRole('button', { name: 'Reconnect original session', exact: true })
+      const marker = loadFailureMarker(host.workspaceCwd)
+      writeFileSync(marker, 'missing')
+      try {
+        await retry.click()
+        await status.getByText('This attempt failed. You can try reconnecting again.', { exact: true }).waitFor()
+        expect(await dialog.count()).toBe(0)
+        await expect.poll(() => retry.isEnabled()).toBe(true)
+      } finally {
+        rmSync(marker, { force: true })
+      }
+      await retry.click()
+      await trigger.waitFor({ state: 'hidden' })
+      const next = await send('E2E_RECOVERED')
+      expect(await next.settled).toBe(owner)
+      await page.getByText('E2E_RECOVERED_DONE', { exact: true }).waitFor()
+      const log = readFileSync(agentLog, 'utf8').slice(offset)
+      const originalId = required(/regression prompt=.*E2E_CRASH.* session=(\S+)$/m.exec(log)?.[1])
+      expect(log.split(`session/load ${originalId}: missing`).length - 1).toBe(2)
+      expect(log).toContain(`session/load ${originalId}: replaying`)
+      expect(log).not.toContain('E2E_CONTINUE_UNAVAILABLE_SESSION')
+      const ids = [...log.matchAll(/regression prompt=.* session=(\S+)$/gm)].map((match) => match[1])
+      expect(ids).toEqual([originalId, originalId])
+    },
+  )
+
+  it('preserves visible history after a crash and offers reset after automatic recovery fails', async () => {
     const first = await send('E2E_MESSAGE')
     await first.settled
     const failed = await send('E2E_CRASH', { expectError: true })
     await failed.settled
-    await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).waitFor()
+    await failAutomaticRecovery(page, host.workspaceCwd)
     await page.reload()
     await page.getByText('E2E_DONE mock-model-a', { exact: true }).waitFor()
-    const dock = page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).locator('..').locator('..')
+    const dock = page
+      .getByRole('status')
+      .filter({ has: page.getByRole('button', { name: 'Recovery options', exact: true }) })
     const dockBounds = required(await dock.boundingBox())
     const composerBounds = required(await page.locator('[data-composer-card]').boundingBox())
     const inputBounds = required(await page.locator('[data-composer-input]').first().boundingBox())
@@ -1746,14 +1860,14 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
       })
     try {
       await page.reload()
-      await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).waitFor()
+      await page.getByRole('button', { name: 'Recovery options', exact: true }).waitFor()
       releaseInitialFault()
       await page.getByText('Reconnecting to recovery status…', { exact: true }).waitFor()
       await reconnectStarted
       const reconnectingStatus = page.getByRole('status').filter({ hasText: 'Reconnecting to recovery status…' })
       expect(await reconnectingStatus.getByRole('button').count()).toBe(0)
       releaseRecoveryReconnect()
-      await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).waitFor()
+      await page.getByRole('button', { name: 'Recovery options', exact: true }).waitFor()
     } catch (error) {
       const evidenceDirectory = process.env.DSH_E2E_EVIDENCE_DIR ?? join(root, '.local/e2e-failures')
       try {
@@ -1774,9 +1888,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
                 .getByRole('status')
                 .filter({ hasText: 'Reconnecting to recovery status…' })
                 .count(),
-              resolveButtonCount: await page
-                .getByRole('button', { name: 'Resolve recovery issue', exact: true })
-                .count(),
+              resolveButtonCount: await page.getByRole('button', { name: 'Recovery options', exact: true }).count(),
               statusText: await page.getByRole('status').allInnerTexts(),
             },
             null,
@@ -1796,8 +1908,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
       releaseRecoveryReconnect()
       recoveryFollowSpy.mockRestore()
     }
-    await page.setViewportSize({ width: 740, height: 500 })
-    await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).click()
+    await page.getByRole('button', { name: 'Recovery options', exact: true }).click()
     let unblockReconnect!: () => void
     const reconnectGate = new Promise<void>((resolve) => {
       unblockReconnect = resolve
@@ -1810,6 +1921,26 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
     })
     const dialog = page.locator('[role="dialog"][aria-modal="true"]')
     await dialog.waitFor({ state: 'visible' })
+    const reason = dialog.getByText('The Agent couldn’t find the original session. You can try again.', { exact: true })
+    const reasonBounds = required(await reason.boundingBox())
+    const reconnectBounds = required(
+      await dialog.getByRole('button', { name: 'Reconnect original session', exact: true }).boundingBox(),
+    )
+    const resetBounds = required(
+      await dialog.getByRole('button', { name: 'Reset the current Agent context', exact: true }).boundingBox(),
+    )
+    expect(reasonBounds.y + reasonBounds.height).toBeLessThanOrEqual(reconnectBounds.y + 1)
+    expect(reconnectBounds.y + reconnectBounds.height).toBeLessThanOrEqual(resetBounds.y + 1)
+    expect(Math.abs(reconnectBounds.x - resetBounds.x)).toBeLessThan(1)
+    expect(Math.abs(reconnectBounds.width - resetBounds.width)).toBeLessThan(1)
+    expect(await dialog.getByRole('button', { name: 'Create an independent session', exact: true }).count()).toBe(0)
+    expect(await dialog.getByRole('button', { name: 'Close', exact: true }).count()).toBe(1)
+    if (evidenceDirectory !== undefined)
+      await page.screenshot({
+        path: join(evidenceDirectory, `recovery-dialog-desktop-${profile}.png`),
+        animations: 'disabled',
+      })
+    await page.setViewportSize({ width: 740, height: 500 })
     const normalMotion = await dialog.evaluate((element) => {
       const style = getComputedStyle(element)
       return { animationName: style.animationName, animationDuration: style.animationDuration }
@@ -1859,9 +1990,9 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
         await dialog
           .getByRole('button', { name: switchedToChinese ? '查看恢复诊断' : 'View recovery diagnostics', exact: true })
           .click()
-        const close = dialog.getByRole('button', { name: switchedToChinese ? '关闭' : 'Close', exact: true }).last()
-        const footerBounds = required(await close.boundingBox())
-        expect(footerBounds.y + footerBounds.height).toBeLessThanOrEqual(500)
+        const close = dialog.getByRole('button', { name: switchedToChinese ? '关闭' : 'Close', exact: true })
+        const closeBounds = required(await close.boundingBox())
+        expect(closeBounds.y + closeBounds.height).toBeLessThanOrEqual(500)
         if (evidenceDirectory !== undefined) {
           await page.screenshot({
             path: join(evidenceDirectory, `recovery-${switchedToChinese ? 'zh' : 'en'}-short-${profile}.png`),
@@ -1870,7 +2001,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
           })
           recoveryLayoutEvidence.shortViewport = page.viewportSize()
           recoveryLayoutEvidence.dialog = await dialog.boundingBox()
-          recoveryLayoutEvidence.footer = footerBounds
+          recoveryLayoutEvidence.headerClose = closeBounds
           writeFileSync(
             join(evidenceDirectory, `recovery-layout-${profile}.json`),
             JSON.stringify(recoveryLayoutEvidence, null, 2),
@@ -1904,8 +2035,8 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
         element.scrollTop = 0
       })
       const darkDialogBounds = required(await dialog.boundingBox())
-      const darkFooter = dialog.getByRole('button', { name: 'Close', exact: true }).last()
-      const darkFooterBounds = required(await darkFooter.boundingBox())
+      const darkClose = dialog.getByRole('button', { name: 'Close', exact: true })
+      const darkCloseBounds = required(await darkClose.boundingBox())
       const darkRawBounds = required(await raw.boundingBox())
       const horizontalExtent = await dialog.evaluate((element) => ({
         clientWidth: element.clientWidth,
@@ -1913,13 +2044,14 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
       }))
       expect(darkDialogBounds.x).toBeGreaterThanOrEqual(0)
       expect(darkDialogBounds.x + darkDialogBounds.width).toBeLessThanOrEqual(740)
-      expect(darkFooterBounds.y + darkFooterBounds.height).toBeLessThanOrEqual(500)
+      expect(darkCloseBounds.y).toBeGreaterThanOrEqual(darkDialogBounds.y)
+      expect(darkCloseBounds.y + darkCloseBounds.height).toBeLessThanOrEqual(500)
       expect(darkRawBounds.x).toBeGreaterThanOrEqual(darkDialogBounds.x)
       expect(darkRawBounds.x + darkRawBounds.width).toBeLessThanOrEqual(darkDialogBounds.x + darkDialogBounds.width)
       expect(horizontalExtent.scrollWidth).toBeLessThanOrEqual(horizontalExtent.clientWidth)
       const englishDarkEvidence: Record<string, unknown> = {
         dialog: darkDialogBounds,
-        footer: darkFooterBounds,
+        headerClose: darkCloseBounds,
         rawDiagnostic: darkRawBounds,
         horizontalExtent,
         lightFill,
@@ -1938,12 +2070,11 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
       }
 
       const bodyViewport = required(await modalContent.boundingBox())
-      const newSession = dialog.getByRole('button', { name: 'Create an independent session', exact: true })
-      await newSession.scrollIntoViewIfNeeded()
-      const newSessionBounds = required(await newSession.boundingBox())
-      expect(newSessionBounds.y).toBeGreaterThanOrEqual(bodyViewport.y)
-      expect(newSessionBounds.y + newSessionBounds.height).toBeLessThanOrEqual(bodyViewport.y + bodyViewport.height)
-      expect(newSessionBounds.y + newSessionBounds.height).toBeLessThanOrEqual(darkFooterBounds.y)
+      const retry = dialog.getByRole('button', { name: 'Reconnect original session', exact: true })
+      await retry.scrollIntoViewIfNeeded()
+      const retryBounds = required(await retry.boundingBox())
+      expect(retryBounds.y).toBeGreaterThanOrEqual(bodyViewport.y)
+      expect(retryBounds.y + retryBounds.height).toBeLessThanOrEqual(bodyViewport.y + bodyViewport.height)
 
       await raw.scrollIntoViewIfNeeded()
       await modalContent.evaluate((element) => {
@@ -1969,14 +2100,11 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
       expect(rawScroll.scrollTop).toBeGreaterThan(0)
       expect(rawScroll.overflowY).toBe('auto')
       await expect.poll(() => raw.textContent()).toContain(heldRebindMessage)
-      const scrolledFooterBounds = required(await darkFooter.boundingBox())
-      expect(scrolledFooterBounds.y).toBe(darkFooterBounds.y)
       englishDarkEvidence.scrolled = {
         body: scrolledBodyViewport,
-        newSession: newSessionBounds,
+        reconnect: retryBounds,
         raw: scrolledRawBounds,
         rawScroll,
-        footer: scrolledFooterBounds,
       }
       recoveryLayoutEvidence.englishDark = englishDarkEvidence
       if (evidenceDirectory !== undefined) {
@@ -2011,7 +2139,8 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
   it.skipIf(profile !== 'devin')('keeps recovery focus and scrolling usable at 200% layout zoom', async () => {
     const failed = await send('E2E_CRASH', { expectError: true })
     await failed.settled
-    const trigger = page.getByRole('button', { name: 'Resolve recovery issue', exact: true })
+    await failAutomaticRecovery(page, host.workspaceCwd)
+    const trigger = page.getByRole('button', { name: 'Recovery options', exact: true })
     await trigger.waitFor()
     await page.setViewportSize({ width: 1100, height: 840 })
     await expect.poll(() => recoveryButtonRow(trigger)).toBe('beside')
@@ -2024,7 +2153,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
     await page.setViewportSize({ width: 320, height: 840 })
     await host.ctx.settings.replace('locale', { preference: 'zh' })
     try {
-      const narrowTrigger = page.getByRole('button', { name: '处理恢复问题', exact: true })
+      const narrowTrigger = page.getByRole('button', { name: '恢复选项', exact: true })
       await expect.poll(() => recoveryButtonRow(narrowTrigger)).toBe('below')
       await narrowTrigger.click()
       await page.getByRole('dialog').getByRole('button', { name: '重置当前 Agent 上下文', exact: true }).click()
@@ -2072,23 +2201,20 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
       await expect.poll(() => raw.textContent()).toContain(longDiagnostic)
 
       const bounds = required(await dialog.boundingBox())
-      const footer = dialog.getByRole('button', { name: 'Close', exact: true }).last()
-      const footerBounds = required(await footer.boundingBox())
+      const headerClose = dialog.getByRole('button', { name: 'Close', exact: true })
       expect(bounds.x).toBeGreaterThanOrEqual(0)
       expect(bounds.x + bounds.width).toBeLessThanOrEqual(740)
-      expect(footerBounds.y + footerBounds.height).toBeLessThanOrEqual(500)
 
       const content = dialog
         .getByRole('heading', { name: 'ACP session recovery required', exact: true })
         .locator('..')
         .locator('..')
-      const newSession = dialog.getByRole('button', { name: 'Create an independent session', exact: true })
-      await newSession.scrollIntoViewIfNeeded()
+      const retry = dialog.getByRole('button', { name: 'Reconnect original session', exact: true })
+      await retry.scrollIntoViewIfNeeded()
       const contentBounds = required(await content.boundingBox())
-      const newSessionBounds = required(await newSession.boundingBox())
-      expect(newSessionBounds.y).toBeGreaterThanOrEqual(contentBounds.y)
-      expect(newSessionBounds.y + newSessionBounds.height).toBeLessThanOrEqual(contentBounds.y + contentBounds.height)
-      expect(newSessionBounds.y + newSessionBounds.height).toBeLessThanOrEqual(footerBounds.y)
+      const retryBounds = required(await retry.boundingBox())
+      expect(retryBounds.y).toBeGreaterThanOrEqual(contentBounds.y)
+      expect(retryBounds.y + retryBounds.height).toBeLessThanOrEqual(contentBounds.y + contentBounds.height)
 
       await raw.scrollIntoViewIfNeeded()
       const rawScroll = await raw.evaluate((element) => {
@@ -2097,9 +2223,8 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
       })
       expect(rawScroll.scrollHeight).toBeGreaterThan(rawScroll.clientHeight)
       expect(rawScroll.scrollTop).toBeGreaterThan(0)
-      expect(required(await footer.boundingBox()).y).toBe(footerBounds.y)
       const zoomEvidence = await page.evaluate(
-        ({ trigger, dialog, footer, newSession, raw }) => {
+        ({ trigger, dialog, headerClose, retry, raw }) => {
           const rect = (element: Element) => {
             const box = element.getBoundingClientRect()
             return { x: box.x, y: box.y, width: box.width, height: box.height }
@@ -2110,8 +2235,8 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
             layoutZoom: getComputedStyle(document.documentElement).zoom,
             trigger: rect(trigger),
             dialog: rect(dialog),
-            footer: rect(footer),
-            newSession: rect(newSession),
+            headerClose: rect(headerClose),
+            reconnect: rect(retry),
             raw: {
               ...rect(rawElement),
               scrollTop: rawElement.scrollTop,
@@ -2129,8 +2254,8 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
         {
           trigger: required(await trigger.elementHandle()),
           dialog: required(await dialog.elementHandle()),
-          footer: required(await footer.elementHandle()),
-          newSession: required(await newSession.elementHandle()),
+          headerClose: required(await headerClose.elementHandle()),
+          retry: required(await retry.elementHandle()),
           raw: required(await raw.elementHandle()),
         },
       )
@@ -2142,6 +2267,10 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
         join(zoomEvidenceDirectory, `recovery-zoom-200-short-${profile}.json`),
         JSON.stringify({ beforeZoom, afterZoom, ...zoomEvidence }, null, 2),
       )
+      await headerClose.scrollIntoViewIfNeeded()
+      await headerClose.click()
+      await dialog.waitFor({ state: 'hidden' })
+      expect(await trigger.evaluate((element) => document.activeElement === element)).toBe(true)
     } finally {
       heldRebind.mockRestore()
       await page.evaluate(() => {
@@ -2155,13 +2284,14 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
     async () => {
       const failed = await send('E2E_CRASH', { expectError: true })
       await failed.settled
+      await failAutomaticRecovery(page, host.workspaceCwd)
       const sessionValue = await page
         .locator('[data-conversation-session]')
         .last()
         .getAttribute('data-conversation-session')
       if (sessionValue === null) throw new Error('Recovery fixture has no active session ID')
       const sessionId = sessionValue as SessionId
-      const trigger = page.getByRole('button', { name: 'Resolve recovery issue', exact: true })
+      const trigger = page.getByRole('button', { name: 'Recovery options', exact: true })
       await trigger.click()
       const dialog = page.getByRole('dialog')
       await dialog.waitFor({ state: 'visible' })
@@ -2210,7 +2340,10 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
               recoveryReadAfterRunning: refreshesAfterRunning > 0,
               dialogVisible: await dialog.isVisible(),
               triggerVisible: await trigger.isVisible(),
-              triggerDisabled: await trigger.isDisabled(),
+              reconnectDisabled: await page
+                .getByRole('status')
+                .getByRole('button', { name: 'Reconnect original session', exact: true })
+                .isDisabled(),
             }),
             { timeout: 15_000 },
           )
@@ -2218,7 +2351,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
             recoveryReadAfterRunning: true,
             dialogVisible: false,
             triggerVisible: true,
-            triggerDisabled: true,
+            reconnectDisabled: true,
           })
         expect(rebind).toHaveBeenCalledTimes(1)
 
@@ -2241,12 +2374,13 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
   it.skipIf(profile !== 'devin')('ignores an old recovery response after switching to a native session', async () => {
     const failed = await send('E2E_CRASH', { expectError: true })
     await failed.settled
+    await failAutomaticRecovery(page, host.workspaceCwd)
     const oldSessionId = await page
       .locator('[data-conversation-session]')
       .last()
       .getAttribute('data-conversation-session')
     if (oldSessionId === null || oldSessionId.length === 0) throw new Error('Recovery fixture has no active session ID')
-    await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).click()
+    await page.getByRole('button', { name: 'Recovery options', exact: true }).click()
     const dialog = page.getByRole('dialog')
     await dialog.waitFor({ state: 'visible' })
 
@@ -2285,7 +2419,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
       const newSessionId = await newConversation.getAttribute('data-conversation-session')
       expect(newSessionId).not.toBeNull()
       expect(newSessionId).not.toBe('')
-      expect(await newConversation.getByRole('button', { name: 'Resolve recovery issue', exact: true }).count()).toBe(0)
+      expect(await newConversation.getByRole('button', { name: 'Recovery options', exact: true }).count()).toBe(0)
       await host.ctx.workspaceController.unarchiveSession({ sessionId: oldSessionId as SessionId })
 
       const oldFailure = 'E2E_OLD_SESSION_RECOVERY_FAILURE'

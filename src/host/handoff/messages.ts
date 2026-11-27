@@ -1,22 +1,8 @@
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
-import type { Principal } from '@deepseek-ai/dsh-typert-protocol'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-agent'
 import type { HandoffRecord } from '../../persistence/handoff.ts'
-import type { AcpTransferLocation } from '../../contract/handoff.ts'
-
-declare module '@deepseek-ai/dsh-llm' {
-  interface MessageSourceMap {
-    'acp-handoff': {
-      kind: 'acp-handoff'
-      operationId: string
-      part: 'summary' | 'delivery'
-      launchIdentity: string | null
-      launchScope?: AcpTransferLocation
-      principal?: Principal
-    }
-  }
-}
+import type {} from '../../contract/handoff.ts'
 
 export function ownsHandoffMessage(message: UserMessage, id: string, part: 'summary' | 'delivery') {
   return message.source.kind === 'acp-handoff' && message.source.operationId === id && message.source.part === part
@@ -73,8 +59,8 @@ export function handoffReceipt(events: readonly SessionEvent[], id: string, part
 
 export function summaryPrompt(locale: 'en' | 'zh') {
   return locale === 'zh'
-    ? '请根据本会话已完成的对话，为接手的另一个 Agent 写一份简短交接文档。只输出文档正文，包括用户目标、已有决定、已完成并验证的工作、剩余问题和相关文件。保持事实准确，省略凭据和无关细节。本轮只写摘要，无需使用工具。'
-    : 'Write a concise handoff for another agent using this conversation. Return only the document, covering the user goal, decisions, completed and verified work, outstanding issues and relevant files. Omit credentials and unrelated details. This turn only needs a written summary; do not use tools.'
+    ? '请根据本会话已完成的对话，为接手的另一个 Agent 写一份简短交接文档。只输出文档正文，包括用户目标、已有决定、已完成并验证的工作、剩余问题和相关文件。将约定、计划与实际完成的工作分开写。只有对话中有执行结果时才记为已完成，未提及的结果不要推测。省略凭据和无关细节。本轮只写摘要，无需使用工具。'
+    : 'Write a concise handoff for another agent using this conversation. Return only the document, covering the user goal, decisions, completed and verified work, outstanding issues and relevant files. Distinguish plans and decisions from work actually carried out. Mark work complete only when the conversation records its result. Leave unknown outcomes unresolved. Omit credentials and unrelated details. This turn only needs a written summary; do not use tools.'
 }
 
 export function deliveryPrompt(record: HandoffRecord) {

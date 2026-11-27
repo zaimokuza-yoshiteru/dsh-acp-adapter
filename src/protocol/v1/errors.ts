@@ -67,3 +67,10 @@ export class AcpClientError extends Error {
     this.probePhase = details.probePhase
   }
 }
+
+/** Transport closed without a terminal response. Startup/configuration errors remain distinct. */
+export class AcpDisconnectedError extends AcpClientError {
+  constructor(details: AcpClientErrorDetails) {
+    super('crash', 'The Agent disconnected.', details)
+  }
+}

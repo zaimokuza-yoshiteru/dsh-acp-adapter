@@ -123,6 +123,7 @@ function fixture(
   })
   const ctx = {
     uiWorkspace: { openSession: sessions.open },
+    locale: { resolveText: () => 'en' },
     get(name: string) {
       if (name === 'remoteAccess')
         return {
@@ -151,6 +152,73 @@ function fixture(
     coordinator: new CrossBackendCoordinator(ctx, routes),
   }
 }
+
+it('automatically hands off only a choice made in this window’s native picker', async () => {
+  const source = { provider: 'native', model: 'model-a' }
+  const target = { provider: 'acp-devin', model: 'new' }
+  const f = fixture()
+  const begin = vi.fn(async () => {})
+  const coordinator = new CrossBackendCoordinator(f.ctx, f.routes, { begin } as never)
+  const stop = coordinator.start()
+  const directory = observable<{ status: string; pending: Selection | null }>({ status: 'ready', pending: null })
+  const unwatch = coordinator.watchPicker('session-1', directory as never)
+  f.projection.set({ lastUsed: source, next: target })
+  await settle()
+  expect(begin).not.toHaveBeenCalled()
+  expect(f.select).not.toHaveBeenCalled()
+  f.projection.set({ lastUsed: source, next: source })
+  directory.set({ status: 'selecting', pending: target })
+  directory.set({ status: 'ready', pending: null })
+  f.projection.set({ lastUsed: source, next: target })
+  await vi.waitFor(() => expect(begin).toHaveBeenCalledTimes(1))
+  expect(begin).toHaveBeenCalledWith('session-1', expect.objectContaining({ kind: 'begin', automatic: true, target }))
+  expect(f.select).toHaveBeenCalledExactlyOnceWith({ sessionId: 'session-1', ...source })
+  expect(coordinator.getSnapshot().pending).toBeNull()
+  unwatch()
+  stop()
+})
+
+it('does not offer an independent session while an automatically opened destination hydrates its first model', async () => {
+  const target = { provider: 'acp-devin', model: 'selected' }
+  const f = fixture({ projection: { lastUsed: null, next: null }, row: { blank: false } })
+  const begin = vi.fn()
+  const coordinator = new CrossBackendCoordinator(f.ctx, f.routes, { begin } as never)
+  const stop = coordinator.start()
+  f.projection.set({ lastUsed: null, next: target })
+  await settle()
+  expect(coordinator.getSnapshot().pending).toBeNull()
+  expect(begin).not.toHaveBeenCalled()
+  expect(f.select).not.toHaveBeenCalled()
+  stop()
+})
+
+it('consumes one local picker action even if the directory republishes pending before its acknowledgement', async () => {
+  const source = { provider: 'native', model: 'model-a' }
+  const target = { provider: 'acp-devin', model: 'new' }
+  const f = fixture()
+  const begin = vi.fn(async () => {})
+  const coordinator = new CrossBackendCoordinator(f.ctx, f.routes, { begin } as never)
+  const stop = coordinator.start()
+  const directory = observable<{ status: string; pending: Selection | null }>({ status: 'ready', pending: null })
+  const unwatch = coordinator.watchPicker('session-1', directory as never)
+  try {
+    directory.set({ status: 'selecting', pending: target })
+    f.projection.set({ lastUsed: source, next: target })
+    directory.set({ status: 'selecting', pending: { ...target } })
+    directory.set({ status: 'ready', pending: null })
+    await vi.waitFor(() => expect(begin).toHaveBeenCalledOnce())
+    expect(coordinator.getSnapshot().pending).toBeNull()
+    f.projection.set({ lastUsed: source, next: source })
+    // A different window selects the same target while this source stays visible.
+    f.projection.set({ lastUsed: source, next: target })
+    await new Promise<void>((done) => setImmediate(done))
+    expect(f.select).toHaveBeenCalledOnce()
+    expect(begin).toHaveBeenCalledOnce()
+  } finally {
+    unwatch()
+    stop()
+  }
+})
 
 function transactionStatesOf(coordinator: CrossBackendCoordinator): Map<string, unknown> {
   const { tx } = coordinator as unknown as { tx: { states: Map<string, unknown> } }

@@ -44,7 +44,7 @@ describe('ACP failures through the published LLM and AgentLoop boundary', () => 
         code === 'ACP_TIMEOUT'
           ? new AcpClientError('timeout', 'ACP prompt outcome is not confirmed')
           : code === 'ACP_CRASH'
-            ? new AcpClientError('crash', 'The Agent disconnected. Check its connection in ACP settings.', {
+            ? new AcpClientError('crash', 'The Agent disconnected.', {
                 cause: new Error('local startup diagnostic'),
               })
             : LlmError.fromFailure(providerFacts, { cause: new Error('local storage failed') })

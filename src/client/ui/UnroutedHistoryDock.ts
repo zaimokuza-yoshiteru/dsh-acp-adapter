@@ -12,6 +12,7 @@ import css from './AcpRecoveryDock.module.css'
 type Props = PropsRuntime<'conversation.input.dock'> &
   PropsLocale<'acpActivity'> & {
     readonly directory: HostObservable<ModelDirectoryState>
+    readonly watchPicker: (sessionId: string, directory: HostObservable<ModelDirectoryState>) => () => void
     readonly useRouteOwnership: UseRouteOwnership
     readonly openIndependent: (
       current: () => boolean,
@@ -31,11 +32,16 @@ export function UnroutedHistoryDock({
   useWorkspaceAccess,
   useAccess,
   directory,
+  watchPicker,
   useRouteOwnership,
   openIndependent,
   t,
 }: Props): ReactNode {
   const main = useSessionRetainInfo((info) => (info?.retainedBy.mainView ?? 0) > 0)
+  useLayoutEffect(
+    () => (main ? watchPicker(sessionId, directory) : undefined),
+    [main, watchPicker, sessionId, directory],
+  )
   const idle = useSession((s) => s.openState === 'open' && !s.blank && !s.running && !s.removed && s.subagent === null)
   const history = useProjection('acpExecution', (view) => view?.completedWithoutModel === true)
   const unselected = useProjection('modelSelection', (view) => view?.next === null && view.lastUsed === null)
